@@ -25,7 +25,7 @@ export async function fetchFilesInFolder(folderId: string): Promise<FileRow[]> {
   return (data ?? []).map((row: any) => ({
     id: row.id,
     folder_id: row.folder_id,
-    name: row.original_name ?? row.name ?? "(unnamed)",
+    name: row.name ?? row.original_name ?? "(unnamed)",   // ✅ swapped order
     storage_key: row.storage_key ?? row.object_key,
     mime_type: row.mime_type ?? null,
     size_bytes: row.size_bytes ?? null,
