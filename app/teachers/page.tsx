@@ -324,30 +324,70 @@ function RichTextEditor({
           <option value="32px">32</option>
         </select>
 
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("bold")} onClick={() => editor?.chain().focus().toggleBold().run()} title="Bold">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("bold")}
+          onClick={() => editor?.chain().focus().toggleBold().run()}
+          title="Bold"
+        >
           B
         </ToolbarButton>
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("italic")} onClick={() => editor?.chain().focus().toggleItalic().run()} title="Italic">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("italic")}
+          onClick={() => editor?.chain().focus().toggleItalic().run()}
+          title="Italic"
+        >
           I
         </ToolbarButton>
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("underline")} onClick={() => editor?.chain().focus().toggleUnderline().run()} title="Underline">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("underline")}
+          onClick={() => editor?.chain().focus().toggleUnderline().run()}
+          title="Underline"
+        >
           U
         </ToolbarButton>
 
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("bulletList")} onClick={() => editor?.chain().focus().toggleBulletList().run()} title="Bulleted list">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("bulletList")}
+          onClick={() => editor?.chain().focus().toggleBulletList().run()}
+          title="Bulleted list"
+        >
           • List
         </ToolbarButton>
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("orderedList")} onClick={() => editor?.chain().focus().toggleOrderedList().run()} title="Numbered list">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("orderedList")}
+          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
+          title="Numbered list"
+        >
           1. List
         </ToolbarButton>
 
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "left" })} onClick={() => editor?.chain().focus().setTextAlign("left").run()} title="Align left">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive({ textAlign: "left" })}
+          onClick={() => editor?.chain().focus().setTextAlign("left").run()}
+          title="Align left"
+        >
           Left
         </ToolbarButton>
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "center" })} onClick={() => editor?.chain().focus().setTextAlign("center").run()} title="Align center">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive({ textAlign: "center" })}
+          onClick={() => editor?.chain().focus().setTextAlign("center").run()}
+          title="Align center"
+        >
           Center
         </ToolbarButton>
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "right" })} onClick={() => editor?.chain().focus().setTextAlign("right").run()} title="Align right">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive({ textAlign: "right" })}
+          onClick={() => editor?.chain().focus().setTextAlign("right").run()}
+          title="Align right"
+        >
           Right
         </ToolbarButton>
 
@@ -366,7 +406,12 @@ function RichTextEditor({
           }}
         />
 
-        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("highlight")} onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fff59d" }).run()} title="Highlight">
+        <ToolbarButton
+          disabled={toolbarDisabled}
+          active={!!editor?.isActive("highlight")}
+          onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fff59d" }).run()}
+          title="Highlight"
+        >
           Highlight
         </ToolbarButton>
 
@@ -403,6 +448,13 @@ function RichTextEditor({
 
 // ---------------------------
 
+function isValidEmail(email: string) {
+  const s = (email ?? "").trim();
+  if (!s) return false;
+  // simple + practical
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
 export default function TeachersPage() {
   const DEFAULT_SHEET_DOC = [{ name: "Sheet 1", row: 30, column: 20, celldata: [], config: {} }];
 
@@ -411,6 +463,13 @@ export default function TeachersPage() {
 
   const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>("");
+
+  // ADMIN: create teacher modal
+  const [showAddTeacher, setShowAddTeacher] = useState(false);
+  const [newTeacherEmail, setNewTeacherEmail] = useState("");
+  const [newTeacherName, setNewTeacherName] = useState("");
+  const [creatingTeacher, setCreatingTeacher] = useState(false);
+  const [deletingTeacher, setDeletingTeacher] = useState(false);
 
   // permissions
   const [teacherPerms, setTeacherPerms] = useState<UserFolderPermissionRow[]>([]);
@@ -460,6 +519,7 @@ export default function TeachersPage() {
   const [userLabelsById, setUserLabelsById] = useState<Record<string, UserLabelRow>>({});
 
   const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
+  const isAdmin = !!me?.is_active && me.role === "admin";
 
   const teacherById = useMemo(() => {
     const m = new Map<string, TeacherProfile>();
@@ -497,7 +557,24 @@ export default function TeachersPage() {
   async function refreshTeacherList() {
     const list = await fetchActiveTeachers();
     setTeachers(list);
-    if (!selectedTeacherId && list.length > 0) setSelectedTeacherId(list[0].id);
+
+    // keep selection stable
+    if (list.length === 0) {
+      setSelectedTeacherId("");
+      setPlans([]);
+      setPlanDetail(null);
+      setComments([]);
+      setSelectedPlanId("");
+      setTeacherPerms([]);
+      return;
+    }
+
+    if (!selectedTeacherId) {
+      setSelectedTeacherId(list[0].id);
+    } else {
+      const stillExists = list.some((t) => t.id === selectedTeacherId);
+      if (!stillExists) setSelectedTeacherId(list[0].id);
+    }
 
     await ensureUserLabels(list.map((t) => t.id));
   }
@@ -568,7 +645,9 @@ export default function TeachersPage() {
     try {
       const { data, error } = await supabase
         .from("lesson_plans")
-        .select("id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at")
+        .select(
+          "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+        )
         .eq("id", planId)
         .single();
 
@@ -789,6 +868,77 @@ export default function TeachersPage() {
     }
   }
 
+  // ---------------------------
+  // ADMIN: Create/Delete teacher
+  // ---------------------------
+  async function adminCreateTeacher(email: string, fullName: string) {
+    setCreatingTeacher(true);
+    setStatus("Creating teacher...");
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanName = fullName.trim();
+
+      const { data, error } = await supabase.functions.invoke("admin-create-teacher", {
+        body: { email: cleanEmail, full_name: cleanName },
+      });
+      if (error) throw error;
+
+      const newUserId = (data as any)?.user_id as string | undefined;
+
+      setStatus("✅ Teacher created.");
+      setShowAddTeacher(false);
+      setNewTeacherEmail("");
+      setNewTeacherName("");
+
+      await refreshTeacherList();
+      if (newUserId) setSelectedTeacherId(newUserId);
+    } catch (e: any) {
+      setStatus("Create teacher error: " + (e?.message ?? "unknown"));
+    } finally {
+      setCreatingTeacher(false);
+    }
+  }
+
+
+  async function adminDeleteTeacher(userId: string) {
+    if (!isAdmin) return;
+    if (!userId) return;
+
+    if (me?.id && userId === me.id) {
+      setStatus("You cannot delete your own admin account.");
+      return;
+    }
+
+    const ok = window.confirm("Are you sure you want to delete this teacher? This cannot be undone.");
+    if (!ok) return;
+
+    setDeletingTeacher(true);
+    setStatus("Deleting teacher...");
+    try {
+      const { error } = await supabase.functions.invoke("admin-delete-teacher", {
+        body: { user_id: userId },
+      });
+      if (error) throw error;
+
+      setStatus("✅ Teacher deleted.");
+
+      const prevSelected = selectedTeacherId;
+      await refreshTeacherList();
+
+      if (prevSelected === userId) {
+        setPlans([]);
+        setPlanDetail(null);
+        setComments([]);
+        setSelectedPlanId("");
+        setTeacherPerms([]);
+      }
+    } catch (e: any) {
+      setStatus("Delete teacher error: " + (e?.message ?? "unknown"));
+    } finally {
+      setDeletingTeacher(false);
+    }
+  }
+
   async function bootstrap() {
     setStatus("Loading...");
     try {
@@ -881,14 +1031,56 @@ export default function TeachersPage() {
         {status ? <span className="badge badge-pink">{status}</span> : null}
       </div>
 
+      {/* ADMIN-only section */}
+      {isAdmin ? (
+        <div className="card">
+          <div className="row-between">
+            <div>
+              <div style={{ fontWeight: 900 }}>Admin tools</div>
+            </div>
+
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setNewTeacherEmail("");
+                setNewTeacherName("");
+                setShowAddTeacher(true);
+              }}
+            >
+              + Add teacher
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="card">
         <div className="row-between">
           <div>
             <div style={{ fontWeight: 900 }}>Select teacher</div>
           </div>
-          <button className="btn" onClick={refreshTeacherList}>
-            Refresh teachers
-          </button>
+
+          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+            {/* Delete icon next to refresh (admin only, needs teacher selected) */}
+            {isAdmin ? (
+              <button
+                className="btn"
+                title="Delete teacher"
+                disabled={!selectedTeacherId || deletingTeacher}
+                onClick={() => selectedTeacherId && adminDeleteTeacher(selectedTeacherId)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 10,
+                  fontWeight: 900,
+                }}
+              >
+                🗑️
+              </button>
+            ) : null}
+
+            <button className="btn" onClick={refreshTeacherList}>
+              Refresh teachers
+            </button>
+          </div>
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -910,7 +1102,11 @@ export default function TeachersPage() {
                 <div>
                   <div style={{ fontWeight: 900 }}>Folder permissions</div>
                 </div>
-                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)} disabled={!selectedTeacherId || teacherPermsLoading}>
+                <button
+                  className="btn"
+                  onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)}
+                  disabled={!selectedTeacherId || teacherPermsLoading}
+                >
                   Refresh
                 </button>
               </div>
@@ -959,7 +1155,11 @@ export default function TeachersPage() {
                     Plans created by: <strong>{selectedTeacherLabel || "—"}</strong>
                   </div>
                 </div>
-                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)} disabled={!selectedTeacherId || plansLoading}>
+                <button
+                  className="btn"
+                  onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)}
+                  disabled={!selectedTeacherId || plansLoading}
+                >
                   Refresh
                 </button>
               </div>
@@ -1141,7 +1341,12 @@ export default function TeachersPage() {
                   <div className="hr" />
 
                   <div className="stack">
-                    <textarea className="textarea" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Write feedback… (optional)" />
+                    <textarea
+                      className="textarea"
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      placeholder="Write feedback… (optional)"
+                    />
                     <button className="btn btn-primary" onClick={() => addComment(selectedPlan.id)}>
                       Post comment
                     </button>
@@ -1298,6 +1503,85 @@ export default function TeachersPage() {
               disabled={false}
               minBodyHeight={520}
             />
+          </div>
+        </div>
+      ) : null}
+
+      {/* ADMIN modal: Add Teacher */}
+      {isAdmin && showAddTeacher ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onMouseDown={(e) => {
+            // click outside closes
+            if (e.target === e.currentTarget && !creatingTeacher) setShowAddTeacher(false);
+          }}
+        >
+          <div className="card" style={{ width: "min(560px, 100%)", borderRadius: 14 }}>
+            <div className="row-between" style={{ gap: 12 }}>
+              <div>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>Add teacher</div>
+              </div>
+              <button className="btn" onClick={() => !creatingTeacher && setShowAddTeacher(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="hr" />
+
+            <div className="stack" style={{ gap: 10 }}>
+              <div>
+                <div className="subtle" style={{ marginBottom: 6 }}>
+                  Teacher email
+                </div>
+                <input
+                  className="input"
+                  value={newTeacherEmail}
+                  onChange={(e) => setNewTeacherEmail(e.target.value)}
+                  placeholder="teacher@example.com"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <div className="subtle" style={{ marginBottom: 6 }}>
+                  Full name
+                </div>
+                <input
+                  className="input"
+                  value={newTeacherName}
+                  onChange={(e) => setNewTeacherName(e.target.value)}
+                  placeholder="Teacher Name"
+                />
+              </div>
+
+              <div className="row" style={{ gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                <button className="btn" onClick={() => !creatingTeacher && setShowAddTeacher(false)} disabled={creatingTeacher}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  disabled={creatingTeacher || !isValidEmail(newTeacherEmail) || newTeacherName.trim().length === 0}
+                  onClick={() => adminCreateTeacher(newTeacherEmail, newTeacherName)}
+                >
+                  {creatingTeacher ? "Creating..." : "Create teacher"}
+                </button>
+              </div>
+
+              {!isValidEmail(newTeacherEmail) && newTeacherEmail.trim().length > 0 ? (
+                <div className="subtle" style={{ color: "var(--danger, #b00020)" }}>
+                  Please enter a valid email.
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
