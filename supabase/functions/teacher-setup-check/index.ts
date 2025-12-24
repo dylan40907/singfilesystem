@@ -1,3 +1,4 @@
+// teacher-setup-check/index.ts
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -20,6 +21,10 @@ function json(origin: string | null, status: number, body: unknown) {
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
+}
+
+function isAllowedRole(role: unknown) {
+  return role === "teacher" || role === "supervisor";
 }
 
 async function findAuthUserIdByEmail(
@@ -80,8 +85,8 @@ serve(async (req) => {
 
     if (profErr) return json(origin, 500, { error: profErr.message });
 
-    // Don’t leak existence beyond teachers
-    if (!profile || !profile.is_active || profile.role !== "teacher") {
+    // Don’t leak existence beyond allowed roles
+    if (!profile || !profile.is_active || !isAllowedRole(profile.role)) {
       return json(origin, 200, { status: "not_found" });
     }
 
@@ -100,6 +105,7 @@ serve(async (req) => {
       status: "no_password",
       user_id: userId,
       full_name: profile.full_name ?? null,
+      role: profile.role ?? null,
     });
   } catch (err) {
     return json(origin, 500, { error: String(err) });

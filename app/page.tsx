@@ -105,7 +105,36 @@ function isValidEmail(email: string) {
 type SetupCheckResult =
   | { status: "not_found" }
   | { status: "has_password" }
-  | { status: "no_password"; user_id?: string; full_name?: string | null };
+  | { status: "no_password"; user_id?: string; full_name?: string | null; role?: string | null };
+
+/**
+ * NEW: Setup functions that support BOTH teacher + supervisor.
+ * We try the new generic names first, then fallback to the legacy teacher-only names.
+ *
+ * This lets you deploy the new Edge Functions without breaking existing clients.
+ */
+async function invokeSetupFunction<T = any>(kind: "check" | "set_password", body: any) {
+  const primary = kind === "check" ? "teacher-setup-check" : "teacher-setup-set-password";
+  const fallback = kind === "check" ? "teacher-setup-check" : "teacher-setup-set-password";
+
+  // Try primary
+  {
+    const { data, error } = await supabase.functions.invoke(primary, { body });
+    if (!error) return { data: data as T, error: null as any, used: primary };
+    // Only fallback if it looks like the function doesn't exist / isn't deployed
+    const msg = (error as any)?.message ?? "";
+    const status = (error as any)?.status ?? (error as any)?.context?.status ?? null;
+    const looksMissing =
+      status === 404 ||
+      msg.toLowerCase().includes("not found") ||
+      msg.toLowerCase().includes("function") && msg.toLowerCase().includes("not") && msg.toLowerCase().includes("found");
+    if (!looksMissing) return { data: null as any, error, used: primary };
+  }
+
+  // Fallback
+  const { data, error } = await supabase.functions.invoke(fallback, { body });
+  return { data: data as T, error, used: fallback };
+}
 
 export default function Home() {
   // Auth
@@ -164,7 +193,7 @@ export default function Home() {
   const [previewText, setPreviewText] = useState<string>("");
 
   // ---------------------------
-  // NEW: Teacher setup modal state
+  // Setup modal state (teacher + supervisor)
   // ---------------------------
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupStep, setSetupStep] = useState<"email" | "password">("email");
@@ -300,7 +329,7 @@ export default function Home() {
   }
 
   // ---------------------------
-  // NEW: Setup modal handlers
+  // Setup modal handlers
   // ---------------------------
   function openSetupModal() {
     setSetupOpen(true);
@@ -312,7 +341,6 @@ export default function Home() {
     setSetupPass1("");
     setSetupPass2("");
     setSetupSetPassLoading(false);
-    // don't wipe main status completely; but do clear "Not signed in." noise
     setStatus("");
   }
 
@@ -338,12 +366,11 @@ export default function Home() {
     setStatus("Checking account...");
 
     try {
-      const { data, error } = await supabase.functions.invoke("teacher-setup-check", {
-        body: { email: e },
-      });
+      // CHANGED: uses account-setup-check (fallback to teacher-setup-check)
+      const { data, error, used } = await invokeSetupFunction<SetupCheckResult>("check", { email: e });
 
       if (error) {
-        setStatus("Setup error: " + (error.message ?? "Edge Function error"));
+        setStatus(`Setup error: ${error.message ?? "Edge Function error"} (${used})`);
         return;
       }
 
@@ -356,7 +383,7 @@ export default function Home() {
       }
 
       if (result.status === "has_password") {
-        setStatus("That email is already in use and already has a password. Please sign in normally.");
+        setStatus("That email already has a password. Please sign in normally.");
         return;
       }
 
@@ -378,7 +405,7 @@ export default function Home() {
       return;
     }
 
-    if (!setupCheck || setupCheck.status !== "no_password" ||  setupCheckedEmail !== e) {
+    if (!setupCheck || setupCheck.status !== "no_password" || setupCheckedEmail !== e) {
       setStatus("Setup error: Please check your email first.");
       return;
     }
@@ -396,12 +423,11 @@ export default function Home() {
     setStatus("Setting password...");
 
     try {
-      const { error } = await supabase.functions.invoke("teacher-setup-set-password", {
-        body: { email: e, password: setupPass1 },
-      });
+      // CHANGED: uses account-setup-set-password (fallback to teacher-setup-set-password)
+      const { error, used } = await invokeSetupFunction("set_password", { email: e, password: setupPass1 });
 
       if (error) {
-        setStatus("Setup error: " + (error.message ?? "Edge Function error"));
+        setStatus(`Setup error: ${error.message ?? "Edge Function error"} (${used})`);
         return;
       }
 
@@ -1061,7 +1087,6 @@ export default function Home() {
               Sign in
             </button>
 
-            {/* CHANGED: "Use your assigned account." + setup button */}
             <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <div className="subtle">Use your assigned account.</div>
               <button className="btn" type="button" onClick={openSetupModal}>
@@ -1070,7 +1095,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* NEW: Setup modal */}
           {setupOpen ? (
             <div
               role="dialog"
@@ -1197,7 +1221,6 @@ export default function Home() {
         <>
           {/* ONE MAIN WORKSPACE */}
           <div className="card" style={{ padding: 16 }}>
-            {/* Top row: current path (left) + tools (right) */}
             <div className="row-between" style={{ alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
               <div className="stack" style={{ gap: 8, minWidth: 280 }}>
                 <div style={{ fontWeight: 900, fontSize: 16 }}>Current path</div>
@@ -1220,7 +1243,6 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Shared shortcuts inline */}
                 <div className="subtle" style={{ marginTop: 2 }}>
                   Shared with me:
                 </div>
@@ -1287,7 +1309,6 @@ export default function Home() {
 
             <div className="hr" style={{ marginTop: 14 }} />
 
-            {/* Items list (folders + files) */}
             <div className="stack" style={{ gap: 10 }}>
               <div className="row-between">
                 <div>
@@ -1309,7 +1330,6 @@ export default function Home() {
                 <div className="subtle">(No folders or files here)</div>
               ) : (
                 <div className="stack" style={{ gap: 8 }}>
-                  {/* Folders */}
                   {childFolders.map((folder) => (
                     <div
                       key={folder.id}
@@ -1367,7 +1387,6 @@ export default function Home() {
                     </div>
                   ))}
 
-                  {/* Files */}
                   {files.map((f) => (
                     <div
                       key={f.id}
@@ -1599,7 +1618,6 @@ export default function Home() {
                 <div className="hr" />
 
                 <div className="grid-2">
-                  {/* Teacher checklist */}
                   <div className="card" style={{ borderRadius: 12 }}>
                     <div style={{ fontWeight: 900 }}>Active teachers</div>
                     <div className="hr" />
@@ -1641,7 +1659,6 @@ export default function Home() {
                     )}
                   </div>
 
-                  {/* Folder access table (direct grants) */}
                   <div className="card" style={{ borderRadius: 12 }}>
                     <div className="row-between">
                       <div>

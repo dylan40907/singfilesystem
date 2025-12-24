@@ -20,6 +20,10 @@ function labelForUser(u: { id: string; email?: string | null; full_name?: string
   return u.id;
 }
 
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
 export default function AdminSupervisorsPage() {
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
@@ -33,6 +37,50 @@ export default function AdminSupervisorsPage() {
 
   const isAdmin = !!me?.is_active && me.role === "admin";
 
+  // Admin-only: Add supervisor modal state
+  const [addOpen, setAddOpen] = useState(false);
+  const [addEmail, setAddEmail] = useState("");
+  const [addName, setAddName] = useState("");
+  const [addLoading, setAddLoading] = useState(false);
+
+  // Admin-only: delete supervisor state
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
+  async function refreshLists(preferSelectId?: string) {
+    const [{ data: sData, error: sErr }, { data: tData, error: tErr }] = await Promise.all([
+      supabase.rpc("list_supervisors"),
+      supabase.rpc("list_teachers"),
+    ]);
+
+    if (sErr) throw sErr;
+    if (tErr) throw tErr;
+
+    const supRows = (sData ?? []) as PersonRow[];
+    const teacherRows = (tData ?? []) as PersonRow[];
+
+    setSupervisors(supRows);
+    setTeachers(teacherRows);
+
+    const exists = (id: string) => supRows.some((s) => s.id === id);
+
+    if (preferSelectId && exists(preferSelectId)) {
+      setSelectedSupervisorId(preferSelectId);
+      return;
+    }
+
+    if (selectedSupervisorId && exists(selectedSupervisorId)) {
+      // keep selection
+      return;
+    }
+
+    if (supRows.length > 0) {
+      setSelectedSupervisorId(supRows[0].id);
+    } else {
+      setSelectedSupervisorId("");
+      setAssigned([]);
+    }
+  }
+
   async function bootstrap() {
     setStatus("Loading...");
     const profile = await fetchMyProfile();
@@ -44,22 +92,7 @@ export default function AdminSupervisorsPage() {
     }
 
     try {
-      const [{ data: sData, error: sErr }, { data: tData, error: tErr }] = await Promise.all([
-        supabase.rpc("list_supervisors"),
-        supabase.rpc("list_teachers"),
-      ]);
-
-      if (sErr) throw sErr;
-      if (tErr) throw tErr;
-
-      const supRows = (sData ?? []) as PersonRow[];
-      const teacherRows = (tData ?? []) as PersonRow[];
-
-      setSupervisors(supRows);
-      setTeachers(teacherRows);
-
-      if (!selectedSupervisorId && supRows.length > 0) setSelectedSupervisorId(supRows[0].id);
-
+      await refreshLists();
       setStatus("");
     } catch (e: any) {
       setStatus("Error: " + (e?.message ?? "unknown"));
@@ -125,6 +158,92 @@ export default function AdminSupervisorsPage() {
     }
   }
 
+  // ADMIN: create supervisor via Edge Function
+  async function createSupervisor() {
+    const email = addEmail.trim();
+    const name = addName.trim();
+
+    if (!email || !isValidEmail(email)) {
+      setStatus("Create supervisor error: Please enter a valid email.");
+      return;
+    }
+    if (!name) {
+      setStatus("Create supervisor error: Please enter a name.");
+      return;
+    }
+
+    setAddLoading(true);
+    setStatus("Creating supervisor...");
+    try {
+      // IMPORTANT: match Edge Function expected keys
+      const { data, error } = await supabase.functions.invoke("admin-create-supervisor", {
+        body: {
+          supervisor_email: email,
+          supervisor_full_name: name,
+        },
+      });
+
+      if (error) {
+        setStatus("Create supervisor error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus("✅ Supervisor created.");
+      setAddOpen(false);
+      setAddEmail("");
+      setAddName("");
+
+      const createdId = (data as any)?.user_id ?? (data as any)?.supervisor_id ?? (data as any)?.id ?? null;
+
+      await refreshLists(typeof createdId === "string" ? createdId : undefined);
+    } catch (e: any) {
+      setStatus("Create supervisor error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  // ADMIN: delete supervisor via Edge Function
+  async function deleteSelectedSupervisor() {
+    if (!selectedSupervisorId) return;
+    if (!isAdmin) return;
+
+    const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+
+    const label = selected
+      ? labelForUser({ id: selected.id, email: selected.email, full_name: selected.full_name })
+      : selectedSupervisorId;
+
+    const ok = window.confirm(`Delete this supervisor?\n\n${label}\n\nThis cannot be undone.`);
+    if (!ok) return;
+
+    setDeleteLoading(true);
+    setStatus("Deleting supervisor...");
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-delete-supervisor", {
+        body: {
+          supervisor_id: selectedSupervisorId,
+        },
+      });
+
+      if (error) {
+        setStatus("Delete supervisor error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      void data;
+
+      setStatus("✅ Supervisor deleted.");
+      setSelectedSupervisorId("");
+      setAssigned([]);
+      await refreshLists();
+    } catch (e: any) {
+      setStatus("Delete supervisor error: " + (e?.message ?? "unknown"));
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
   const assignedIds = useMemo(() => new Set(assigned.map((a) => a.id)), [assigned]);
 
   useEffect(() => {
@@ -166,14 +285,32 @@ export default function AdminSupervisorsPage() {
       </div>
 
       <div className="card">
-        <div style={{ fontWeight: 900 }}>Select supervisor</div>
+        <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ fontWeight: 900 }}>Select supervisor</div>
+
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <button className="btn btn-primary" onClick={() => setAddOpen(true)}>
+              Add supervisor
+            </button>
+
+            <button className="btn" onClick={() => refreshLists()}>
+              Refresh
+            </button>
+
+            <button
+              className="btn"
+              title="Delete selected supervisor"
+              onClick={() => void deleteSelectedSupervisor()}
+              disabled={!selectedSupervisorId || deleteLoading}
+              style={{ padding: "8px 10px" }}
+            >
+              🗑
+            </button>
+          </div>
+        </div>
 
         <div style={{ marginTop: 12 }}>
-          <select
-            className="select"
-            value={selectedSupervisorId}
-            onChange={(e) => setSelectedSupervisorId(e.target.value)}
-          >
+          <select className="select" value={selectedSupervisorId} onChange={(e) => setSelectedSupervisorId(e.target.value)}>
             {supervisors.map((s) => (
               <option key={s.id} value={s.id}>
                 {labelForUser(s)}
@@ -183,13 +320,72 @@ export default function AdminSupervisorsPage() {
         </div>
       </div>
 
+      {/* Admin-only Add Supervisor Modal */}
+      {addOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onClick={() => {
+            if (!addLoading) setAddOpen(false);
+          }}
+        >
+          <div className="card" style={{ width: "min(520px, 100%)", borderRadius: 14 }} onClick={(e) => e.stopPropagation()}>
+            <div className="row-between">
+              <div style={{ fontWeight: 950, fontSize: 16 }}>Add supervisor</div>
+              <button className="btn" onClick={() => !addLoading && setAddOpen(false)} disabled={addLoading}>
+                Close
+              </button>
+            </div>
+
+            <div className="hr" />
+
+            <div className="stack" style={{ gap: 10 }}>
+              <div className="subtle">Creates a supervisor account without a password (for now).</div>
+
+              <input
+                className="input"
+                placeholder="Supervisor email"
+                value={addEmail}
+                onChange={(e) => setAddEmail(e.target.value)}
+                disabled={addLoading}
+              />
+
+              <input
+                className="input"
+                placeholder="Supervisor full name"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                disabled={addLoading}
+              />
+
+              <div className="row" style={{ gap: 10, justifyContent: "flex-end" }}>
+                <button className="btn" onClick={() => setAddOpen(false)} disabled={addLoading}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" onClick={() => void createSupervisor()} disabled={addLoading}>
+                  {addLoading ? "Creating..." : "Create supervisor"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid-2">
         <div className="card">
           <div className="row-between">
             <div>
               <div style={{ fontWeight: 900 }}>Assigned teachers</div>
             </div>
-            <button className="btn" onClick={() => selectedSupervisorId && loadAssignments(selectedSupervisorId)}>
+            <button className="btn" onClick={() => selectedSupervisorId && loadAssignments(selectedSupervisorId)} disabled={!selectedSupervisorId}>
               Refresh
             </button>
           </div>
@@ -198,6 +394,8 @@ export default function AdminSupervisorsPage() {
 
           {loading ? (
             <div className="subtle">Loading…</div>
+          ) : !selectedSupervisorId ? (
+            <div className="subtle">(Select a supervisor)</div>
           ) : assigned.length === 0 ? (
             <div className="subtle">(None assigned)</div>
           ) : (
@@ -231,7 +429,7 @@ export default function AdminSupervisorsPage() {
                     <div style={{ fontWeight: 800 }}>{labelForUser(t)}</div>
                     <div className="subtle">{t.is_active ? "active" : "inactive"}</div>
                   </div>
-                  <button className="btn" onClick={() => assignTeacher(t.id)} disabled={already}>
+                  <button className="btn" onClick={() => assignTeacher(t.id)} disabled={!selectedSupervisorId || already}>
                     {already ? "Assigned" : "Assign"}
                   </button>
                 </div>
