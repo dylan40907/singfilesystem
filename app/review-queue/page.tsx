@@ -17,8 +17,10 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import type { CommandProps } from "@tiptap/core";
+import { fetchActiveTeachers } from "@/lib/teachers";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
+const [allowedTeacherIds, setAllowedTeacherIds] = useState<string[] | null>(null);
 
 type UserLabelRow = {
   id: string;
@@ -531,49 +533,66 @@ export default function ReviewQueuePage() {
     return p;
   }
 
-  async function refreshQueue() {
+  async function refreshQueue(profileArg?: TeacherProfile | null, allowedIds?: string[] | null) {
     setLoadingPlans(true);
     try {
-      const { data, error } = await supabase
+        const p = profileArg ?? me;
+        const ids = allowedIds ?? allowedTeacherIds;
+
+        let q = supabase
         .from("lesson_plans")
         .select("id, owner_user_id, created_at, updated_at, title, status")
         .order("updated_at", { ascending: false });
 
-      if (error) throw error;
+        // supervisors: filter to assigned teachers only
+        if (p?.role === "supervisor") {
+        if (!ids || ids.length === 0) {
+            setPlans([]);
+            setSelectedPlanId("");
+            setPlanDetail(null);
+            setComments([]);
+            setStatus("");
+            return;
+        }
+        q = q.in("owner_user_id", ids);
+        }
 
-      let rows = (data ?? []) as QueuePlanRow[];
-      rows = await attachOwnerProfiles(rows);
+        const { data, error } = await q;
+        if (error) throw error;
 
-      rows.sort((a, b) => {
+        let rows = (data ?? []) as QueuePlanRow[];
+        rows = await attachOwnerProfiles(rows);
+
+        rows.sort((a, b) => {
         const ra = statusRank(a.status);
         const rb = statusRank(b.status);
         if (ra !== rb) return ra - rb;
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-      });
+        });
 
-      if (!showAll) {
+        if (!showAll) {
         rows = rows.filter((p) => p.status === "submitted" || p.status === "changes_requested");
-      }
+        }
 
-      setPlans(rows);
+        setPlans(rows);
 
-      if (rows.length > 0) {
+        if (rows.length > 0) {
         const stillExists = rows.some((p) => p.id === selectedPlanId);
         if (!stillExists) setSelectedPlanId(rows[0].id);
-      } else {
+        } else {
         setSelectedPlanId("");
         setPlanDetail(null);
         setComments([]);
-      }
+        }
 
-      setStatus("");
+        setStatus("");
     } catch (e: any) {
-      setStatus("Error loading review queue: " + (e?.message ?? "unknown"));
-      setPlans([]);
+        setStatus("Error loading review queue: " + (e?.message ?? "unknown"));
+        setPlans([]);
     } finally {
-      setLoadingPlans(false);
+        setLoadingPlans(false);
     }
-  }
+    }
 
   async function loadPlan(planId: string) {
     setPlanLoading(true);
@@ -821,17 +840,27 @@ export default function ReviewQueuePage() {
   async function bootstrap() {
     setStatus("Loading...");
     try {
-      const profile = await loadMe();
-      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
+        const profile = await loadMe();
+        if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
         setStatus("Not authorized.");
         return;
-      }
-      await refreshQueue();
-      setStatus("");
+        }
+
+        if (profile.role === "admin") {
+        setAllowedTeacherIds(null); // null = no filter
+        await refreshQueue(profile, null);
+        } else {
+        const list = await fetchActiveTeachers(); // for supervisors this is already filtered correctly
+        const ids = list.map((t) => t.id);
+        setAllowedTeacherIds(ids);
+        await refreshQueue(profile, ids);
+        }
+
+        setStatus("");
     } catch (e: any) {
-      setStatus("Error: " + (e?.message ?? "unknown"));
+        setStatus("Error: " + (e?.message ?? "unknown"));
     }
-  }
+    }
 
   useEffect(() => {
     bootstrap();
@@ -842,7 +871,7 @@ export default function ReviewQueuePage() {
     if (!isAdminOrSupervisor) return;
     refreshQueue();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAll, isAdminOrSupervisor]);
+  }, [showAll, isAdminOrSupervisor, allowedTeacherIds, me?.role]);
 
   useEffect(() => {
     if (!selectedPlanId) return;
@@ -934,7 +963,7 @@ export default function ReviewQueuePage() {
       <div className="card">
         <div className="row-between">
           <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-            <button className="btn" onClick={refreshQueue} disabled={loadingPlans}>
+            <button className="btn" onClick={() => refreshQueue()} disabled={loadingPlans}>
               Refresh
             </button>
 
