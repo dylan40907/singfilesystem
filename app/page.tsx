@@ -98,6 +98,15 @@ function isTextExt(ext: string) {
   return ext === "txt" || ext === "md" || ext === "csv" || ext === "json" || ext === "log";
 }
 
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+type SetupCheckResult =
+  | { status: "not_found" }
+  | { status: "has_password" }
+  | { status: "no_password"; user_id?: string; full_name?: string | null };
+
 export default function Home() {
   // Auth
   const [email, setEmail] = useState("");
@@ -153,6 +162,20 @@ export default function Home() {
   const [previewSignedUrl, setPreviewSignedUrl] = useState<string>("");
   const [previewObjectUrl, setPreviewObjectUrl] = useState<string>(""); // blob url (pdf/image)
   const [previewText, setPreviewText] = useState<string>("");
+
+  // ---------------------------
+  // NEW: Teacher setup modal state
+  // ---------------------------
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [setupStep, setSetupStep] = useState<"email" | "password">("email");
+  const [setupEmail, setSetupEmail] = useState("");
+  const [setupCheck, setSetupCheck] = useState<SetupCheckResult | null>(null);
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [setupCheckedEmail, setSetupCheckedEmail] = useState<string>("");
+
+  const [setupPass1, setSetupPass1] = useState("");
+  const [setupPass2, setSetupPass2] = useState("");
+  const [setupSetPassLoading, setSetupSetPassLoading] = useState(false);
 
   const isAdminOrSupervisor =
     myProfile?.is_active && (myProfile.role === "admin" || myProfile.role === "supervisor");
@@ -274,6 +297,135 @@ export default function Home() {
       return;
     }
     await refreshAll();
+  }
+
+  // ---------------------------
+  // NEW: Setup modal handlers
+  // ---------------------------
+  function openSetupModal() {
+    setSetupOpen(true);
+    setSetupStep("email");
+    setSetupEmail("");
+    setSetupCheck(null);
+    setSetupCheckedEmail("");
+    setSetupLoading(false);
+    setSetupPass1("");
+    setSetupPass2("");
+    setSetupSetPassLoading(false);
+    // don't wipe main status completely; but do clear "Not signed in." noise
+    setStatus("");
+  }
+
+  function closeSetupModal() {
+    if (setupLoading || setupSetPassLoading) return;
+    setSetupOpen(false);
+    setSetupStep("email");
+    setSetupEmail("");
+    setSetupCheck(null);
+    setSetupPass1("");
+    setSetupPass2("");
+  }
+
+  async function runSetupCheck() {
+    const e = setupEmail.trim().toLowerCase();
+    if (!e || !isValidEmail(e)) {
+      setStatus("Setup error: Please enter a valid email.");
+      return;
+    }
+
+    setSetupLoading(true);
+    setSetupCheck(null);
+    setStatus("Checking account...");
+
+    try {
+      const { data, error } = await supabase.functions.invoke("teacher-setup-check", {
+        body: { email: e },
+      });
+
+      if (error) {
+        setStatus("Setup error: " + (error.message ?? "Edge Function error"));
+        return;
+      }
+
+      const result = data as SetupCheckResult;
+      setSetupCheck(result);
+
+      if (result.status === "not_found") {
+        setStatus("No account found for that email. Ask an admin to create one.");
+        return;
+      }
+
+      if (result.status === "has_password") {
+        setStatus("That email is already in use and already has a password. Please sign in normally.");
+        return;
+      }
+
+      // no_password
+      setStatus("Account found. Please set a password.");
+      setSetupCheckedEmail(e);
+      setSetupStep("password");
+    } catch (err: any) {
+      setStatus("Setup error: " + (err?.message ?? "unknown"));
+    } finally {
+      setSetupLoading(false);
+    }
+  }
+
+  async function runSetupSetPassword() {
+    const e = setupEmail.trim().toLowerCase();
+    if (!e || !isValidEmail(e)) {
+      setStatus("Setup error: invalid email.");
+      return;
+    }
+
+    if (!setupCheck || setupCheck.status !== "no_password" ||  setupCheckedEmail !== e) {
+      setStatus("Setup error: Please check your email first.");
+      return;
+    }
+
+    if (setupPass1.length < 8) {
+      setStatus("Setup error: Password must be at least 8 characters.");
+      return;
+    }
+    if (setupPass1 !== setupPass2) {
+      setStatus("Setup error: Passwords do not match.");
+      return;
+    }
+
+    setSetupSetPassLoading(true);
+    setStatus("Setting password...");
+
+    try {
+      const { error } = await supabase.functions.invoke("teacher-setup-set-password", {
+        body: { email: e, password: setupPass1 },
+      });
+
+      if (error) {
+        setStatus("Setup error: " + (error.message ?? "Edge Function error"));
+        return;
+      }
+
+      // now sign in with the newly set password
+      setStatus("✅ Password set. Signing in...");
+
+      const { error: signErr } = await supabase.auth.signInWithPassword({
+        email: e,
+        password: setupPass1,
+      });
+
+      if (signErr) {
+        setStatus("Password set, but sign-in failed: " + signErr.message);
+        return;
+      }
+
+      closeSetupModal();
+      await refreshAll();
+      setStatus("✅ Account setup complete.");
+    } catch (err: any) {
+      setStatus("Setup error: " + (err?.message ?? "unknown"));
+    } finally {
+      setSetupSetPassLoading(false);
+    }
   }
 
   async function handleCreateFolder() {
@@ -849,11 +1001,11 @@ export default function Home() {
   }, [folders, currentFolderId]);
 
   const currentFolderName =
-  currentFolderId && folderById.get(currentFolderId)
-    ? rootFolder?.id && currentFolderId === rootFolder.id
-      ? "HOME"
-      : folderById.get(currentFolderId)!.name
-    : "Folder";
+    currentFolderId && folderById.get(currentFolderId)
+      ? rootFolder?.id && currentFolderId === rootFolder.id
+        ? "HOME"
+        : folderById.get(currentFolderId)!.name
+      : "Folder";
 
   const itemsEmpty = childFolders.length === 0 && files.length === 0;
 
@@ -908,8 +1060,138 @@ export default function Home() {
             <button className="btn btn-primary" onClick={signIn}>
               Sign in
             </button>
-            <div className="subtle">Use your assigned account.</div>
+
+            {/* CHANGED: "Use your assigned account." + setup button */}
+            <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div className="subtle">Use your assigned account.</div>
+              <button className="btn" type="button" onClick={openSetupModal}>
+                Set up an account
+              </button>
+            </div>
           </div>
+
+          {/* NEW: Setup modal */}
+          {setupOpen ? (
+            <div
+              role="dialog"
+              aria-modal="true"
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.35)",
+                zIndex: 200,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 16,
+              }}
+              onMouseDown={(e) => {
+                if (e.currentTarget === e.target) closeSetupModal();
+              }}
+            >
+              <div
+                className="card"
+                style={{
+                  width: "min(560px, 96vw)",
+                  borderRadius: 16,
+                  padding: 16,
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="row-between" style={{ alignItems: "flex-start", gap: 12 }}>
+                  <div className="stack" style={{ gap: 6 }}>
+                    <div style={{ fontWeight: 950, fontSize: 16 }}>Set up an account</div>
+                    <div className="subtle">
+                      {setupStep === "email"
+                        ? "Enter the email your admin created for you."
+                        : `Setting password for ${setupEmail.trim() || "your email"}`}
+                    </div>
+                  </div>
+                  <button className="btn" onClick={closeSetupModal} disabled={setupLoading || setupSetPassLoading}>
+                    Close
+                  </button>
+                </div>
+
+                <div className="hr" />
+
+                {setupStep === "email" ? (
+                  <div className="stack" style={{ gap: 10 }}>
+                    <input
+                      className="input"
+                      placeholder="Email address"
+                      value={setupEmail}
+                      onChange={(e) => setSetupEmail(e.target.value)}
+                      disabled={setupLoading}
+                      autoComplete="email"
+                    />
+
+                    <div className="row" style={{ justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+                      <button className="btn" onClick={closeSetupModal} disabled={setupLoading}>
+                        Cancel
+                      </button>
+                      <button className="btn btn-primary" onClick={() => void runSetupCheck()} disabled={setupLoading}>
+                        {setupLoading ? "Checking..." : "Continue"}
+                      </button>
+                    </div>
+
+                    {setupCheck?.status === "no_password" ? (
+                      <div className="subtle" style={{ marginTop: 6 }}>
+                        Account found{setupCheck.full_name ? `: ${setupCheck.full_name}` : ""}. You can set a password next.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="stack" style={{ gap: 10 }}>
+                    <input
+                      className="input"
+                      placeholder="New password (min 8 characters)"
+                      type="password"
+                      value={setupPass1}
+                      onChange={(e) => setSetupPass1(e.target.value)}
+                      disabled={setupSetPassLoading}
+                      autoComplete="new-password"
+                    />
+                    <input
+                      className="input"
+                      placeholder="Confirm password"
+                      type="password"
+                      value={setupPass2}
+                      onChange={(e) => setSetupPass2(e.target.value)}
+                      disabled={setupSetPassLoading}
+                      autoComplete="new-password"
+                    />
+
+                    <div className="row" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => {
+                          if (setupSetPassLoading) return;
+                          setSetupStep("email");
+                          setSetupCheck(null);
+                          setSetupPass1("");
+                          setSetupPass2("");
+                          setStatus("");
+                        }}
+                        disabled={setupSetPassLoading}
+                      >
+                        Back
+                      </button>
+
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => void runSetupSetPassword()}
+                        disabled={setupSetPassLoading}
+                      >
+                        {setupSetPassLoading ? "Setting..." : "Set password & finish"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : (
         <>
@@ -1242,23 +1524,23 @@ export default function Home() {
                       <div style={{ padding: 14, color: "white" }}>Text preview unavailable.</div>
                     )
                   ) : (
-                  <div style={{ padding: 14, color: "white" }}>
-                    No in-app preview for this file type.
-                    <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                      {isAdminOrSupervisor
-                        ? "You can download it to view."
-                        : "Ask a supervisor if you need this file."}
-                    </div>
-
-                    {isAdminOrSupervisor ? (
-                      <div style={{ marginTop: 10 }}>
-                        <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
-                          Download
-                        </button>
+                    <div style={{ padding: 14, color: "white" }}>
+                      No in-app preview for this file type.
+                      <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
+                        {isAdminOrSupervisor
+                          ? "You can download it to view."
+                          : "Ask a supervisor if you need this file."}
                       </div>
-                    ) : null}
-                  </div>
-                )}
+
+                      {isAdminOrSupervisor ? (
+                        <div style={{ marginTop: 10 }}>
+                          <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
+                            Download
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

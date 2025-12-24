@@ -1,0 +1,5 @@
+[functions.teacher-setup-check]
+verify_jwt = false
+
+[functions.teacher-setup-set-password]
+verify_jwt = false
