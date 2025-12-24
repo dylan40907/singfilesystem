@@ -80,8 +80,9 @@ export async function POST(req: Request) {
       Bucket: R2_BUCKET,
       Key: objectKey,
       ContentType: contentType,
-      Metadata: sizeBytes ? { sizeBytes: String(sizeBytes) } : undefined,
     });
+
+
 
     const uploadUrl = await getSignedUrl(s3, cmd, { expiresIn: 60 });
 

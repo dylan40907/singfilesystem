@@ -368,7 +368,7 @@ export default function Home() {
   // ---------------------------
   // Download helpers
   // ---------------------------
-  async function getSignedDownloadUrl(fileId: string) {
+  async function getSignedDownloadUrl(fileId: string, mode: "inline" | "attachment" = "attachment") {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
     if (!token) throw new Error("No session token");
@@ -379,14 +379,15 @@ export default function Home() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ fileId }),
+      body: JSON.stringify({ fileId, mode }),
     });
 
     const body = await readJsonSafely(res);
 
     if (!res.ok) {
       const msg =
-        (body as any)?.error || ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "download failed");
+        (body as any)?.error ||
+        ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "download failed");
       throw new Error(msg);
     }
     if ((body as any)?.__nonJson) throw new Error("Download returned non-JSON response.");
@@ -395,8 +396,12 @@ export default function Home() {
   }
 
   async function handleDownload(fileId: string) {
+    if (!isAdminOrSupervisor) {
+      setStatus("Downloads are disabled for teacher accounts. Ask a supervisor.");
+      return;
+    }
     try {
-      const url = await getSignedDownloadUrl(fileId);
+      const url = await getSignedDownloadUrl(fileId, "attachment");
       window.location.href = url;
     } catch (e: any) {
       setStatus("Download error: " + (e?.message ?? "unknown"));
@@ -523,16 +528,13 @@ export default function Home() {
     setPreviewOpen(true);
     setPreviewLoading(true);
     setPreviewText("");
-    if (previewObjectUrl) {
-      URL.revokeObjectURL(previewObjectUrl);
-      setPreviewObjectUrl("");
-    }
 
     try {
-      const url = await getSignedDownloadUrl(file.id);
+      const url = await getSignedDownloadUrl(file.id, "inline");
       setPreviewSignedUrl(url);
 
       const ext = extOf(file.name);
+
       if (isOfficeExt(ext)) {
         setPreviewMode("office");
         setPreviewLoading(false);
@@ -541,37 +543,23 @@ export default function Home() {
 
       if (isPdfExt(ext)) {
         setPreviewMode("pdf");
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-        const blob = await res.blob();
-        const objUrl = URL.createObjectURL(blob);
-        setPreviewObjectUrl(objUrl);
         setPreviewLoading(false);
         return;
       }
 
       if (isImageExt(ext)) {
         setPreviewMode("image");
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-        const blob = await res.blob();
-        const objUrl = URL.createObjectURL(blob);
-        setPreviewObjectUrl(objUrl);
         setPreviewLoading(false);
         return;
       }
 
       if (isTextExt(ext)) {
+        // simplest: render via iframe using inline URL (no CORS fetch)
         setPreviewMode("text");
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-        const txt = await res.text();
-        setPreviewText(txt);
         setPreviewLoading(false);
         return;
       }
 
-      // Fallback
       setPreviewMode("unknown");
       setPreviewLoading(false);
     } catch (e: any) {
@@ -860,7 +848,13 @@ export default function Home() {
     return folders.filter((f) => f.parent_id === currentFolderId);
   }, [folders, currentFolderId]);
 
-  const currentFolderName = (currentFolderId && folderById.get(currentFolderId)?.name) || "Folder";
+  const currentFolderName =
+  currentFolderId && folderById.get(currentFolderId)
+    ? rootFolder?.id && currentFolderId === rootFolder.id
+      ? "HOME"
+      : folderById.get(currentFolderId)!.name
+    : "Folder";
+
   const itemsEmpty = childFolders.length === 0 && files.length === 0;
 
   // Folder destination options
@@ -930,14 +924,17 @@ export default function Home() {
                   {breadcrumbs.length === 0 ? (
                     <span className="subtle">—</span>
                   ) : (
-                    breadcrumbs.map((f, idx) => (
-                      <span key={f.id}>
-                        <button className="link" onClick={() => setCurrentFolderId(f.id)}>
-                          {f.name}
-                        </button>
-                        {idx < breadcrumbs.length - 1 ? <span className="subtle"> / </span> : null}
-                      </span>
-                    ))
+                    breadcrumbs.map((f, idx) => {
+                      const label = rootFolder?.id && f.id === rootFolder.id ? "HOME" : f.name;
+                      return (
+                        <span key={f.id}>
+                          <button className="link" onClick={() => setCurrentFolderId(f.id)}>
+                            {label}
+                          </button>
+                          {idx < breadcrumbs.length - 1 ? <span className="subtle"> / </span> : null}
+                        </span>
+                      );
+                    })
                   )}
                 </div>
 
@@ -1060,12 +1057,14 @@ export default function Home() {
                           ⚙️
                         </IconButton>
 
-                        <IconButton
-                          title="Download folder as ZIP"
-                          onClick={() => handleDownloadFolderAsZip(folder.id, folder.name)}
-                        >
-                          ⬇️
-                        </IconButton>
+                        {isAdminOrSupervisor ? (
+                          <IconButton
+                            title="Download folder as ZIP"
+                            onClick={() => handleDownloadFolderAsZip(folder.id, folder.name)}
+                          >
+                            ⬇️
+                          </IconButton>
+                        ) : null}
 
                         <IconButton
                           title={isAdminOrSupervisor ? "Share folder" : "Only supervisors can share"}
@@ -1116,9 +1115,11 @@ export default function Home() {
                           ⚙️
                         </IconButton>
 
-                        <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
-                          ⬇️
-                        </IconButton>
+                        {isAdminOrSupervisor ? (
+                          <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
+                            ⬇️
+                          </IconButton>
+                        ) : null}
 
                         <IconButton
                           title={isAdminOrSupervisor ? "Share (shares containing folder)" : "Only supervisors can share"}
@@ -1211,19 +1212,19 @@ export default function Home() {
                       <div style={{ padding: 14, color: "white" }}>No preview URL.</div>
                     )
                   ) : previewMode === "pdf" ? (
-                    previewObjectUrl ? (
+                    previewSignedUrl ? (
                       <iframe
-                        src={previewObjectUrl}
+                        src={previewSignedUrl}
                         style={{ width: "100%", height: "100%", border: 0, background: "white" }}
                       />
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>PDF preview unavailable.</div>
                     )
                   ) : previewMode === "image" ? (
-                    previewObjectUrl ? (
+                    previewSignedUrl ? (
                       <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
                         <img
-                          src={previewObjectUrl}
+                          src={previewSignedUrl}
                           alt={previewFile.name}
                           style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", background: "white" }}
                         />
@@ -1232,19 +1233,32 @@ export default function Home() {
                       <div style={{ padding: 14, color: "white" }}>Image preview unavailable.</div>
                     )
                   ) : previewMode === "text" ? (
-                    <div style={{ height: "100%", width: "100%", background: "white", overflow: "auto", padding: 14 }}>
-                      <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{previewText}</pre>
-                    </div>
+                    previewSignedUrl ? (
+                      <iframe
+                        src={previewSignedUrl}
+                        style={{ width: "100%", height: "100%", border: 0, background: "white" }}
+                      />
+                    ) : (
+                      <div style={{ padding: 14, color: "white" }}>Text preview unavailable.</div>
+                    )
                   ) : (
-                    <div style={{ padding: 14, color: "white" }}>
-                      No in-app preview for this file type.
+                  <div style={{ padding: 14, color: "white" }}>
+                    No in-app preview for this file type.
+                    <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
+                      {isAdminOrSupervisor
+                        ? "You can download it to view."
+                        : "Ask a supervisor if you need this file."}
+                    </div>
+
+                    {isAdminOrSupervisor ? (
                       <div style={{ marginTop: 10 }}>
                         <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
-                          Download instead
+                          Download
                         </button>
                       </div>
-                    </div>
-                  )}
+                    ) : null}
+                  </div>
+                )}
                 </div>
               </div>
             </div>

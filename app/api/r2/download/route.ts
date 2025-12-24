@@ -11,6 +11,26 @@ function requireEnv(name: string) {
   return v;
 }
 
+function safeFilename(name: string) {
+  return String(name || "file")
+    .replaceAll('"', "")
+    .replaceAll("\n", " ")
+    .replaceAll("\r", " ")
+    .slice(0, 180);
+}
+
+function contentTypeFallback(name: string) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".txt")) return "text/plain; charset=utf-8";
+  if (lower.endsWith(".csv")) return "text/csv; charset=utf-8";
+  if (lower.endsWith(".md")) return "text/markdown; charset=utf-8";
+  return "application/octet-stream";
+}
+
 export async function POST(req: Request) {
   try {
     const SUPABASE_URL = requireEnv("SUPABASE_URL");
@@ -35,7 +55,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing Authorization header" }, { status: 401 });
     }
 
-    const { fileId } = await req.json();
+    const body = await req.json().catch(() => null);
+    const fileId = body?.fileId;
+    const mode: "inline" | "attachment" = body?.mode === "inline" ? "inline" : "attachment";
+
     if (!fileId) return NextResponse.json({ error: "fileId required" }, { status: 400 });
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -47,7 +70,25 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Invalid session" }, { status: 401 });
     }
 
-    // Pull storage_key (primary) with fallback to object_key
+    // ✅ enforce "teachers cannot download"
+    const { data: prof, error: profErr } = await supabase
+      .from("user_profiles")
+      .select("role, is_active")
+      .eq("id", userData.user.id)
+      .single();
+
+    if (profErr || !prof?.is_active) {
+      return NextResponse.json({ error: "Not authorized" }, { status: 403 });
+    }
+
+    const isAdminOrSupervisor = prof.role === "admin" || prof.role === "supervisor";
+    if (!isAdminOrSupervisor && mode === "attachment") {
+      return NextResponse.json(
+        { error: "Downloads are disabled for teacher accounts. Ask a supervisor." },
+        { status: 403 }
+      );
+    }
+
     const { data: fileRow, error: fileErr } = await supabase
       .from("files")
       .select("id, name, original_name, storage_key, object_key, mime_type")
@@ -61,16 +102,17 @@ export async function POST(req: Request) {
     const key = (fileRow as any).storage_key ?? (fileRow as any).object_key;
     if (!key) return NextResponse.json({ error: "File missing storage key" }, { status: 500 });
 
-    const filename = (fileRow as any).original_name ?? (fileRow as any).name ?? "download";
+    const filename = safeFilename((fileRow as any).original_name ?? (fileRow as any).name ?? "file");
+    const contentType = (fileRow as any).mime_type ?? contentTypeFallback(filename);
 
     const cmd = new GetObjectCommand({
       Bucket: R2_BUCKET,
       Key: key,
-      ResponseContentDisposition: `attachment; filename="${filename}"`,
-      ResponseContentType: (fileRow as any).mime_type ?? "application/octet-stream",
+      ResponseContentDisposition: `${mode}; filename="${filename}"`,
+      ResponseContentType: contentType,
     });
 
-    const url = await getSignedUrl(s3, cmd, { expiresIn: 60 });
+    const url = await getSignedUrl(s3, cmd, { expiresIn: 60 * 5 });
     return NextResponse.json({ url });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "unknown" }, { status: 500 });
