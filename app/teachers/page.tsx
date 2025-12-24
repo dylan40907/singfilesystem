@@ -324,70 +324,30 @@ function RichTextEditor({
           <option value="32px">32</option>
         </select>
 
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("bold")}
-          onClick={() => editor?.chain().focus().toggleBold().run()}
-          title="Bold"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("bold")} onClick={() => editor?.chain().focus().toggleBold().run()} title="Bold">
           B
         </ToolbarButton>
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("italic")}
-          onClick={() => editor?.chain().focus().toggleItalic().run()}
-          title="Italic"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("italic")} onClick={() => editor?.chain().focus().toggleItalic().run()} title="Italic">
           I
         </ToolbarButton>
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("underline")}
-          onClick={() => editor?.chain().focus().toggleUnderline().run()}
-          title="Underline"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("underline")} onClick={() => editor?.chain().focus().toggleUnderline().run()} title="Underline">
           U
         </ToolbarButton>
 
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("bulletList")}
-          onClick={() => editor?.chain().focus().toggleBulletList().run()}
-          title="Bulleted list"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("bulletList")} onClick={() => editor?.chain().focus().toggleBulletList().run()} title="Bulleted list">
           • List
         </ToolbarButton>
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("orderedList")}
-          onClick={() => editor?.chain().focus().toggleOrderedList().run()}
-          title="Numbered list"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("orderedList")} onClick={() => editor?.chain().focus().toggleOrderedList().run()} title="Numbered list">
           1. List
         </ToolbarButton>
 
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive({ textAlign: "left" })}
-          onClick={() => editor?.chain().focus().setTextAlign("left").run()}
-          title="Align left"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "left" })} onClick={() => editor?.chain().focus().setTextAlign("left").run()} title="Align left">
           Left
         </ToolbarButton>
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive({ textAlign: "center" })}
-          onClick={() => editor?.chain().focus().setTextAlign("center").run()}
-          title="Align center"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "center" })} onClick={() => editor?.chain().focus().setTextAlign("center").run()} title="Align center">
           Center
         </ToolbarButton>
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive({ textAlign: "right" })}
-          onClick={() => editor?.chain().focus().setTextAlign("right").run()}
-          title="Align right"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive({ textAlign: "right" })} onClick={() => editor?.chain().focus().setTextAlign("right").run()} title="Align right">
           Right
         </ToolbarButton>
 
@@ -406,12 +366,7 @@ function RichTextEditor({
           }}
         />
 
-        <ToolbarButton
-          disabled={toolbarDisabled}
-          active={!!editor?.isActive("highlight")}
-          onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fff59d" }).run()}
-          title="Highlight"
-        >
+        <ToolbarButton disabled={toolbarDisabled} active={!!editor?.isActive("highlight")} onClick={() => editor?.chain().focus().toggleHighlight({ color: "#fff59d" }).run()} title="Highlight">
           Highlight
         </ToolbarButton>
 
@@ -449,10 +404,8 @@ function RichTextEditor({
 // ---------------------------
 
 function isValidEmail(email: string) {
-  const s = (email ?? "").trim();
-  if (!s) return false;
-  // simple + practical
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+  // good-enough frontend validation
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
 export default function TeachersPage() {
@@ -461,15 +414,20 @@ export default function TeachersPage() {
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
 
+  const isAdmin = !!me?.is_active && me.role === "admin";
+  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
+
   const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>("");
 
-  // ADMIN: create teacher modal
-  const [showAddTeacher, setShowAddTeacher] = useState(false);
-  const [newTeacherEmail, setNewTeacherEmail] = useState("");
-  const [newTeacherName, setNewTeacherName] = useState("");
-  const [creatingTeacher, setCreatingTeacher] = useState(false);
-  const [deletingTeacher, setDeletingTeacher] = useState(false);
+  // Admin-only: Add teacher modal state
+  const [addOpen, setAddOpen] = useState(false);
+  const [addEmail, setAddEmail] = useState("");
+  const [addName, setAddName] = useState("");
+  const [addLoading, setAddLoading] = useState(false);
+
+  // Admin-only: delete state
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   // permissions
   const [teacherPerms, setTeacherPerms] = useState<UserFolderPermissionRow[]>([]);
@@ -518,9 +476,6 @@ export default function TeachersPage() {
   // map for user labels
   const [userLabelsById, setUserLabelsById] = useState<Record<string, UserLabelRow>>({});
 
-  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
-  const isAdmin = !!me?.is_active && me.role === "admin";
-
   const teacherById = useMemo(() => {
     const m = new Map<string, TeacherProfile>();
     for (const t of teachers) m.set(t.id, t);
@@ -558,25 +513,108 @@ export default function TeachersPage() {
     const list = await fetchActiveTeachers();
     setTeachers(list);
 
-    // keep selection stable
-    if (list.length === 0) {
-      setSelectedTeacherId("");
-      setPlans([]);
+    if (!selectedTeacherId && list.length > 0) setSelectedTeacherId(list[0].id);
+    if (selectedTeacherId && list.length > 0 && !list.some((t) => t.id === selectedTeacherId)) {
+      // selection was deleted or removed
+      setSelectedTeacherId(list[0].id);
+      setSelectedPlanId("");
       setPlanDetail(null);
       setComments([]);
-      setSelectedPlanId("");
-      setTeacherPerms([]);
-      return;
-    }
-
-    if (!selectedTeacherId) {
-      setSelectedTeacherId(list[0].id);
-    } else {
-      const stillExists = list.some((t) => t.id === selectedTeacherId);
-      if (!stillExists) setSelectedTeacherId(list[0].id);
     }
 
     await ensureUserLabels(list.map((t) => t.id));
+  }
+
+  // ADMIN: create teacher via Edge Function
+  async function createTeacher() {
+    const email = addEmail.trim();
+    const name = addName.trim();
+
+    if (!email || !isValidEmail(email)) {
+      setStatus("Create teacher error: Please enter a valid email.");
+      return;
+    }
+    if (!name) {
+      setStatus("Create teacher error: Please enter a name.");
+      return;
+    }
+
+    setAddLoading(true);
+    setStatus("Creating teacher...");
+    try {
+      // IMPORTANT: match Edge Function expected keys
+      const { data, error } = await supabase.functions.invoke("admin-create-teacher", {
+        body: {
+          teacher_email: email,
+          teacher_full_name: name,
+        },
+      });
+
+      if (error) {
+        // Supabase wraps non-2xx as "error"; still show something useful
+        setStatus("Create teacher error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus("✅ Teacher created.");
+      setAddOpen(false);
+      setAddEmail("");
+      setAddName("");
+
+      await refreshTeacherList();
+
+      const createdId = (data as any)?.teacher_id ?? (data as any)?.id ?? null;
+      if (createdId && typeof createdId === "string") {
+        setSelectedTeacherId(createdId);
+      }
+    } catch (e: any) {
+      setStatus("Create teacher error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAddLoading(false);
+    }
+  }
+
+  // ADMIN: delete teacher via Edge Function
+  async function deleteSelectedTeacher() {
+    if (!selectedTeacherId) return;
+    if (!isAdmin) return;
+
+    const label = selectedTeacher
+      ? labelForUser({ id: selectedTeacher.id, email: selectedTeacher.email, full_name: selectedTeacher.full_name })
+      : selectedTeacherId;
+
+    const ok = window.confirm(`Delete this teacher?\n\n${label}\n\nThis cannot be undone.`);
+    if (!ok) return;
+
+    setDeleteLoading(true);
+    setStatus("Deleting teacher...");
+    try {
+      // IMPORTANT: match Edge Function expected keys
+      const { data, error } = await supabase.functions.invoke("admin-delete-teacher", {
+        body: {
+          teacher_id: selectedTeacherId,
+        },
+      });
+
+      if (error) {
+        setStatus("Delete teacher error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      // optionally use data if your function returns something
+      void data;
+
+      setStatus("✅ Teacher deleted.");
+      setSelectedTeacherId("");
+      setSelectedPlanId("");
+      setPlanDetail(null);
+      setComments([]);
+      await refreshTeacherList();
+    } catch (e: any) {
+      setStatus("Delete teacher error: " + (e?.message ?? "unknown"));
+    } finally {
+      setDeleteLoading(false);
+    }
   }
 
   async function refreshTeacherPerms(userId: string) {
@@ -645,9 +683,7 @@ export default function TeachersPage() {
     try {
       const { data, error } = await supabase
         .from("lesson_plans")
-        .select(
-          "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
-        )
+        .select("id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at")
         .eq("id", planId)
         .single();
 
@@ -868,77 +904,6 @@ export default function TeachersPage() {
     }
   }
 
-  // ---------------------------
-  // ADMIN: Create/Delete teacher
-  // ---------------------------
-  async function adminCreateTeacher(email: string, fullName: string) {
-    setCreatingTeacher(true);
-    setStatus("Creating teacher...");
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      const cleanName = fullName.trim();
-
-      const { data, error } = await supabase.functions.invoke("admin-create-teacher", {
-        body: { email: cleanEmail, full_name: cleanName },
-      });
-      if (error) throw error;
-
-      const newUserId = (data as any)?.user_id as string | undefined;
-
-      setStatus("✅ Teacher created.");
-      setShowAddTeacher(false);
-      setNewTeacherEmail("");
-      setNewTeacherName("");
-
-      await refreshTeacherList();
-      if (newUserId) setSelectedTeacherId(newUserId);
-    } catch (e: any) {
-      setStatus("Create teacher error: " + (e?.message ?? "unknown"));
-    } finally {
-      setCreatingTeacher(false);
-    }
-  }
-
-
-  async function adminDeleteTeacher(userId: string) {
-    if (!isAdmin) return;
-    if (!userId) return;
-
-    if (me?.id && userId === me.id) {
-      setStatus("You cannot delete your own admin account.");
-      return;
-    }
-
-    const ok = window.confirm("Are you sure you want to delete this teacher? This cannot be undone.");
-    if (!ok) return;
-
-    setDeletingTeacher(true);
-    setStatus("Deleting teacher...");
-    try {
-      const { error } = await supabase.functions.invoke("admin-delete-teacher", {
-        body: { user_id: userId },
-      });
-      if (error) throw error;
-
-      setStatus("✅ Teacher deleted.");
-
-      const prevSelected = selectedTeacherId;
-      await refreshTeacherList();
-
-      if (prevSelected === userId) {
-        setPlans([]);
-        setPlanDetail(null);
-        setComments([]);
-        setSelectedPlanId("");
-        setTeacherPerms([]);
-      }
-    } catch (e: any) {
-      setStatus("Delete teacher error: " + (e?.message ?? "unknown"));
-    } finally {
-      setDeletingTeacher(false);
-    }
-  }
-
   async function bootstrap() {
     setStatus("Loading...");
     try {
@@ -1031,55 +996,34 @@ export default function TeachersPage() {
         {status ? <span className="badge badge-pink">{status}</span> : null}
       </div>
 
-      {/* ADMIN-only section */}
-      {isAdmin ? (
-        <div className="card">
-          <div className="row-between">
-            <div>
-              <div style={{ fontWeight: 900 }}>Admin tools</div>
-            </div>
-
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setNewTeacherEmail("");
-                setNewTeacherName("");
-                setShowAddTeacher(true);
-              }}
-            >
-              + Add teacher
-            </button>
-          </div>
-        </div>
-      ) : null}
-
       <div className="card">
         <div className="row-between">
           <div>
             <div style={{ fontWeight: 900 }}>Select teacher</div>
           </div>
 
-          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-            {/* Delete icon next to refresh (admin only, needs teacher selected) */}
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             {isAdmin ? (
-              <button
-                className="btn"
-                title="Delete teacher"
-                disabled={!selectedTeacherId || deletingTeacher}
-                onClick={() => selectedTeacherId && adminDeleteTeacher(selectedTeacherId)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 10,
-                  fontWeight: 900,
-                }}
-              >
-                🗑️
+              <button className="btn btn-primary" onClick={() => setAddOpen(true)}>
+                Add teacher
               </button>
             ) : null}
 
             <button className="btn" onClick={refreshTeacherList}>
               Refresh teachers
             </button>
+
+            {isAdmin ? (
+              <button
+                className="btn"
+                title="Delete selected teacher"
+                onClick={() => void deleteSelectedTeacher()}
+                disabled={!selectedTeacherId || deleteLoading}
+                style={{ padding: "8px 10px" }}
+              >
+                🗑
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -1094,6 +1038,69 @@ export default function TeachersPage() {
         </div>
       </div>
 
+      {/* Admin-only Add Teacher Modal */}
+      {isAdmin && addOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 200,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onClick={() => {
+            if (!addLoading) setAddOpen(false);
+          }}
+        >
+          <div
+            className="card"
+            style={{ width: "min(520px, 100%)", borderRadius: 14 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="row-between">
+              <div style={{ fontWeight: 950, fontSize: 16 }}>Add teacher</div>
+              <button className="btn" onClick={() => !addLoading && setAddOpen(false)} disabled={addLoading}>
+                Close
+              </button>
+            </div>
+
+            <div className="hr" />
+
+            <div className="stack" style={{ gap: 10 }}>
+              <div className="subtle">Creates a teacher account without a password (for now).</div>
+
+              <input
+                className="input"
+                placeholder="Teacher email"
+                value={addEmail}
+                onChange={(e) => setAddEmail(e.target.value)}
+                disabled={addLoading}
+              />
+
+              <input
+                className="input"
+                placeholder="Teacher full name"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                disabled={addLoading}
+              />
+
+              <div className="row" style={{ gap: 10, justifyContent: "flex-end" }}>
+                <button className="btn" onClick={() => setAddOpen(false)} disabled={addLoading}>
+                  Cancel
+                </button>
+                <button className="btn btn-primary" onClick={() => void createTeacher()} disabled={addLoading}>
+                  {addLoading ? "Creating..." : "Create teacher"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {showBase ? (
         <>
           <div className="grid-2">
@@ -1102,11 +1109,7 @@ export default function TeachersPage() {
                 <div>
                   <div style={{ fontWeight: 900 }}>Folder permissions</div>
                 </div>
-                <button
-                  className="btn"
-                  onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)}
-                  disabled={!selectedTeacherId || teacherPermsLoading}
-                >
+                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)} disabled={!selectedTeacherId || teacherPermsLoading}>
                   Refresh
                 </button>
               </div>
@@ -1155,11 +1158,7 @@ export default function TeachersPage() {
                     Plans created by: <strong>{selectedTeacherLabel || "—"}</strong>
                   </div>
                 </div>
-                <button
-                  className="btn"
-                  onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)}
-                  disabled={!selectedTeacherId || plansLoading}
-                >
+                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)} disabled={!selectedTeacherId || plansLoading}>
                   Refresh
                 </button>
               </div>
@@ -1341,12 +1340,7 @@ export default function TeachersPage() {
                   <div className="hr" />
 
                   <div className="stack">
-                    <textarea
-                      className="textarea"
-                      value={newComment}
-                      onChange={(e) => setNewComment(e.target.value)}
-                      placeholder="Write feedback… (optional)"
-                    />
+                    <textarea className="textarea" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Write feedback… (optional)" />
                     <button className="btn btn-primary" onClick={() => addComment(selectedPlan.id)}>
                       Post comment
                     </button>
@@ -1503,85 +1497,6 @@ export default function TeachersPage() {
               disabled={false}
               minBodyHeight={520}
             />
-          </div>
-        </div>
-      ) : null}
-
-      {/* ADMIN modal: Add Teacher */}
-      {isAdmin && showAddTeacher ? (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.35)",
-            zIndex: 200,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
-          onMouseDown={(e) => {
-            // click outside closes
-            if (e.target === e.currentTarget && !creatingTeacher) setShowAddTeacher(false);
-          }}
-        >
-          <div className="card" style={{ width: "min(560px, 100%)", borderRadius: 14 }}>
-            <div className="row-between" style={{ gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 950, fontSize: 16 }}>Add teacher</div>
-              </div>
-              <button className="btn" onClick={() => !creatingTeacher && setShowAddTeacher(false)}>
-                Close
-              </button>
-            </div>
-
-            <div className="hr" />
-
-            <div className="stack" style={{ gap: 10 }}>
-              <div>
-                <div className="subtle" style={{ marginBottom: 6 }}>
-                  Teacher email
-                </div>
-                <input
-                  className="input"
-                  value={newTeacherEmail}
-                  onChange={(e) => setNewTeacherEmail(e.target.value)}
-                  placeholder="teacher@example.com"
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <div className="subtle" style={{ marginBottom: 6 }}>
-                  Full name
-                </div>
-                <input
-                  className="input"
-                  value={newTeacherName}
-                  onChange={(e) => setNewTeacherName(e.target.value)}
-                  placeholder="Teacher Name"
-                />
-              </div>
-
-              <div className="row" style={{ gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => !creatingTeacher && setShowAddTeacher(false)} disabled={creatingTeacher}>
-                  Cancel
-                </button>
-                <button
-                  className="btn btn-primary"
-                  disabled={creatingTeacher || !isValidEmail(newTeacherEmail) || newTeacherName.trim().length === 0}
-                  onClick={() => adminCreateTeacher(newTeacherEmail, newTeacherName)}
-                >
-                  {creatingTeacher ? "Creating..." : "Create teacher"}
-                </button>
-              </div>
-
-              {!isValidEmail(newTeacherEmail) && newTeacherEmail.trim().length > 0 ? (
-                <div className="subtle" style={{ color: "var(--danger, #b00020)" }}>
-                  Please enter a valid email.
-                </div>
-              ) : null}
-            </div>
           </div>
         </div>
       ) : null}
