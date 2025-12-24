@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
-import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { fetchMyProfile, TeacherProfile, fetchActiveTeachers } from "@/lib/teachers";
 import "@fortune-sheet/react/dist/index.css";
 
 // TipTap (Rich Text)
@@ -17,10 +17,8 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import type { CommandProps } from "@tiptap/core";
-import { fetchActiveTeachers } from "@/lib/teachers";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
-const [allowedTeacherIds, setAllowedTeacherIds] = useState<string[] | null>(null);
 
 type UserLabelRow = {
   id: string;
@@ -468,6 +466,8 @@ export default function ReviewQueuePage() {
 
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
+  
+  const [allowedTeacherIds, setAllowedTeacherIds] = useState<string[] | null>(null);
 
   const [showAll, setShowAll] = useState(false);
 
