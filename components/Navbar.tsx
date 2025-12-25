@@ -35,8 +35,6 @@ function NavLink({
 }
 
 function hardClearSupabaseAuthStorage() {
-  // Supabase JS stores auth in localStorage (and sometimes sessionStorage depending on config).
-  // If anything is lingering, it can "rehydrate" on refresh and look like you got logged back in.
   try {
     const killKeys = (storage: Storage) => {
       const toRemove: string[] = [];
@@ -44,9 +42,6 @@ function hardClearSupabaseAuthStorage() {
         const k = storage.key(i);
         if (!k) continue;
 
-        // Common Supabase auth key patterns:
-        // - sb-<project-ref>-auth-token
-        // - supabase.auth.token
         const lk = k.toLowerCase();
         if (lk.startsWith("sb-") && lk.includes("auth-token")) toRemove.push(k);
         if (lk.includes("supabase") && lk.includes("auth") && lk.includes("token")) toRemove.push(k);
@@ -79,11 +74,14 @@ export default function Navbar() {
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const showSupervisors = !!sessionEmail && isAdmin;
 
-  // Keep latest pathname without re-subscribing anything
+  // Keep latest pathname without re-subscribing
   const pathnameRef = useRef(pathname);
   useEffect(() => {
     pathnameRef.current = pathname;
   }, [pathname]);
+
+  // Guard against auth listener reacting during explicit signOut
+  const signingOutRef = useRef(false);
 
   async function applySession(session: any) {
     const email = session?.user?.email ?? null;
@@ -103,22 +101,32 @@ export default function Navbar() {
   }
 
   async function signOut() {
-    if (signingOut) return;
+    if (signingOutRef.current) return;
+
+    signingOutRef.current = true;
     setSigningOut(true);
 
     try {
-      // 1) Ask Supabase to sign out (revokes refresh token server-side and clears client session)
       await supabase.auth.signOut({ scope: "global" });
-
-      // 2) Hard-clear any lingering auth tokens (prevents "rehydrate on refresh")
       hardClearSupabaseAuthStorage();
 
-      // 3) Update UI + navigate home
+      // Update navbar UI immediately
       await applySession(null);
+
+      // ✅ Key behavior:
+      // If you're already on "/", force a *single* full reload so the Home page re-mounts
+      // and shows the login UI (since Home may not be subscribed to auth changes).
+      if (pathnameRef.current === "/") {
+        window.location.reload();
+        return;
+      }
+
+      // Otherwise, go back to home/login normally.
       router.replace("/");
-      router.refresh();
     } finally {
+      // If we reload, this code won't matter, but keep correct for other routes.
       setSigningOut(false);
+      signingOutRef.current = false;
     }
   }
 
@@ -129,16 +137,17 @@ export default function Navbar() {
       .then(({ data }) => applySession(data.session))
       .catch(() => applySession(null));
 
-    // Listen once; DON'T call getSession() inside the listener (avoids race/rehydrate weirdness)
+    // Listen once
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (signingOut) return;
+      // Ignore while our explicit signOut is in progress
+      if (signingOutRef.current) return;
 
-      applySession(session);
+      void applySession(session);
 
-      // If we became signed out while on another route, kick back to home/login
+      // If we became signed out while on another route, kick back to home/login.
+      // 🚫 Do NOT reload on "/" here (that caused the infinite refresh loop).
       if (!session && pathnameRef.current !== "/") {
         router.replace("/");
-        router.refresh();
       }
     });
 
@@ -146,7 +155,7 @@ export default function Navbar() {
       data.subscription.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signingOut]);
+  }, []);
 
   const activeTab = useMemo(() => {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
