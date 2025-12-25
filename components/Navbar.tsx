@@ -51,9 +51,7 @@ export default function Navbar() {
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const showSupervisors = !!sessionEmail && isAdmin;
 
-  async function refresh() {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const email = sessionData.session?.user?.email ?? null;
+  async function refreshFromSessionEmail(email: string | null) {
     setSessionEmail(email);
 
     if (!email) {
@@ -70,23 +68,37 @@ export default function Navbar() {
     }
   }
 
+  async function refresh() {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const email = sessionData.session?.user?.email ?? null;
+    await refreshFromSessionEmail(email);
+  }
+
   async function signOut() {
-    // Clear client auth state, then hard-navigate to home so any protected pages reset cleanly.
-    await supabase.auth.signOut();
-    setSessionEmail(null);
-    setProfile(null);
-    router.replace("/");
-    router.refresh();
+    // Clear auth state, then hard-navigate to home so any protected pages reset cleanly.
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      setSessionEmail(null);
+      setProfile(null);
+
+      // Hard nav is the most reliable way to ensure we leave any protected route/state.
+      window.location.assign("/");
+    }
   }
 
   useEffect(() => {
+    // Initial load
     refresh();
 
-    const { data } = supabase.auth.onAuthStateChange((event) => {
-      refresh();
+    const { data } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const email = session?.user?.email ?? null;
 
-      // If auth state indicates signed out (or token refresh failed), ensure we go back home.
-      if (event === "SIGNED_OUT") {
+      // Update local UI state without racing getSession()
+      await refreshFromSessionEmail(email);
+
+      // If signed out (or session is null for any reason), force back to home/login.
+      if (!session && pathname !== "/") {
         router.replace("/");
         router.refresh();
       }
@@ -95,8 +107,8 @@ export default function Navbar() {
     return () => {
       data.subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // include pathname/router so redirect logic always uses the current route
+  }, [pathname, router]);
 
   const activeTab = useMemo(() => {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
@@ -146,26 +158,13 @@ export default function Navbar() {
 
             <div className="row" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
               <NavLink href="/" label="Home" active={activeTab === "home"} />
-              {showMyPlans && (
-                <NavLink href="/my-plans" label="My Plans" active={activeTab === "my-plans"} />
-              )}
-              {showTeachers && (
-                <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />
-              )}
+              {showMyPlans && <NavLink href="/my-plans" label="My Plans" active={activeTab === "my-plans"} />}
+              {showTeachers && <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />}
               {showReviewQueue && (
-                <NavLink
-                  href="/review-queue"
-                  label="Review Queue"
-                  active={activeTab === "review-queue"}
-                />
+                <NavLink href="/review-queue" label="Review Queue" active={activeTab === "review-queue"} />
               )}
-
               {showSupervisors && (
-                <NavLink
-                  href="/admin/supervisors"
-                  label="Supervisors"
-                  active={activeTab === "supervisors"}
-                />
+                <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />
               )}
             </div>
           </div>
@@ -173,9 +172,7 @@ export default function Navbar() {
           <div className="row" style={{ gap: 10 }}>
             {sessionEmail ? (
               <>
-                <span className="badge badge-pink">
-                  {(profile?.full_name ?? "").trim() || sessionEmail}
-                </span>
+                <span className="badge badge-pink">{(profile?.full_name ?? "").trim() || sessionEmail}</span>
 
                 <button className="btn btn-primary" onClick={signOut}>
                   Sign out

@@ -1978,11 +1978,6 @@ export default function Home() {
                     )}
                   </div>
                 </div>
-
-                <div className="subtle" style={{ marginTop: 10 }}>
-                  Note: file sharing now grants only that single file (not the whole folder). If a teacher still sees the full folder,
-                  your backend permission checks (RLS / download API) may still be using folder access only.
-                </div>
               </div>
             </div>
           ) : null}
