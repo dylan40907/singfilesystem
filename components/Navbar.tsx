@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 
@@ -35,6 +36,7 @@ function NavLink({
 
 export default function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
@@ -69,15 +71,25 @@ export default function Navbar() {
   }
 
   async function signOut() {
+    // Clear client auth state, then hard-navigate to home so any protected pages reset cleanly.
     await supabase.auth.signOut();
-    await refresh();
+    setSessionEmail(null);
+    setProfile(null);
+    router.replace("/");
+    router.refresh();
   }
 
   useEffect(() => {
     refresh();
 
-    const { data } = supabase.auth.onAuthStateChange(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
       refresh();
+
+      // If auth state indicates signed out (or token refresh failed), ensure we go back home.
+      if (event === "SIGNED_OUT") {
+        router.replace("/");
+        router.refresh();
+      }
     });
 
     return () => {
@@ -107,16 +119,28 @@ export default function Navbar() {
       <div className="container">
         <div className="row-between" style={{ padding: "12px 0" }}>
           <div className="row" style={{ gap: 14 }}>
-            <div
+            <Link
+              href="/"
+              aria-label="Go to home"
               style={{
-                width: 34,
+                display: "block",
+                width: 48,
                 height: 34,
-                borderRadius: 12,
-                background: "#e6178d",
+                position: "relative",
               }}
-            />
+            >
+              <Image
+                src="/logo.png"
+                alt="SING Portal logo"
+                fill
+                priority
+                sizes="48px"
+                style={{ objectFit: "contain" }}
+              />
+            </Link>
+
             <div>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>Sing Portal</div>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>SING Portal</div>
               <div className="subtle">Files + Lesson Plans</div>
             </div>
 
@@ -143,7 +167,6 @@ export default function Navbar() {
                   active={activeTab === "supervisors"}
                 />
               )}
-
             </div>
           </div>
 

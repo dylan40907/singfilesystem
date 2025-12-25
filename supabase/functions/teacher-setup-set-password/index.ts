@@ -5,17 +5,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 function corsHeaders(origin: string | null) {
   return {
     "Access-Control-Allow-Origin": origin ?? "*",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Content-Type": "application/json",
   };
 }
 
 function json(origin: string | null, status: number, body: unknown) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: corsHeaders(origin),
+    headers: { ...corsHeaders(origin), "Content-Type": "application/json" },
   });
 }
 
@@ -23,26 +21,21 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-function isAllowedRole(role: unknown) {
-  return role === "teacher" || role === "supervisor";
+function normalizeUsername(username: string) {
+  // IMPORTANT: match how you store usernames (lowercase)
+  return username.trim().toLowerCase();
 }
 
-async function findAuthUserIdByEmail(
-  supabase: ReturnType<typeof createClient>,
-  email: string,
-) {
-  const perPage = 200;
-  for (let page = 1; page <= 20; page++) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
-    if (error) throw error;
+function isEmailLike(s: string) {
+  return s.includes("@");
+}
 
-    const users = data?.users ?? [];
-    const hit = users.find((u) => (u.email ?? "").toLowerCase() === email);
-    if (hit?.id) return hit.id;
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
 
-    if (users.length < perPage) break;
-  }
-  return null;
+function isAllowedRole(role: unknown) {
+  return role === "teacher" || role === "supervisor";
 }
 
 serve(async (req) => {
@@ -56,12 +49,14 @@ serve(async (req) => {
   }
 
   try {
-    const { email, password } = await req.json();
-    const e = normalizeEmail(email ?? "");
-    const p = String(password ?? "");
+    const body = await req.json().catch(() => ({} as any));
 
-    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) {
-      return json(origin, 400, { error: "Invalid email" });
+    // Back-compat: accept { email } as well as { identifier }
+    const rawIdent = String(body?.identifier ?? body?.email ?? "").trim();
+    const p = String(body?.password ?? "");
+
+    if (!rawIdent) {
+      return json(origin, 400, { error: "Missing identifier" });
     }
     if (p.length < 8) {
       return json(origin, 400, { error: "Password must be at least 8 characters" });
@@ -69,8 +64,7 @@ serve(async (req) => {
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SERVICE_ROLE_KEY =
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
-      Deno.env.get("SERVICE_ROLE_KEY");
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY");
 
     if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
       return json(origin, 500, { error: "Missing SUPABASE_URL or SERVICE_ROLE_KEY" });
@@ -79,13 +73,37 @@ serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
     // 1) Validate profile (and gate already-set accounts)
-    const { data: profile, error: profErr } = await supabase
-      .from("user_profiles")
-      .select("id,email,role,is_active,has_set_password")
-      .ilike("email", e)
-      .maybeSingle();
+    let profile: any = null;
 
-    if (profErr) return json(origin, 500, { error: profErr.message });
+    if (isEmailLike(rawIdent)) {
+      const e = normalizeEmail(rawIdent);
+      if (!e || !isValidEmail(e)) {
+        return json(origin, 400, { error: "Invalid email" });
+      }
+
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("id,email,role,is_active,has_set_password,username")
+        .ilike("email", e)
+        .maybeSingle();
+
+      if (error) return json(origin, 500, { error: error.message });
+      profile = data;
+    } else {
+      const u = normalizeUsername(rawIdent);
+      if (!u) {
+        return json(origin, 400, { error: "Invalid username" });
+      }
+
+      const { data, error } = await supabase
+        .from("user_profiles")
+        .select("id,email,role,is_active,has_set_password,username")
+        .ilike("username", u)
+        .maybeSingle();
+
+      if (error) return json(origin, 500, { error: error.message });
+      profile = data;
+    }
 
     // Allow teacher + supervisor
     if (!profile || !profile.is_active || !isAllowedRole(profile.role)) {
@@ -94,13 +112,17 @@ serve(async (req) => {
     }
 
     if (profile.has_set_password) {
-      // This is how you get the nice “already set up” behavior
       return json(origin, 409, { error: "Already set up" });
     }
 
-    // 2) Find auth user id by email
-    const userId = await findAuthUserIdByEmail(supabase, e);
+    const userId = String(profile.id ?? "").trim();
     if (!userId) {
+      return json(origin, 404, { error: "Profile missing id" });
+    }
+
+    // 2) Confirm auth user exists by id (works for username-only users too)
+    const { data: authUserData, error: authUserErr } = await supabase.auth.admin.getUserById(userId);
+    if (authUserErr || !authUserData?.user?.id) {
       return json(origin, 404, { error: "Auth user not found" });
     }
 
@@ -117,7 +139,7 @@ serve(async (req) => {
         has_set_password: true,
         password_set_at: new Date().toISOString(),
       })
-      .eq("id", profile.id);
+      .eq("id", userId);
 
     if (flagErr) return json(origin, 500, { error: flagErr.message });
 

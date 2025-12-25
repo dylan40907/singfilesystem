@@ -59,6 +59,7 @@ type PlanCommentRow = {
 type UserLabelRow = {
   id: string;
   email: string | null;
+  username: string | null;
   full_name: string | null;
 };
 
@@ -66,12 +67,12 @@ function StatusBadge({ status }: { status: TeacherPlanRow["status"] }) {
   return <span className="badge badge-pink">{status.replaceAll("_", " ")}</span>;
 }
 
-function labelForUser(u: { full_name?: string | null; email?: string | null; id: string }) {
+function labelForUser(u: { full_name?: string | null; username?: string | null; id: string }) {
   const name = (u.full_name ?? "").trim();
-  const email = (u.email ?? "").trim();
-  if (name && email) return `${name} (${email})`;
+  const username = ((u as any).username ?? "").trim();
+  if (name && username) return `${name} (${username})`;
+  if (username) return username;
   if (name) return name;
-  if (email) return email;
   return u.id;
 }
 
@@ -401,11 +402,15 @@ function RichTextEditor({
   );
 }
 
-// ---------------------------
 
-function isValidEmail(email: string) {
-  // good-enough frontend validation
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+// New: username validation
+function normalizeUsername(s: string) {
+  return s.trim().toLowerCase();
+}
+function isValidUsername(username: string) {
+  const u = normalizeUsername(username);
+  // allow letters/numbers/._- , 3-32 chars
+  return /^[a-z0-9._-]{3,32}$/.test(u);
 }
 
 export default function TeachersPage() {
@@ -422,7 +427,7 @@ export default function TeachersPage() {
 
   // Admin-only: Add teacher modal state
   const [addOpen, setAddOpen] = useState(false);
-  const [addEmail, setAddEmail] = useState("");
+  const [addUsername, setAddUsername] = useState("");
   const [addName, setAddName] = useState("");
   const [addLoading, setAddLoading] = useState(false);
 
@@ -486,7 +491,7 @@ export default function TeachersPage() {
 
   function labelForUserId(id: string) {
     const u = userLabelsById[id];
-    if (u) return labelForUser(u);
+    if (u) return labelForUser(u as any);
     return id;
   }
 
@@ -501,7 +506,10 @@ export default function TeachersPage() {
     const missing = unique.filter((id) => !userLabelsById[id]);
     if (missing.length === 0) return;
 
-    const { data, error } = await supabase.from("user_profiles").select("id, email, full_name").in("id", missing);
+    const { data, error } = await supabase
+      .from("user_profiles")
+      .select("id, email, username, full_name")
+      .in("id", missing);
     if (error) throw error;
 
     const next: Record<string, UserLabelRow> = { ...userLabelsById };
@@ -527,13 +535,19 @@ export default function TeachersPage() {
 
   // ADMIN: create teacher via Edge Function
   async function createTeacher() {
-    const email = addEmail.trim();
+    const usernameRaw = addUsername.trim();
+    const username = normalizeUsername(usernameRaw);
     const name = addName.trim();
 
-    if (!email || !isValidEmail(email)) {
-      setStatus("Create teacher error: Please enter a valid email.");
+    if (!username || !isValidUsername(username)) {
+      setStatus("Create teacher error: Please enter a valid username (3–32 chars, letters/numbers/._-).");
       return;
     }
+    if (username.includes("@")) {
+      setStatus("Create teacher error: Username cannot contain '@'. Put an email in the optional legacy email field.");
+      return;
+    }
+
     if (!name) {
       setStatus("Create teacher error: Please enter a name.");
       return;
@@ -542,23 +556,22 @@ export default function TeachersPage() {
     setAddLoading(true);
     setStatus("Creating teacher...");
     try {
-      // IMPORTANT: match Edge Function expected keys
+      // IMPORTANT: match Edge Function expected keys (now supports username-first)
       const { data, error } = await supabase.functions.invoke("admin-create-teacher", {
         body: {
-          teacher_email: email,
+          teacher_username: username,
           teacher_full_name: name,
         },
       });
 
       if (error) {
-        // Supabase wraps non-2xx as "error"; still show something useful
         setStatus("Create teacher error: " + (error.message ?? "unknown"));
         return;
       }
 
       setStatus("✅ Teacher created.");
       setAddOpen(false);
-      setAddEmail("");
+      setAddUsername("");
       setAddName("");
 
       await refreshTeacherList();
@@ -580,7 +593,7 @@ export default function TeachersPage() {
     if (!isAdmin) return;
 
     const label = selectedTeacher
-      ? labelForUser({ id: selectedTeacher.id, email: selectedTeacher.email, full_name: selectedTeacher.full_name })
+      ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
     const ok = window.confirm(`Delete this teacher?\n\n${label}\n\nThis cannot be undone.`);
@@ -601,7 +614,6 @@ export default function TeachersPage() {
         return;
       }
 
-      // optionally use data if your function returns something
       void data;
 
       setStatus("✅ Teacher deleted.");
@@ -804,7 +816,7 @@ export default function TeachersPage() {
           ? labelForUser({
               id: userData.user.id,
               full_name: (me as any).full_name ?? null,
-              email: (me as any).email ?? null,
+              username: (me as any).username ?? null,
             })
           : userData.user.id;
 
@@ -964,7 +976,7 @@ export default function TeachersPage() {
 
   const selectedTeacherLabel =
     selectedTeacher
-      ? labelForUser({ id: selectedTeacher.id, email: selectedTeacher.email, full_name: selectedTeacher.full_name })
+      ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId
       ? labelForUserId(selectedTeacherId)
       : "";
@@ -1031,7 +1043,7 @@ export default function TeachersPage() {
           <select className="select" value={selectedTeacherId} onChange={(e) => setSelectedTeacherId(e.target.value)}>
             {teachers.map((t) => (
               <option key={t.id} value={t.id}>
-                {t.full_name ? `${t.full_name} (${t.email ?? t.id})` : t.email ?? t.id}
+                {labelForUser(t)}
               </option>
             ))}
           </select>
@@ -1074,9 +1086,9 @@ export default function TeachersPage() {
 
               <input
                 className="input"
-                placeholder="Teacher email"
-                value={addEmail}
-                onChange={(e) => setAddEmail(e.target.value)}
+                placeholder="Teacher username"
+                value={addUsername}
+                onChange={(e) => setAddUsername(e.target.value)}
                 disabled={addLoading}
               />
 
@@ -1359,7 +1371,7 @@ export default function TeachersPage() {
                             <div key={c.id} className="card" style={{ borderRadius: 12 }}>
                               <div className="row-between" style={{ alignItems: "flex-start" }}>
                                 <div className="subtle">{new Date(c.created_at).toLocaleString()}</div>
-                                <span className="badge">{labelForUser(author)}</span>
+                                <span className="badge">{labelForUser(author as any)}</span>
                               </div>
                               <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{c.body}</div>
                             </div>

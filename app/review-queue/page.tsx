@@ -58,12 +58,12 @@ function StatusBadge({ status }: { status: QueuePlanRow["status"] }) {
   return <span className="badge badge-pink">{status.replaceAll("_", " ")}</span>;
 }
 
-function labelForUser(u: { full_name?: string | null; email?: string | null; id: string }) {
+function labelForUser(u: { full_name?: string | null; username?: string | null; id: string }) {
   const name = (u.full_name ?? "").trim();
-  const email = (u.email ?? "").trim();
-  if (name && email) return `${name} (${email})`;
+  const username = (u.username ?? "").trim();
+  if (name && username) return `${name} (${username})`;
   if (name) return name;
-  if (email) return email;
+  if (username) return username;
   return u.id;
 }
 
@@ -727,7 +727,7 @@ export default function ReviewQueuePage() {
           ? labelForUser({
               id: userData.user.id,
               full_name: (me as any).full_name ?? null,
-              email: (me as any).email ?? null,
+              username: (me as any).email ?? null,
             })
           : userData.user.id;
 

@@ -26,6 +26,21 @@ function getEnv(name: string) {
   return v && v.trim() ? v : null;
 }
 
+function normalizeUsername(input: string) {
+  return (input ?? "").trim().toLowerCase();
+}
+
+function isValidUsername(input: string) {
+  const u = normalizeUsername(input);
+  // 3-30 chars, lowercase letters/numbers, can include . _ -, cannot start/end with punctuation
+  return /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/.test(u);
+}
+
+function syntheticEmailForUsername(username: string) {
+  // Reserved/non-real domain; stable and unique per username.
+  return `${username}@sic.invalid`;
+}
+
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
@@ -51,15 +66,15 @@ Deno.serve(async (req) => {
     const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!jwt) return json({ error: "Missing Authorization bearer token" }, 401);
 
-    const { supervisor_email, supervisor_full_name } = (await req.json().catch(() => ({}))) as {
-      supervisor_email?: string;
+    const { supervisor_username, supervisor_full_name } = (await req.json().catch(() => ({}))) as {
+      supervisor_username?: string;
       supervisor_full_name?: string;
     };
 
-    const email = (supervisor_email ?? "").trim().toLowerCase();
+    const username = normalizeUsername(supervisor_username ?? "");
     const fullName = (supervisor_full_name ?? "").trim();
 
-    if (!email || !email.includes("@")) return json({ error: "Invalid supervisor_email" }, 400);
+    if (!username || !isValidUsername(username)) return json({ error: "Invalid supervisor_username" }, 400);
     if (!fullName) return json({ error: "supervisor_full_name required" }, 400);
 
     // Client to validate JWT -> get caller user id
@@ -87,15 +102,27 @@ Deno.serve(async (req) => {
     if (actorProfileErr) return json({ error: actorProfileErr.message }, 500);
     if (!actorProfile?.is_active || actorProfile.role !== "admin") return json({ error: "Admin-only" }, 403);
 
+    // Ensure username is unique
+    const { data: existing, error: existingErr } = await admin
+      .from("user_profiles")
+      .select("id")
+      .eq("username", username)
+      .maybeSingle();
+
+    if (existingErr) return json({ error: existingErr.message }, 500);
+    if (existing?.id) return json({ error: "Username already exists" }, 409);
+
     // Create auth user with a random temp password (unknown to everyone).
-    // Later the supervisor can use reset-password flow to set a real password.
     const tempPassword = `${crypto.randomUUID()}Aa1!`;
 
+    // Supabase Auth REQUIRES email or phone -> use synthetic email
+    const authEmail = syntheticEmailForUsername(username);
+
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email,
+      email: authEmail,
       password: tempPassword,
       email_confirm: true,
-      user_metadata: { full_name: fullName },
+      user_metadata: { full_name: fullName, username },
     });
 
     if (createErr) return json({ error: createErr.message }, 400);
@@ -103,11 +130,12 @@ Deno.serve(async (req) => {
 
     const newUserId = created.user.id;
 
-    // Upsert profile row (adjust columns if your schema differs)
+    // Upsert profile row
     const { error: upsertErr } = await admin.from("user_profiles").upsert(
       {
         id: newUserId,
-        email,
+        email: null,
+        username,
         full_name: fullName,
         role: "supervisor",
         is_active: true,

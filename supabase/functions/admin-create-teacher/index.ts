@@ -26,6 +26,22 @@ function getEnv(name: string) {
   return v && v.trim() ? v : null;
 }
 
+function normalizeUsername(input: string) {
+  return (input ?? "").trim().toLowerCase();
+}
+
+function isValidUsername(input: string) {
+  const u = normalizeUsername(input);
+  // 3-30 chars, lowercase letters/numbers, can include . _ -, cannot start/end with punctuation
+  return /^[a-z0-9](?:[a-z0-9._-]{1,28}[a-z0-9])$/.test(u);
+}
+
+function syntheticEmailForUsername(username: string) {
+  // RFC 2606 reserved domain; guaranteed non-real.
+  // Make sure it’s stable + unique per username.
+  return `${username}@sic.invalid`;
+}
+
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
@@ -51,15 +67,15 @@ Deno.serve(async (req) => {
     const jwt = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
     if (!jwt) return json({ error: "Missing Authorization bearer token" }, 401);
 
-    const { teacher_email, teacher_full_name } = (await req.json().catch(() => ({}))) as {
-      teacher_email?: string;
+    const { teacher_username, teacher_full_name } = (await req.json().catch(() => ({}))) as {
+      teacher_username?: string;
       teacher_full_name?: string;
     };
 
-    const email = (teacher_email ?? "").trim().toLowerCase();
+    const username = normalizeUsername(teacher_username ?? "");
     const fullName = (teacher_full_name ?? "").trim();
 
-    if (!email || !email.includes("@")) return json({ error: "Invalid teacher_email" }, 400);
+    if (!username || !isValidUsername(username)) return json({ error: "Invalid teacher_username" }, 400);
     if (!fullName) return json({ error: "teacher_full_name required" }, 400);
 
     // Client to validate JWT -> get caller user id
@@ -87,15 +103,28 @@ Deno.serve(async (req) => {
     if (actorProfileErr) return json({ error: actorProfileErr.message }, 500);
     if (!actorProfile?.is_active || actorProfile.role !== "admin") return json({ error: "Admin-only" }, 403);
 
+    // Ensure username is unique in your app layer
+    const { data: existing, error: existingErr } = await admin
+      .from("user_profiles")
+      .select("id")
+      .eq("username", username)
+      .maybeSingle();
+
+    if (existingErr) return json({ error: existingErr.message }, 500);
+    if (existing?.id) return json({ error: "Username already exists" }, 409);
+
     // Create auth user with a random temp password (unknown to everyone).
-    // Later the teacher can use reset-password flow to set a real password.
     const tempPassword = `${crypto.randomUUID()}Aa1!`;
 
+    // Supabase Auth REQUIRES email or phone.
+    // We generate a synthetic email from username so the app can remain "username-only".
+    const authEmail = syntheticEmailForUsername(username);
+
     const { data: created, error: createErr } = await admin.auth.admin.createUser({
-      email,
+      email: authEmail,
       password: tempPassword,
       email_confirm: true,
-      user_metadata: { full_name: fullName },
+      user_metadata: { full_name: fullName, username },
     });
 
     if (createErr) return json({ error: createErr.message }, 400);
@@ -103,11 +132,12 @@ Deno.serve(async (req) => {
 
     const newUserId = created.user.id;
 
-    // Upsert profile row (adjust columns if your schema differs)
+    // Upsert profile row (keep email NULL in your profile table if you truly don't use it)
     const { error: upsertErr } = await admin.from("user_profiles").upsert(
       {
         id: newUserId,
-        email,
+        email: null,
+        username,
         full_name: fullName,
         role: "teacher",
         is_active: true,
@@ -116,8 +146,10 @@ Deno.serve(async (req) => {
     );
 
     if (upsertErr) {
-      // If profile insert fails, still return created auth user id (but tell you)
-      return json({ ok: true, user_id: newUserId, warning: "Auth user created but profile upsert failed", detail: upsertErr.message }, 200);
+      return json(
+        { ok: true, user_id: newUserId, warning: "Auth user created but profile upsert failed", detail: upsertErr.message },
+        200
+      );
     }
 
     return json({ ok: true, user_id: newUserId });

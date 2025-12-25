@@ -51,12 +51,12 @@ function StatusBadge({ status }: { status: MyPlanRow["status"] }) {
   return <span className="badge badge-pink">{label}</span>;
 }
 
-function labelForUser(u: { full_name?: string | null; email?: string | null; id: string }) {
+function labelForUser(u: { full_name?: string | null; username?: string | null; id: string }) {
   const name = (u.full_name ?? "").trim();
-  const email = (u.email ?? "").trim();
-  if (name && email) return `${name} (${email})`;
+  const username = (u.username ?? "").trim();
+  if (name && username) return `${name} (${username})`;
   if (name) return name;
-  if (email) return email;
+  if (username) return username;
   return u.id;
 }
 
@@ -625,7 +625,6 @@ export default function MyPlansPage() {
   const [textView, setTextView] = useState(false);
 
   const [busy, setBusy] = useState(false);
-  const [newPlanFormat, setNewPlanFormat] = useState<"text" | "sheet">("text");
 
   const [comments, setComments] = useState<LessonPlanComment[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -648,10 +647,10 @@ export default function MyPlansPage() {
 
   const isAnyFullscreen = isSheetView || isTextView;
 
-  const isAdminOrSupervisor = !!myProfile?.is_active && (myProfile.role === "admin" || myProfile.role === "supervisor");
-
-  const canEdit = !!selectedPlan && (selectedPlan.owner_user_id === myUserId || isAdminOrSupervisor);
-  const canDelete = !!selectedPlan && (selectedPlan.owner_user_id === myUserId || isAdminOrSupervisor);
+  // "My Plans" should be *my* plans only (even for admin/supervisor),
+  // so edit/delete is owner-only.
+  const canEdit = !!selectedPlan && selectedPlan.owner_user_id === myUserId;
+  const canDelete = !!selectedPlan && selectedPlan.owner_user_id === myUserId;
 
   const showCreator = useMemo(() => {
     if (!myUserId) return false;
@@ -680,12 +679,13 @@ export default function MyPlansPage() {
   async function loadMeAndPlans() {
     setStatus("Loading...");
     try {
-      const profile = await fetchMyProfile();
-      setMyProfile(profile);
-
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr || !userData.user) throw new Error("Not signed in");
-      setMyUserId(userData.user.id);
+      const userId = userData.user.id;
+      setMyUserId(userId);
+
+      const profile = await fetchMyProfile();
+      setMyProfile(profile);
 
       if (!profile?.is_active) {
         setPlans([]);
@@ -695,11 +695,13 @@ export default function MyPlansPage() {
         return;
       }
 
+      // ✅ My Plans = only plans I own (regardless of role)
       const { data, error } = await supabase
         .from("lesson_plans")
         .select(
           "id, created_at, updated_at, title, status, content, plan_format, sheet_doc, owner_user_id, last_edited_by, last_edited_at, last_submitted_by, last_submitted_at"
         )
+        .eq("owner_user_id", userId)
         .order("updated_at", { ascending: false });
 
       if (error) throw error;
@@ -759,11 +761,12 @@ export default function MyPlansPage() {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr || !userData.user) throw new Error("Not signed in");
 
+      // ✅ Always create a SHEET plan (dropdown removed; text plan stays dormant)
       const { data, error } = await supabase.rpc("create_lesson_plan", {
         plan_title: "New Lesson Plan",
-        plan_format: newPlanFormat,
+        plan_format: "sheet",
         plan_content: "",
-        sheet_doc: newPlanFormat === "sheet" ? DEFAULT_SHEET_DOC : null,
+        sheet_doc: DEFAULT_SHEET_DOC,
       });
       if (error) throw error;
 
@@ -875,7 +878,7 @@ export default function MyPlansPage() {
     const plan = plans.find((p) => p.id === planId) ?? selectedPlan;
     if (!plan) return;
 
-    const canDeleteThis = plan.owner_user_id === myUserId || isAdminOrSupervisor;
+    const canDeleteThis = plan.owner_user_id === myUserId;
     if (!canDeleteThis) {
       setStatus("You cannot delete this plan.");
       return;
@@ -1017,7 +1020,7 @@ export default function MyPlansPage() {
             <div className="card">
               <div style={{ fontWeight: 800 }}>Not authorized</div>
               <div className="subtle" style={{ marginTop: 6 }}>
-                You must be an active teacher to use this page.
+                You must have an active account to use this page.
               </div>
             </div>
           ) : (
@@ -1026,17 +1029,6 @@ export default function MyPlansPage() {
                 <button className="btn btn-primary" onClick={createNewPlan} disabled={busy}>
                   + New Plan
                 </button>
-
-                <select
-                  className="select"
-                  value={newPlanFormat}
-                  onChange={(e) => setNewPlanFormat(e.target.value as "text" | "sheet")}
-                  disabled={busy}
-                  style={{ maxWidth: 180 }}
-                >
-                  <option value="text">Text plan</option>
-                  <option value="sheet">Sheet plan</option>
-                </select>
               </div>
 
               <div className="grid-sidebar">
@@ -1058,7 +1050,7 @@ export default function MyPlansPage() {
                       plans.map((p) => {
                         const active = p.id === selectedPlanId;
                         const createdBy = createdByLabelForPlan(p);
-                        const canDeleteThis = p.owner_user_id === myUserId || isAdminOrSupervisor;
+                        const canDeleteThis = p.owner_user_id === myUserId;
 
                         return (
                           <div
@@ -1221,7 +1213,7 @@ export default function MyPlansPage() {
                                 background: "rgba(255, 235, 59, 0.14)",
                               }}
                             >
-                              <div style={{ fontWeight: 900 }}>Supervisor/Admin edit detected</div>
+                              <div style={{ fontWeight: 900 }}>Other-user edit detected</div>
                               <div className="subtle" style={{ marginTop: 6 }}>
                                 Last edited by <strong>{lastEditorLabel ?? selectedPlan.last_edited_by}</strong>
                                 {selectedPlan.last_edited_at ? (
@@ -1456,7 +1448,7 @@ export default function MyPlansPage() {
                   marginBottom: 10,
                 }}
               >
-                <div style={{ fontWeight: 900 }}>Supervisor/Admin edit detected</div>
+                <div style={{ fontWeight: 900 }}>Other-user edit detected</div>
                 <div className="subtle" style={{ marginTop: 6 }}>
                   Last edited by <strong>{lastEditorLabel ?? selectedPlan.last_edited_by}</strong>
                   {selectedPlan.last_edited_at ? (

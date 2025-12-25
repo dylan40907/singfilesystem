@@ -3,6 +3,7 @@ import { supabase } from "./supabaseClient";
 export type TeacherProfile = {
   id: string;
   email: string | null;
+  username: string | null;
   full_name: string | null;
   role: "admin" | "supervisor" | "teacher";
   is_active: boolean;
@@ -14,7 +15,6 @@ export async function fetchActiveTeachers(): Promise<TeacherProfile[]> {
   return (data ?? []) as TeacherProfile[];
 }
 
-
 export async function fetchMyProfile(): Promise<TeacherProfile | null> {
   const { data: sessionData } = await supabase.auth.getSession();
   const uid = sessionData.session?.user?.id;
@@ -22,7 +22,7 @@ export async function fetchMyProfile(): Promise<TeacherProfile | null> {
 
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("id, email, full_name, role, is_active")
+    .select("id, email, username, full_name, role, is_active")
     .eq("id", uid)
     .single();
 

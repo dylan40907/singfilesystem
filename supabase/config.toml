@@ -1,3 +1,6 @@
+[functions.auth-username-login]
+verify_jwt = false
+
 [functions.teacher-setup-check]
 verify_jwt = false
 

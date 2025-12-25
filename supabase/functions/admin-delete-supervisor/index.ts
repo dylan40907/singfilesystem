@@ -99,7 +99,6 @@ Deno.serve(async (req) => {
     await admin.from("user_profiles").delete().eq("id", targetId);
 
     // If your supervisor has assignments, you likely want to clear them too:
-    // (safe, because supervisor_teacher_assignments should reference supervisor_user_id)
     await admin.from("supervisor_teacher_assignments").delete().eq("supervisor_user_id", targetId);
 
     return json({ ok: true });

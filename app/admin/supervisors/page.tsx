@@ -7,14 +7,19 @@ import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 type PersonRow = {
   id: string;
   email: string | null;
+  username: string | null;
   full_name: string | null;
   is_active: boolean;
 };
 
-function labelForUser(u: { id: string; email?: string | null; full_name?: string | null }) {
+function labelForUser(u: { id: string; email?: string | null; username?: string | null; full_name?: string | null }) {
   const name = (u.full_name ?? "").trim();
   const email = (u.email ?? "").trim();
-  if (name && email) return `${name} (${email})`;
+  const username = (u.username ?? "").trim();
+
+  if (name && username) return `${name} (${username})`;
+  if (name && email) return `${name}`;
+  if (username) return username;
   if (name) return name;
   if (email) return email;
   return u.id;
@@ -22,6 +27,14 @@ function labelForUser(u: { id: string; email?: string | null; full_name?: string
 
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+}
+
+function normalizeUsername(s: string) {
+  return s.trim().toLowerCase();
+}
+function isValidUsername(username: string) {
+  const u = normalizeUsername(username);
+  return /^[a-z0-9._-]{3,32}$/.test(u);
 }
 
 export default function AdminSupervisorsPage() {
@@ -39,7 +52,7 @@ export default function AdminSupervisorsPage() {
 
   // Admin-only: Add supervisor modal state
   const [addOpen, setAddOpen] = useState(false);
-  const [addEmail, setAddEmail] = useState("");
+  const [addUsername, setAddUsername] = useState("");
   const [addName, setAddName] = useState("");
   const [addLoading, setAddLoading] = useState(false);
 
@@ -55,8 +68,21 @@ export default function AdminSupervisorsPage() {
     if (sErr) throw sErr;
     if (tErr) throw tErr;
 
-    const supRows = (sData ?? []) as PersonRow[];
-    const teacherRows = (tData ?? []) as PersonRow[];
+    const supRows = (sData ?? []).map((r: any) => ({
+      id: r.id as string,
+      email: (r.email ?? null) as string | null,
+      username: (r.username ?? null) as string | null,
+      full_name: (r.full_name ?? null) as string | null,
+      is_active: !!r.is_active,
+    })) as PersonRow[];
+
+    const teacherRows = (tData ?? []).map((r: any) => ({
+      id: r.id as string,
+      email: (r.email ?? null) as string | null,
+      username: (r.username ?? null) as string | null,
+      full_name: (r.full_name ?? null) as string | null,
+      is_active: !!r.is_active,
+    })) as PersonRow[];
 
     setSupervisors(supRows);
     setTeachers(teacherRows);
@@ -69,7 +95,6 @@ export default function AdminSupervisorsPage() {
     }
 
     if (selectedSupervisorId && exists(selectedSupervisorId)) {
-      // keep selection
       return;
     }
 
@@ -107,12 +132,12 @@ export default function AdminSupervisorsPage() {
       });
       if (error) throw error;
 
-      // RPC returns: teacher_id, email, full_name, is_active
       const rows = (data ?? []).map((r: any) => ({
         id: r.teacher_id as string,
-        email: r.email as string | null,
-        full_name: r.full_name as string | null,
-        is_active: r.is_active as boolean,
+        email: (r.email ?? null) as string | null,
+        username: (r.username ?? null) as string | null,
+        full_name: (r.full_name ?? null) as string | null,
+        is_active: !!r.is_active,
       })) as PersonRow[];
 
       setAssigned(rows);
@@ -160,13 +185,19 @@ export default function AdminSupervisorsPage() {
 
   // ADMIN: create supervisor via Edge Function
   async function createSupervisor() {
-    const email = addEmail.trim();
+    const usernameRaw = addUsername.trim();
+    const username = normalizeUsername(usernameRaw);
     const name = addName.trim();
 
-    if (!email || !isValidEmail(email)) {
-      setStatus("Create supervisor error: Please enter a valid email.");
+    if (!username || !isValidUsername(username)) {
+      setStatus("Create supervisor error: Please enter a valid username (3–32 chars, letters/numbers/._-).");
       return;
     }
+    if (username.includes("@")) {
+      setStatus("Create supervisor error: Username cannot contain '@'. Put an email in the optional legacy email field.");
+      return;
+    }
+
     if (!name) {
       setStatus("Create supervisor error: Please enter a name.");
       return;
@@ -175,10 +206,9 @@ export default function AdminSupervisorsPage() {
     setAddLoading(true);
     setStatus("Creating supervisor...");
     try {
-      // IMPORTANT: match Edge Function expected keys
       const { data, error } = await supabase.functions.invoke("admin-create-supervisor", {
         body: {
-          supervisor_email: email,
+          supervisor_username: username,
           supervisor_full_name: name,
         },
       });
@@ -190,7 +220,7 @@ export default function AdminSupervisorsPage() {
 
       setStatus("✅ Supervisor created.");
       setAddOpen(false);
-      setAddEmail("");
+      setAddUsername("");
       setAddName("");
 
       const createdId = (data as any)?.user_id ?? (data as any)?.supervisor_id ?? (data as any)?.id ?? null;
@@ -210,9 +240,7 @@ export default function AdminSupervisorsPage() {
 
     const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
 
-    const label = selected
-      ? labelForUser({ id: selected.id, email: selected.email, full_name: selected.full_name })
-      : selectedSupervisorId;
+    const label = selected ? labelForUser(selected) : selectedSupervisorId;
 
     const ok = window.confirm(`Delete this supervisor?\n\n${label}\n\nThis cannot be undone.`);
     if (!ok) return;
@@ -352,12 +380,11 @@ export default function AdminSupervisorsPage() {
 
               <input
                 className="input"
-                placeholder="Supervisor email"
-                value={addEmail}
-                onChange={(e) => setAddEmail(e.target.value)}
+                placeholder="Supervisor username"
+                value={addUsername}
+                onChange={(e) => setAddUsername(e.target.value)}
                 disabled={addLoading}
               />
-
               <input
                 className="input"
                 placeholder="Supervisor full name"

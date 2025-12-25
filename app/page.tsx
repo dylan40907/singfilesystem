@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { createFolder, fetchFolders, fetchRootFolder, Folder } from "@/lib/folders";
 import { fetchActiveTeachers, fetchMyProfile, TeacherProfile } from "@/lib/teachers";
-import { shareFolderWithTeacher } from "@/lib/permissions";
 import { fetchSharedFoldersDirect } from "@/lib/shared";
 import { createFileRow, fetchFilesInFolder, FileRow } from "@/lib/files";
 
@@ -19,11 +18,14 @@ async function readJsonSafely(res: Response) {
   }
 }
 
-type FolderPermissionRow = {
+type PermissionAccess = "view" | "download" | "manage";
+type ResourceType = "folder" | "file";
+
+type PermissionRowForUi = {
   permission_id: string;
   principal_user_id: string;
   email: string | null;
-  access: "view" | "download" | "manage";
+  access: PermissionAccess;
   inherit: boolean;
   created_at: string;
 };
@@ -31,9 +33,22 @@ type FolderPermissionRow = {
 function labelForTeacher(t: TeacherProfile) {
   const name = ((t as any).full_name ?? "").trim();
   const email = (t.email ?? "").trim();
+  const username = ((t as any).username ?? "").trim();
+  if (name && username) return `${name} (${username})`;
   if (name && email) return `${name} (${email})`;
+  if (username) return username;
   if (name) return name;
   if (email) return email;
+  return t.id;
+}
+
+// strict label for the share table: `${name} (${username})`
+function labelForTeacherNameUsername(t: TeacherProfile) {
+  const name = ((t as any).full_name ?? "").trim();
+  const username = ((t as any).username ?? "").trim();
+  if (name && username) return `${name} (${username})`;
+  if (name) return name;
+  if (username) return username;
   return t.id;
 }
 
@@ -78,7 +93,7 @@ type EditTarget =
   | { type: "folder"; id: string; name: string; parent_id: string | null }
   | { type: "file"; id: string; name: string; folder_id: string };
 
-type PreviewMode = "pdf" | "image" | "text" | "office" | "unknown";
+type PreviewMode = "pdf" | "image" | "text" | "office" | "video" | "audio" | "unknown";
 
 function extOf(name: string) {
   const i = name.lastIndexOf(".");
@@ -97,9 +112,20 @@ function isImageExt(ext: string) {
 function isTextExt(ext: string) {
   return ext === "txt" || ext === "md" || ext === "csv" || ext === "json" || ext === "log";
 }
-
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+function isVideoExt(ext: string) {
+  return (
+    ext === "mp4" ||
+    ext === "mov" ||
+    ext === "webm" ||
+    ext === "m4v" ||
+    ext === "avi" ||
+    ext === "mkv" ||
+    ext === "mpeg" ||
+    ext === "mpg"
+  );
+}
+function isAudioExt(ext: string) {
+  return ext === "mp3" || ext === "wav" || ext === "m4a" || ext === "aac" || ext === "ogg" || ext === "flac";
 }
 
 type SetupCheckResult =
@@ -108,37 +134,34 @@ type SetupCheckResult =
   | { status: "no_password"; user_id?: string; full_name?: string | null; role?: string | null };
 
 /**
- * NEW: Setup functions that support BOTH teacher + supervisor.
- * We try the new generic names first, then fallback to the legacy teacher-only names.
- *
- * This lets you deploy the new Edge Functions without breaking existing clients.
+ * Setup functions that support BOTH teacher + supervisor.
+ * (Primary/fallback kept as-is; you can swap to new names later if you deploy them.)
  */
 async function invokeSetupFunction<T = any>(kind: "check" | "set_password", body: any) {
   const primary = kind === "check" ? "teacher-setup-check" : "teacher-setup-set-password";
   const fallback = kind === "check" ? "teacher-setup-check" : "teacher-setup-set-password";
 
-  // Try primary
   {
     const { data, error } = await supabase.functions.invoke(primary, { body });
     if (!error) return { data: data as T, error: null as any, used: primary };
-    // Only fallback if it looks like the function doesn't exist / isn't deployed
+
     const msg = (error as any)?.message ?? "";
     const status = (error as any)?.status ?? (error as any)?.context?.status ?? null;
     const looksMissing =
       status === 404 ||
       msg.toLowerCase().includes("not found") ||
-      msg.toLowerCase().includes("function") && msg.toLowerCase().includes("not") && msg.toLowerCase().includes("found");
+      (msg.toLowerCase().includes("function") && msg.toLowerCase().includes("not") && msg.toLowerCase().includes("found"));
+
     if (!looksMissing) return { data: null as any, error, used: primary };
   }
 
-  // Fallback
   const { data, error } = await supabase.functions.invoke(fallback, { body });
   return { data: data as T, error, used: fallback };
 }
 
 export default function Home() {
   // Auth
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState(""); // username OR email
   const [password, setPassword] = useState("");
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
 
@@ -148,7 +171,10 @@ export default function Home() {
   // Data
   const [folders, setFolders] = useState<Folder[]>([]);
   const [rootFolder, setRootFolder] = useState<Folder | null>(null);
+
   const [sharedFolders, setSharedFolders] = useState<Folder[]>([]);
+  const [sharedFiles, setSharedFiles] = useState<FileRow[]>([]);
+
   const [files, setFiles] = useState<FileRow[]>([]);
 
   // Navigation
@@ -164,13 +190,17 @@ export default function Home() {
   // Upload UI
   const [uploading, setUploading] = useState(false);
 
-  // Folder access list (admin/supervisor only) — shown in share modal
-  const [folderPerms, setFolderPerms] = useState<FolderPermissionRow[]>([]);
-  const [folderPermsLoading, setFolderPermsLoading] = useState(false);
+  // Permissions list (admin/supervisor only) — shown in share modal
+  const [perms, setPerms] = useState<PermissionRowForUi[]>([]);
+  const [permsLoading, setPermsLoading] = useState(false);
 
   // Share modal state
   const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [shareTarget, setShareTarget] = useState<{ folderId: string; label: string } | null>(null);
+  const [shareTarget, setShareTarget] = useState<{
+    resourceType: ResourceType;
+    resourceId: string;
+    label: string;
+  } | null>(null);
   const [shareChecked, setShareChecked] = useState<Set<string>>(new Set());
 
   // Delete confirm modal
@@ -189,18 +219,14 @@ export default function Home() {
   const [previewMode, setPreviewMode] = useState<PreviewMode>("unknown");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewSignedUrl, setPreviewSignedUrl] = useState<string>("");
-  const [previewObjectUrl, setPreviewObjectUrl] = useState<string>(""); // blob url (pdf/image)
-  const [previewText, setPreviewText] = useState<string>("");
 
-  // ---------------------------
-  // Setup modal state (teacher + supervisor)
-  // ---------------------------
+  // Setup modal state
   const [setupOpen, setSetupOpen] = useState(false);
-  const [setupStep, setSetupStep] = useState<"email" | "password">("email");
-  const [setupEmail, setSetupEmail] = useState("");
+  const [setupStep, setSetupStep] = useState<"identifier" | "password">("identifier");
+  const [setupIdentifier, setSetupIdentifier] = useState(""); // username OR email
   const [setupCheck, setSetupCheck] = useState<SetupCheckResult | null>(null);
   const [setupLoading, setSetupLoading] = useState(false);
-  const [setupCheckedEmail, setSetupCheckedEmail] = useState<string>("");
+  const [setupCheckedIdentifier, setSetupCheckedIdentifier] = useState<string>("");
 
   const [setupPass1, setSetupPass1] = useState("");
   const [setupPass2, setSetupPass2] = useState("");
@@ -208,7 +234,49 @@ export default function Home() {
 
   const isAdminOrSupervisor =
     myProfile?.is_active && (myProfile.role === "admin" || myProfile.role === "supervisor");
+  const isTeacherAccount = !!sessionEmail && !isAdminOrSupervisor;
+
   const canManageFiles = !!isAdminOrSupervisor;
+
+  const teacherById = useMemo(() => {
+    const map = new Map<string, TeacherProfile>();
+    for (const t of teachers) map.set(t.id, t);
+    return map;
+  }, [teachers]);
+
+  function teacherLabelForPermissionRow(p: PermissionRowForUi) {
+    const t = teacherById.get(p.principal_user_id);
+    if (t) return labelForTeacherNameUsername(t);
+    return p.principal_user_id;
+  }
+
+  // ---------------------------
+  // Shared file fetch (direct file grants)
+  // ---------------------------
+  async function fetchSharedFilesDirectForUser(userId: string) {
+    // Direct file shares only. (No folder inheritance here by design.)
+    // RLS must allow selecting files the user can access.
+    const { data: permRows, error: permErr } = await supabase
+      .from("permissions")
+      .select("resource_id")
+      .eq("principal_user_id", userId)
+      .eq("resource_type", "file");
+
+    if (permErr) throw permErr;
+
+    const fileIds = (permRows ?? [])
+      .map((r: any) => r.resource_id as string)
+      .filter(Boolean);
+
+    if (fileIds.length === 0) return [] as FileRow[];
+
+    const { data: fileRows, error: fileErr } = await supabase.from("files").select("*").in("id", fileIds);
+    if (fileErr) throw fileErr;
+
+    const out = (fileRows ?? []) as FileRow[];
+    out.sort((a: any, b: any) => (a.name ?? "").localeCompare(b.name ?? ""));
+    return out;
+  }
 
   async function refreshFiles(folderId: string | null) {
     if (!folderId) {
@@ -223,23 +291,55 @@ export default function Home() {
     }
   }
 
-  async function refreshFolderPermissions(folderId: string | null) {
-    if (!isAdminOrSupervisor || !folderId) {
-      setFolderPerms([]);
+  async function refreshPermissions(target: { resourceType: ResourceType; resourceId: string } | null) {
+    if (!isAdminOrSupervisor || !target?.resourceId) {
+      setPerms([]);
       return;
     }
-    setFolderPermsLoading(true);
+
+    setPermsLoading(true);
     try {
-      const { data, error } = await supabase.rpc("list_folder_permissions", {
-        folder_uuid: folderId,
-      });
-      if (error) throw error;
-      setFolderPerms((data ?? []) as FolderPermissionRow[]);
+      if (target.resourceType === "folder") {
+        // Preferred RPC (you already have this)
+        const { data, error } = await supabase.rpc("list_folder_permissions", {
+          folder_uuid: target.resourceId,
+        });
+        if (error) throw error;
+        setPerms((data ?? []) as PermissionRowForUi[]);
+      } else {
+        // Try RPC if you add it; otherwise fall back to direct select.
+        const { data: rpcTell, error: rpcErr } = await supabase.rpc("list_file_permissions", {
+          file_uuid: target.resourceId,
+        } as any);
+
+        if (!rpcErr) {
+          setPerms((rpcTell ?? []) as PermissionRowForUi[]);
+        } else {
+          // Fallback (may not have email; UI will show user_id if missing)
+          const { data, error } = await supabase
+            .from("permissions")
+            .select("id, principal_user_id, access, inherit, created_at")
+            .eq("resource_type", "file")
+            .eq("resource_id", target.resourceId);
+
+          if (error) throw error;
+
+          const rows: PermissionRowForUi[] = (data ?? []).map((r: any) => ({
+            permission_id: r.id,
+            principal_user_id: r.principal_user_id,
+            email: null,
+            access: r.access,
+            inherit: !!r.inherit,
+            created_at: r.created_at,
+          }));
+          setPerms(rows);
+        }
+      }
     } catch (e: any) {
-      setStatus("Error loading folder permissions: " + (e?.message ?? "unknown"));
-      setFolderPerms([]);
+      setStatus("Error loading permissions: " + (e?.message ?? "unknown"));
+      setPerms([]);
     } finally {
-      setFolderPermsLoading(false);
+      setPermsLoading(false);
     }
   }
 
@@ -253,7 +353,7 @@ export default function Home() {
       if (error) throw error;
 
       setStatus("✅ Permission revoked.");
-      await refreshFolderPermissions(shareTarget?.folderId ?? currentFolderId);
+      await refreshPermissions(shareTarget ? { resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId } : null);
     } catch (e: any) {
       setStatus("Revoke error: " + (e?.message ?? "unknown"));
     }
@@ -270,10 +370,11 @@ export default function Home() {
       setFolders([]);
       setRootFolder(null);
       setSharedFolders([]);
+      setSharedFiles([]);
       setCurrentFolderId(null);
       setTeachers([]);
       setFiles([]);
-      setFolderPerms([]);
+      setPerms([]);
       setStatus("Not signed in.");
       return;
     }
@@ -282,7 +383,7 @@ export default function Home() {
       const profile = await fetchMyProfile();
       setMyProfile(profile);
 
-      const [allFolders, root, shared] = await Promise.all([
+      const [allFolders, root, sharedFolderList] = await Promise.all([
         fetchFolders(),
         fetchRootFolder(),
         fetchSharedFoldersDirect(),
@@ -290,13 +391,13 @@ export default function Home() {
 
       setFolders(allFolders);
       setRootFolder(root);
-      setSharedFolders(shared);
+      setSharedFolders(sharedFolderList);
 
       // Default starting folder
       let nextFolder = currentFolderId;
       if (!nextFolder) {
         if (root) nextFolder = root.id;
-        else if (shared.length > 0) nextFolder = shared[0].id;
+        else if (sharedFolderList.length > 0) nextFolder = sharedFolderList[0].id;
         else nextFolder = null;
       }
       setCurrentFolderId(nextFolder);
@@ -309,8 +410,23 @@ export default function Home() {
         setTeachers([]);
       }
 
+      // Shared files (direct file grants)
+      if (profile?.id) {
+        try {
+          const sf = await fetchSharedFilesDirectForUser(profile.id);
+          setSharedFiles(sf);
+        } catch (e: any) {
+          // Don't block everything if shared file query fails
+          setSharedFiles([]);
+        }
+      } else {
+        setSharedFiles([]);
+      }
+
       await refreshFiles(nextFolder);
-      await refreshFolderPermissions(nextFolder);
+      await refreshPermissions(
+        nextFolder ? { resourceType: "folder", resourceId: nextFolder } : null
+      );
 
       setStatus("");
     } catch (e: any) {
@@ -320,23 +436,67 @@ export default function Home() {
 
   async function signIn() {
     setStatus("Signing in...");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) {
-      setStatus("Sign-in error: " + error.message);
+
+    const ident = identifier.trim();
+    if (!ident) {
+      setStatus("Sign-in error: Please enter your username.");
       return;
     }
-    await refreshAll();
+
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+      if (!supabaseUrl || !anonKey) {
+        setStatus("Sign-in error: Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+        return;
+      }
+
+      const res = await fetch(`${supabaseUrl}/functions/v1/auth-username-login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+        body: JSON.stringify({ identifier: ident, password }),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setStatus("Sign-in error: " + (data?.error ?? `HTTP ${res.status}`));
+        return;
+      }
+
+      const access_token = data?.access_token;
+      const refresh_token = data?.refresh_token;
+
+      if (!access_token || !refresh_token) {
+        setStatus("Sign-in error: invalid auth response.");
+        return;
+      }
+
+      const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token });
+      if (setErr) {
+        setStatus("Sign-in error: " + setErr.message);
+        return;
+      }
+
+      await refreshAll();
+    } catch (e: any) {
+      setStatus("Sign-in error: " + (e?.message ?? "unknown"));
+    }
   }
 
   // ---------------------------
-  // Setup modal handlers
+  // Setup modal handlers (USERNAME-FIRST)
   // ---------------------------
   function openSetupModal() {
     setSetupOpen(true);
-    setSetupStep("email");
-    setSetupEmail("");
+    setSetupStep("identifier");
+    setSetupIdentifier("");
     setSetupCheck(null);
-    setSetupCheckedEmail("");
+    setSetupCheckedIdentifier("");
     setSetupLoading(false);
     setSetupPass1("");
     setSetupPass2("");
@@ -347,17 +507,18 @@ export default function Home() {
   function closeSetupModal() {
     if (setupLoading || setupSetPassLoading) return;
     setSetupOpen(false);
-    setSetupStep("email");
-    setSetupEmail("");
+    setSetupStep("identifier");
+    setSetupIdentifier("");
     setSetupCheck(null);
+    setSetupCheckedIdentifier("");
     setSetupPass1("");
     setSetupPass2("");
   }
 
   async function runSetupCheck() {
-    const e = setupEmail.trim().toLowerCase();
-    if (!e || !isValidEmail(e)) {
-      setStatus("Setup error: Please enter a valid email.");
+    const ident = setupIdentifier.trim();
+    if (!ident) {
+      setStatus("Setup error: Please enter your username.");
       return;
     }
 
@@ -366,8 +527,7 @@ export default function Home() {
     setStatus("Checking account...");
 
     try {
-      // CHANGED: uses account-setup-check (fallback to teacher-setup-check)
-      const { data, error, used } = await invokeSetupFunction<SetupCheckResult>("check", { email: e });
+      const { data, error, used } = await invokeSetupFunction<SetupCheckResult>("check", { identifier: ident });
 
       if (error) {
         setStatus(`Setup error: ${error.message ?? "Edge Function error"} (${used})`);
@@ -378,18 +538,17 @@ export default function Home() {
       setSetupCheck(result);
 
       if (result.status === "not_found") {
-        setStatus("No account found for that email. Ask an admin to create one.");
+        setStatus("No account found for that username/email. Ask an admin to create one.");
         return;
       }
 
       if (result.status === "has_password") {
-        setStatus("That email already has a password. Please sign in normally.");
+        setStatus("That account already has a password. Please sign in normally.");
         return;
       }
 
-      // no_password
       setStatus("Account found. Please set a password.");
-      setSetupCheckedEmail(e);
+      setSetupCheckedIdentifier(ident);
       setSetupStep("password");
     } catch (err: any) {
       setStatus("Setup error: " + (err?.message ?? "unknown"));
@@ -399,14 +558,14 @@ export default function Home() {
   }
 
   async function runSetupSetPassword() {
-    const e = setupEmail.trim().toLowerCase();
-    if (!e || !isValidEmail(e)) {
-      setStatus("Setup error: invalid email.");
+    const ident = setupIdentifier.trim();
+    if (!ident) {
+      setStatus("Setup error: missing username.");
       return;
     }
 
-    if (!setupCheck || setupCheck.status !== "no_password" || setupCheckedEmail !== e) {
-      setStatus("Setup error: Please check your email first.");
+    if (!setupCheck || setupCheck.status !== "no_password" || setupCheckedIdentifier !== ident) {
+      setStatus("Setup error: Please check your username first.");
       return;
     }
 
@@ -423,24 +582,35 @@ export default function Home() {
     setStatus("Setting password...");
 
     try {
-      // CHANGED: uses account-setup-set-password (fallback to teacher-setup-set-password)
-      const { error, used } = await invokeSetupFunction("set_password", { email: e, password: setupPass1 });
+      const { error, used } = await invokeSetupFunction("set_password", { identifier: ident, password: setupPass1 });
 
       if (error) {
         setStatus(`Setup error: ${error.message ?? "Edge Function error"} (${used})`);
         return;
       }
 
-      // now sign in with the newly set password
       setStatus("✅ Password set. Signing in...");
 
-      const { error: signErr } = await supabase.auth.signInWithPassword({
-        email: e,
-        password: setupPass1,
+      const { data, error: loginErr } = await supabase.functions.invoke("auth-username-login", {
+        body: { identifier: ident, password: setupPass1 },
       });
 
-      if (signErr) {
-        setStatus("Password set, but sign-in failed: " + signErr.message);
+      if (loginErr) {
+        setStatus("Password set, but sign-in failed: " + (loginErr.message ?? "unknown"));
+        return;
+      }
+
+      const access_token = (data as any)?.access_token;
+      const refresh_token = (data as any)?.refresh_token;
+
+      if (!access_token || !refresh_token) {
+        setStatus("Sign-in error: invalid auth response.");
+        return;
+      }
+
+      const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token });
+      if (setErr) {
+        setStatus("Sign-in error: " + setErr.message);
         return;
       }
 
@@ -518,6 +688,11 @@ export default function Home() {
   async function handleUploadSelectedFiles(fileList: FileList | null) {
     if (!isAdminOrSupervisor) return;
     if (!currentFolderId) return;
+
+    if (rootFolder?.id && currentFolderId === rootFolder.id) {
+      setStatus("Uploads are disabled in HOME. Please create a folder first, then upload inside it.");
+      return;
+    }
 
     const filesArr = Array.from(fileList ?? []);
     if (filesArr.length === 0) return;
@@ -597,7 +772,6 @@ export default function Home() {
       arr.push(f);
       map.set(f.parent_id, arr);
     }
-    // stable-ish ordering
     for (const [k, arr] of map.entries()) {
       arr.sort((a, b) => a.name.localeCompare(b.name));
       map.set(k, arr);
@@ -606,13 +780,11 @@ export default function Home() {
   }
 
   async function collectFolderFileEntries(folderId: string, basePath: string) {
-    // Returns entries: { url, pathInZip }
     const childrenByParent = buildChildrenByParentMap();
 
     const entries: { url: string; path: string }[] = [];
     const stack: Array<{ folderId: string; path: string }> = [{ folderId, path: basePath }];
 
-    // We fetch files per folder on-demand via fetchFilesInFolder (RLS enforced client-side)
     while (stack.length) {
       const cur = stack.pop()!;
       setStatus(`Collecting: ${cur.path || basePath}…`);
@@ -694,18 +866,12 @@ export default function Home() {
     setPreviewMode("unknown");
     setPreviewLoading(false);
     setPreviewSignedUrl("");
-    setPreviewText("");
-    if (previewObjectUrl) {
-      URL.revokeObjectURL(previewObjectUrl);
-      setPreviewObjectUrl("");
-    }
   }
 
   async function openPreview(file: FileRow) {
     setPreviewFile(file);
     setPreviewOpen(true);
     setPreviewLoading(true);
-    setPreviewText("");
 
     try {
       const url = await getSignedDownloadUrl(file.id, "inline");
@@ -718,22 +884,41 @@ export default function Home() {
         setPreviewLoading(false);
         return;
       }
-
       if (isPdfExt(ext)) {
         setPreviewMode("pdf");
         setPreviewLoading(false);
         return;
       }
-
       if (isImageExt(ext)) {
         setPreviewMode("image");
         setPreviewLoading(false);
         return;
       }
-
       if (isTextExt(ext)) {
-        // simplest: render via iframe using inline URL (no CORS fetch)
         setPreviewMode("text");
+        setPreviewLoading(false);
+        return;
+      }
+      if (isVideoExt(ext)) {
+        setPreviewMode("video");
+        setPreviewLoading(false);
+        return;
+      }
+      if (isAudioExt(ext)) {
+        setPreviewMode("audio");
+        setPreviewLoading(false);
+        return;
+      }
+
+      // Fallback: try mime_type if present
+      const mt = ((file as any).mime_type ?? (file as any).mimeType ?? "").toString().toLowerCase();
+      if (mt.startsWith("video/")) {
+        setPreviewMode("video");
+        setPreviewLoading(false);
+        return;
+      }
+      if (mt.startsWith("audio/")) {
+        setPreviewMode("audio");
         setPreviewLoading(false);
         return;
       }
@@ -747,27 +932,59 @@ export default function Home() {
     }
   }
 
+  // ESC closes preview
+  useEffect(() => {
+    if (!previewOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closePreview();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewOpen]);
+
   // ---------------------------
-  // Share modal
+  // Sharing (folder + file)
   // ---------------------------
+  async function shareResourceWithTeacher(params: {
+    teacherId: string;
+    resourceType: ResourceType;
+    resourceId: string;
+    access: PermissionAccess;
+    inherit: boolean;
+  }) {
+    const { teacherId, resourceType, resourceId, access, inherit } = params;
+
+    const { error } = await supabase.from("permissions").insert({
+      principal_user_id: teacherId,
+      resource_type: resourceType,
+      resource_id: resourceId,
+      access,
+      inherit,
+    });
+
+    if (error) throw error;
+  }
+
   function openShareModalForFolder(folderId: string, label: string) {
     if (!isAdminOrSupervisor) return;
-    setShareTarget({ folderId, label });
+    setShareTarget({ resourceType: "folder", resourceId: folderId, label });
     setShareChecked(new Set());
     setShareModalOpen(true);
-    refreshFolderPermissions(folderId);
+    refreshPermissions({ resourceType: "folder", resourceId: folderId });
   }
 
   function openShareModalForFile(file: FileRow) {
-    // Permissions are folder-based right now, so share the containing folder.
-    const folderId = (file as any)?.folder_id ?? currentFolderId;
-    if (!folderId) return;
-    openShareModalForFolder(folderId, `Folder containing: ${(file as any).name ?? "file"}`);
+    if (!isAdminOrSupervisor) return;
+    setShareTarget({ resourceType: "file", resourceId: file.id, label: `Share file: ${(file as any).name ?? file.id}` });
+    setShareChecked(new Set());
+    setShareModalOpen(true);
+    refreshPermissions({ resourceType: "file", resourceId: file.id });
   }
 
   async function shareToSelectedTeachers() {
     if (!isAdminOrSupervisor) return;
-    if (!shareTarget?.folderId) return;
+    if (!shareTarget?.resourceId) return;
 
     const ids = Array.from(shareChecked);
     if (ids.length === 0) return;
@@ -776,11 +993,13 @@ export default function Home() {
     try {
       const results = await Promise.allSettled(
         ids.map((teacherId) =>
-          shareFolderWithTeacher({
+          shareResourceWithTeacher({
             teacherId,
-            folderId: shareTarget.folderId,
+            resourceType: shareTarget.resourceType,
+            resourceId: shareTarget.resourceId,
             access: "view",
-            inherit: true,
+            // inherit is only meaningful for folders; for files we force false
+            inherit: shareTarget.resourceType === "folder",
           })
         )
       );
@@ -788,14 +1007,11 @@ export default function Home() {
       const ok = results.filter((r) => r.status === "fulfilled").length;
       const fail = results.length - ok;
 
-      if (fail > 0) {
-        setStatus(`⚠️ Shared with ${ok}/${results.length}. Some failed (permissions/RLS?).`);
-      } else {
-        setStatus(`✅ Shared with ${ok} teacher${ok === 1 ? "" : "s"}.`);
-      }
+      if (fail > 0) setStatus(`⚠️ Shared with ${ok}/${results.length}. Some failed (permissions/RLS?).`);
+      else setStatus(`✅ Shared with ${ok} teacher${ok === 1 ? "" : "s"}.`);
 
       await refreshAll();
-      await refreshFolderPermissions(shareTarget.folderId);
+      await refreshPermissions({ resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId });
     } catch (e: any) {
       setStatus("Share error: " + (e?.message ?? "unknown"));
     }
@@ -811,7 +1027,6 @@ export default function Home() {
   }
 
   function buildDescendants(folderId: string) {
-    // Returns all descendant folder ids (excluding the folderId itself)
     const childrenByParent = new Map<string, string[]>();
     for (const f of folders) {
       if (!f.parent_id) continue;
@@ -838,7 +1053,7 @@ export default function Home() {
     let cur = folderById.get(folderId);
     const seen = new Set<string>();
     while (cur?.parent_id) {
-      if (seen.has(cur.id)) break; // safety
+      if (seen.has(cur.id)) break;
       seen.add(cur.id);
       d++;
       cur = folderById.get(cur.parent_id);
@@ -847,7 +1062,6 @@ export default function Home() {
   }
 
   async function deleteFileRow(fileId: string) {
-    // DB delete only (R2 object cleanup can be added later)
     const { error } = await supabase.from("files").delete().eq("id", fileId);
     if (error) throw error;
   }
@@ -865,32 +1079,24 @@ export default function Home() {
       if (deleteTarget.type === "file") {
         await deleteFileRow(deleteTarget.id);
       } else {
-        // Recursive: delete files in all descendant folders + this folder, then delete folders deepest-first
         const folderById = new Map<string, Folder>();
         for (const f of folders) folderById.set(f.id, f);
 
         const descendants = buildDescendants(deleteTarget.id);
         const allFolderIds = [deleteTarget.id, ...descendants];
 
-        // Delete file rows for all those folders
         for (const fid of allFolderIds) {
           const { data, error } = await supabase.from("files").select("id").eq("folder_id", fid);
           if (error) throw error;
           const ids = (data ?? []).map((r: any) => r.id as string);
-          for (const id of ids) {
-            await deleteFileRow(id);
-          }
+          for (const id of ids) await deleteFileRow(id);
         }
 
-        // Delete folders deepest-first
         const foldersToDelete = [...allFolderIds].sort(
           (a, b) => depthOfFolder(b, folderById) - depthOfFolder(a, folderById)
         );
-        for (const fid of foldersToDelete) {
-          await deleteFolderRow(fid);
-        }
+        for (const fid of foldersToDelete) await deleteFolderRow(fid);
 
-        // If deleting the current folder, bounce to root
         if (currentFolderId === deleteTarget.id) {
           setCurrentFolderId(rootFolder?.id ?? null);
         }
@@ -910,7 +1116,6 @@ export default function Home() {
   // Edit (rename/move) modal
   // ---------------------------
   function isDescendantFolder(possibleChildId: string, possibleAncestorId: string) {
-    // Returns true if possibleChildId is inside possibleAncestorId subtree
     if (possibleChildId === possibleAncestorId) return true;
     const parentById = new Map<string, string | null>();
     for (const f of folders) parentById.set(f.id, f.parent_id ?? null);
@@ -962,9 +1167,7 @@ export default function Home() {
           if (newParentId === editTarget.id) throw new Error("Cannot move a folder into itself.");
           if (isDescendantFolder(newParentId, editTarget.id)) throw new Error("Cannot move a folder into its descendant.");
         } else {
-          if (editTarget.id !== rootFolder?.id) {
-            throw new Error("Cannot move a folder to null parent. Choose a destination folder.");
-          }
+          if (editTarget.id !== rootFolder?.id) throw new Error("Cannot move a folder to null parent. Choose a destination folder.");
         }
 
         const { error } = await supabase.from("folders").update({ name: nextName, parent_id: newParentId }).eq("id", editTarget.id);
@@ -993,13 +1196,13 @@ export default function Home() {
 
   useEffect(() => {
     refreshFiles(currentFolderId);
-    if (shareModalOpen && shareTarget?.folderId) {
-      refreshFolderPermissions(shareTarget.folderId);
+    if (shareModalOpen && shareTarget?.resourceId) {
+      refreshPermissions({ resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId });
     } else {
-      refreshFolderPermissions(currentFolderId);
+      refreshPermissions(currentFolderId ? { resourceType: "folder", resourceId: currentFolderId } : null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentFolderId, isAdminOrSupervisor]);
+  }, [currentFolderId, isAdminOrSupervisor, shareModalOpen]);
 
   const folderById = useMemo(() => {
     const map = new Map<string, Folder>();
@@ -1035,7 +1238,6 @@ export default function Home() {
 
   const itemsEmpty = childFolders.length === 0 && files.length === 0;
 
-  // Folder destination options
   const folderMoveOptions = useMemo(() => {
     return folders.slice().sort((a, b) => a.name.localeCompare(b.name));
   }, [folders]);
@@ -1062,6 +1264,9 @@ export default function Home() {
     return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewSignedUrl)}`;
   }, [previewSignedUrl]);
 
+  const isHomeDir = !!rootFolder?.id && !!currentFolderId && currentFolderId === rootFolder.id;
+  const showUploadInThisFolder = canManageFiles && !isHomeDir;
+
   return (
     <main className="stack">
       <div className="row-between">
@@ -1075,14 +1280,35 @@ export default function Home() {
         <div className="card" style={{ maxWidth: 420 }}>
           <div className="stack">
             <div style={{ fontWeight: 800, fontSize: 16 }}>Sign in</div>
-            <input className="input" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+
+            <input
+              className="input"
+              placeholder="Username"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
+              autoComplete="username"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  signIn();
+                }
+              }}
+            />
+
             <input
               className="input"
               placeholder="Password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  signIn();
+                }
+              }}
             />
+
             <button className="btn btn-primary" onClick={signIn}>
               Sign in
             </button>
@@ -1126,9 +1352,9 @@ export default function Home() {
                   <div className="stack" style={{ gap: 6 }}>
                     <div style={{ fontWeight: 950, fontSize: 16 }}>Set up an account</div>
                     <div className="subtle">
-                      {setupStep === "email"
-                        ? "Enter the email your admin created for you."
-                        : `Setting password for ${setupEmail.trim() || "your email"}`}
+                      {setupStep === "identifier"
+                        ? "Enter the username your admin created for you."
+                        : `Setting password for ${setupIdentifier.trim() || "your account"}`}
                     </div>
                   </div>
                   <button className="btn" onClick={closeSetupModal} disabled={setupLoading || setupSetPassLoading}>
@@ -1138,17 +1364,22 @@ export default function Home() {
 
                 <div className="hr" />
 
-                {setupStep === "email" ? (
+                {setupStep === "identifier" ? (
                   <div className="stack" style={{ gap: 10 }}>
                     <input
                       className="input"
-                      placeholder="Email address"
-                      value={setupEmail}
-                      onChange={(e) => setSetupEmail(e.target.value)}
+                      placeholder="Username"
+                      value={setupIdentifier}
+                      onChange={(e) => setSetupIdentifier(e.target.value)}
                       disabled={setupLoading}
-                      autoComplete="email"
+                      autoComplete="username"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          runSetupCheck();
+                        }
+                      }}
                     />
-
                     <div className="row" style={{ justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
                       <button className="btn" onClick={closeSetupModal} disabled={setupLoading}>
                         Cancel
@@ -1174,6 +1405,12 @@ export default function Home() {
                       onChange={(e) => setSetupPass1(e.target.value)}
                       disabled={setupSetPassLoading}
                       autoComplete="new-password"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          runSetupSetPassword();
+                        }
+                      }}
                     />
                     <input
                       className="input"
@@ -1183,6 +1420,12 @@ export default function Home() {
                       onChange={(e) => setSetupPass2(e.target.value)}
                       disabled={setupSetPassLoading}
                       autoComplete="new-password"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          runSetupSetPassword();
+                        }
+                      }}
                     />
 
                     <div className="row" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
@@ -1191,8 +1434,9 @@ export default function Home() {
                         type="button"
                         onClick={() => {
                           if (setupSetPassLoading) return;
-                          setSetupStep("email");
+                          setSetupStep("identifier");
                           setSetupCheck(null);
+                          setSetupCheckedIdentifier("");
                           setSetupPass1("");
                           setSetupPass2("");
                           setStatus("");
@@ -1246,9 +1490,11 @@ export default function Home() {
                 <div className="subtle" style={{ marginTop: 2 }}>
                   Shared with me:
                 </div>
+
+                {/* Shared folders (chips) */}
                 <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                   {sharedFolders.length === 0 ? (
-                    <span className="subtle">(Nothing shared yet)</span>
+                    <span className="subtle">(No shared folders)</span>
                   ) : (
                     sharedFolders.map((f) => (
                       <button
@@ -1266,6 +1512,31 @@ export default function Home() {
                       >
                         📁 {f.name}
                       </button>
+                    ))
+                  )}
+                </div>
+
+                {/* Shared files (name + preview button) */}
+                <div className="stack" style={{ gap: 6, marginTop: 6 }}>
+                  {sharedFiles.length === 0 ? (
+                    <span className="subtle">(No shared files)</span>
+                  ) : (
+                    sharedFiles.map((sf) => (
+                      <div
+                        key={sf.id}
+                        className="row-between"
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 12,
+                          border: "1px solid var(--border)",
+                          background: "white",
+                        }}
+                      >
+                        <div style={{ fontWeight: 750, overflow: "hidden", textOverflow: "ellipsis" }}>📄 {sf.name}</div>
+                        <IconButton title="Preview" onClick={() => openPreview(sf)}>
+                          👁️
+                        </IconButton>
+                      </div>
                     ))
                   )}
                 </div>
@@ -1288,17 +1559,23 @@ export default function Home() {
                         Create folder
                       </button>
 
-                      <input
-                        className="input"
-                        type="file"
-                        multiple
-                        disabled={uploading || !currentFolderId}
-                        onChange={(e) => {
-                          handleUploadSelectedFiles(e.target.files);
-                          e.currentTarget.value = "";
-                        }}
-                        style={{ flex: 1, minWidth: 220 }}
-                      />
+                      {showUploadInThisFolder ? (
+                        <input
+                          className="input"
+                          type="file"
+                          multiple
+                          disabled={uploading || !currentFolderId}
+                          onChange={(e) => {
+                            handleUploadSelectedFiles(e.target.files);
+                            e.currentTarget.value = "";
+                          }}
+                          style={{ flex: 1, minWidth: 220 }}
+                        />
+                      ) : (
+                        <div className="subtle" style={{ padding: "6px 2px" }}>
+                          Uploads are disabled in HOME (top level).
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -1315,12 +1592,8 @@ export default function Home() {
                   <div style={{ fontWeight: 950, fontSize: 16 }}>Items</div>
                 </div>
 
-                {currentFolderId ? (
-                  <button
-                    className="btn"
-                    onClick={() => openShareModalForFolder(currentFolderId, `Share: ${currentFolderName}`)}
-                    disabled={!isAdminOrSupervisor}
-                  >
+                {currentFolderId && isAdminOrSupervisor ? (
+                  <button className="btn" onClick={() => openShareModalForFolder(currentFolderId, `Share folder: ${currentFolderName}`)}>
                     Share this folder
                   </button>
                 ) : null}
@@ -1350,40 +1623,26 @@ export default function Home() {
                         📁 {folder.name}
                       </button>
 
-                      <div className="row" style={{ gap: 8 }}>
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Rename / move folder" : "Only supervisors can edit"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openEditModalForFolder(folder)}
-                        >
-                          ⚙️
-                        </IconButton>
+                      {/* Teachers should not see action buttons */}
+                      {isAdminOrSupervisor ? (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Rename / move folder" onClick={() => openEditModalForFolder(folder)}>
+                            ⚙️
+                          </IconButton>
 
-                        {isAdminOrSupervisor ? (
-                          <IconButton
-                            title="Download folder as ZIP"
-                            onClick={() => handleDownloadFolderAsZip(folder.id, folder.name)}
-                          >
+                          <IconButton title="Download folder as ZIP" onClick={() => handleDownloadFolderAsZip(folder.id, folder.name)}>
                             ⬇️
                           </IconButton>
-                        ) : null}
 
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Share folder" : "Only supervisors can share"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openShareModalForFolder(folder.id, `Share folder: ${folder.name}`)}
-                        >
-                          🔗
-                        </IconButton>
+                          <IconButton title="Share folder" onClick={() => openShareModalForFolder(folder.id, `Share folder: ${folder.name}`)}>
+                            🔗
+                          </IconButton>
 
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Delete folder" : "Only supervisors can delete"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openDeleteConfirm({ type: "folder", id: folder.id, name: folder.name })}
-                        >
-                          🗑️
-                        </IconButton>
-                      </div>
+                          <IconButton title="Delete folder" onClick={() => openDeleteConfirm({ type: "folder", id: folder.id, name: folder.name })}>
+                            🗑️
+                          </IconButton>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
 
@@ -1403,41 +1662,36 @@ export default function Home() {
                         <div className="subtle">{(f as any).mime_type ?? ""}</div>
                       </div>
 
-                      <div className="row" style={{ gap: 8 }}>
-                        <IconButton title="Preview" onClick={() => openPreview(f)}>
-                          👁️
-                        </IconButton>
+                      {/* Teachers should see ONLY the preview button */}
+                      {isTeacherAccount ? (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Preview" onClick={() => openPreview(f)}>
+                            👁️
+                          </IconButton>
+                        </div>
+                      ) : (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Preview" onClick={() => openPreview(f)}>
+                            👁️
+                          </IconButton>
 
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Rename / move file" : "Only supervisors can edit"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openEditModalForFile(f)}
-                        >
-                          ⚙️
-                        </IconButton>
+                          <IconButton title="Rename / move file" onClick={() => openEditModalForFile(f)}>
+                            ⚙️
+                          </IconButton>
 
-                        {isAdminOrSupervisor ? (
                           <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
                             ⬇️
                           </IconButton>
-                        ) : null}
 
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Share (shares containing folder)" : "Only supervisors can share"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openShareModalForFile(f)}
-                        >
-                          🔗
-                        </IconButton>
+                          <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
+                            🔗
+                          </IconButton>
 
-                        <IconButton
-                          title={isAdminOrSupervisor ? "Delete file" : "Only supervisors can delete"}
-                          disabled={!isAdminOrSupervisor}
-                          onClick={() => openDeleteConfirm({ type: "file", id: f.id, name: f.name })}
-                        >
-                          🗑️
-                        </IconButton>
-                      </div>
+                          <IconButton title="Delete file" onClick={() => openDeleteConfirm({ type: "file", id: f.id, name: f.name })}>
+                            🗑️
+                          </IconButton>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1490,11 +1744,15 @@ export default function Home() {
                         ? "Image preview"
                         : previewMode === "text"
                         ? "Text preview"
+                        : previewMode === "video"
+                        ? "Video preview"
+                        : previewMode === "audio"
+                        ? "Audio preview"
                         : "Preview"}
                     </div>
                   </div>
 
-                  <button className="btn" onClick={closePreview} title="Close">
+                  <button className="btn" onClick={closePreview} title="Close (Esc)">
                     ✕
                   </button>
                 </div>
@@ -1514,10 +1772,7 @@ export default function Home() {
                     )
                   ) : previewMode === "pdf" ? (
                     previewSignedUrl ? (
-                      <iframe
-                        src={previewSignedUrl}
-                        style={{ width: "100%", height: "100%", border: 0, background: "white" }}
-                      />
+                      <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>PDF preview unavailable.</div>
                     )
@@ -1535,20 +1790,35 @@ export default function Home() {
                     )
                   ) : previewMode === "text" ? (
                     previewSignedUrl ? (
-                      <iframe
-                        src={previewSignedUrl}
-                        style={{ width: "100%", height: "100%", border: 0, background: "white" }}
-                      />
+                      <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>Text preview unavailable.</div>
+                    )
+                  ) : previewMode === "video" ? (
+                    previewSignedUrl ? (
+                      <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
+                        <video
+                          controls
+                          src={previewSignedUrl}
+                          style={{ width: "min(1100px, 100%)", height: "min(700px, 100%)", background: "black" }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ padding: 14, color: "white" }}>Video preview unavailable.</div>
+                    )
+                  ) : previewMode === "audio" ? (
+                    previewSignedUrl ? (
+                      <div style={{ padding: 18, background: "white" }}>
+                        <audio controls src={previewSignedUrl} style={{ width: "100%" }} />
+                      </div>
+                    ) : (
+                      <div style={{ padding: 14, color: "white" }}>Audio preview unavailable.</div>
                     )
                   ) : (
                     <div style={{ padding: 14, color: "white" }}>
                       No in-app preview for this file type.
                       <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                        {isAdminOrSupervisor
-                          ? "You can download it to view."
-                          : "Ask a supervisor if you need this file."}
+                        {isAdminOrSupervisor ? "You can download it to view." : "Ask a supervisor if you need this file."}
                       </div>
 
                       {isAdminOrSupervisor ? (
@@ -1598,6 +1868,7 @@ export default function Home() {
                   <div className="stack" style={{ gap: 6 }}>
                     <div style={{ fontWeight: 950, fontSize: 16 }}>Share</div>
                     <div className="subtle">{shareTarget.label}</div>
+                    <div className="subtle">Type: {shareTarget.resourceType}</div>
                   </div>
 
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
@@ -1662,37 +1933,39 @@ export default function Home() {
                   <div className="card" style={{ borderRadius: 12 }}>
                     <div className="row-between">
                       <div>
-                        <div style={{ fontWeight: 900 }}>Folder Access (direct grants)</div>
+                        <div style={{ fontWeight: 900 }}>Access (direct grants)</div>
                       </div>
-                      <button className="btn" onClick={() => refreshFolderPermissions(shareTarget.folderId)} disabled={folderPermsLoading}>
+                      <button
+                        className="btn"
+                        onClick={() => refreshPermissions({ resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId })}
+                        disabled={permsLoading}
+                      >
                         Refresh
                       </button>
                     </div>
 
                     <div className="hr" />
 
-                    {folderPermsLoading ? (
+                    {permsLoading ? (
                       <div className="subtle">Loading…</div>
-                    ) : folderPerms.length === 0 ? (
-                      <div className="subtle">(No direct shares on this folder)</div>
+                    ) : perms.length === 0 ? (
+                      <div className="subtle">(No direct shares)</div>
                     ) : (
                       <table className="table">
                         <thead>
                           <tr>
-                            <th>Email</th>
+                            <th>Teacher</th>
                             <th>Access</th>
-                            <th>Inherit</th>
                             <th>Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {folderPerms.map((p) => (
+                          {perms.map((p) => (
                             <tr key={p.permission_id}>
-                              <td>{p.email ?? p.principal_user_id}</td>
+                              <td>{teacherLabelForPermissionRow(p)}</td>
                               <td>
                                 <span className="badge badge-pink">{p.access}</span>
                               </td>
-                              <td>{p.inherit ? "true" : "false"}</td>
                               <td>
                                 <button className="btn" onClick={() => revokePermission(p.permission_id)}>
                                   Revoke
@@ -1704,6 +1977,11 @@ export default function Home() {
                       </table>
                     )}
                   </div>
+                </div>
+
+                <div className="subtle" style={{ marginTop: 10 }}>
+                  Note: file sharing now grants only that single file (not the whole folder). If a teacher still sees the full folder,
+                  your backend permission checks (RLS / download API) may still be using folder access only.
                 </div>
               </div>
             </div>
@@ -1804,7 +2082,12 @@ export default function Home() {
                   <div>
                     <div style={{ fontWeight: 900, marginBottom: 6 }}>Move to</div>
 
-                    <select className="select" value={editMoveFolderId} onChange={(e) => setEditMoveFolderId(e.target.value)} style={{ width: "100%" }}>
+                    <select
+                      className="select"
+                      value={editMoveFolderId}
+                      onChange={(e) => setEditMoveFolderId(e.target.value)}
+                      style={{ width: "100%" }}
+                    >
                       {folderMoveOptions.map((f) => {
                         if (editTarget.type === "folder") {
                           const selfId = editTarget.id;
