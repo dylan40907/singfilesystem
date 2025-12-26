@@ -466,7 +466,7 @@ export default function ReviewQueuePage() {
 
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
-  
+
   const [allowedTeacherIds, setAllowedTeacherIds] = useState<string[] | null>(null);
 
   const [showAll, setShowAll] = useState(false);
@@ -505,6 +505,21 @@ export default function ReviewQueuePage() {
   const isSheetView = sheetView && isSheetSelected;
   const isTextView = textView && isTextSelected;
 
+  // ✅ Escape closes fullscreen
+  useEffect(() => {
+    if (!isSheetView && !isTextView) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (isSheetView) setSheetView(false);
+      if (isTextView) setTextView(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isSheetView, isTextView]);
+
   // comments
   const [comments, setComments] = useState<PlanCommentRow[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -536,63 +551,63 @@ export default function ReviewQueuePage() {
   async function refreshQueue(profileArg?: TeacherProfile | null, allowedIds?: string[] | null) {
     setLoadingPlans(true);
     try {
-        const p = profileArg ?? me;
-        const ids = allowedIds ?? allowedTeacherIds;
+      const p = profileArg ?? me;
+      const ids = allowedIds ?? allowedTeacherIds;
 
-        let q = supabase
+      let q = supabase
         .from("lesson_plans")
         .select("id, owner_user_id, created_at, updated_at, title, status")
         .order("updated_at", { ascending: false });
 
-        // supervisors: filter to assigned teachers only
-        if (p?.role === "supervisor") {
+      // supervisors: filter to assigned teachers only
+      if (p?.role === "supervisor") {
         if (!ids || ids.length === 0) {
-            setPlans([]);
-            setSelectedPlanId("");
-            setPlanDetail(null);
-            setComments([]);
-            setStatus("");
-            return;
+          setPlans([]);
+          setSelectedPlanId("");
+          setPlanDetail(null);
+          setComments([]);
+          setStatus("");
+          return;
         }
         q = q.in("owner_user_id", ids);
-        }
+      }
 
-        const { data, error } = await q;
-        if (error) throw error;
+      const { data, error } = await q;
+      if (error) throw error;
 
-        let rows = (data ?? []) as QueuePlanRow[];
-        rows = await attachOwnerProfiles(rows);
+      let rows = (data ?? []) as QueuePlanRow[];
+      rows = await attachOwnerProfiles(rows);
 
-        rows.sort((a, b) => {
+      rows.sort((a, b) => {
         const ra = statusRank(a.status);
         const rb = statusRank(b.status);
         if (ra !== rb) return ra - rb;
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-        });
+      });
 
-        if (!showAll) {
+      if (!showAll) {
         rows = rows.filter((p) => p.status === "submitted" || p.status === "changes_requested");
-        }
+      }
 
-        setPlans(rows);
+      setPlans(rows);
 
-        if (rows.length > 0) {
+      if (rows.length > 0) {
         const stillExists = rows.some((p) => p.id === selectedPlanId);
         if (!stillExists) setSelectedPlanId(rows[0].id);
-        } else {
+      } else {
         setSelectedPlanId("");
         setPlanDetail(null);
         setComments([]);
-        }
+      }
 
-        setStatus("");
+      setStatus("");
     } catch (e: any) {
-        setStatus("Error loading review queue: " + (e?.message ?? "unknown"));
-        setPlans([]);
+      setStatus("Error loading review queue: " + (e?.message ?? "unknown"));
+      setPlans([]);
     } finally {
-        setLoadingPlans(false);
+      setLoadingPlans(false);
     }
-    }
+  }
 
   async function loadPlan(planId: string) {
     setPlanLoading(true);
@@ -607,7 +622,7 @@ export default function ReviewQueuePage() {
 
       if (error) throw error;
 
-      const base = data as any as PlanDetailRow;
+      const base = (data as any) as PlanDetailRow;
       const ownerProfile = plans.find((p) => p.id === planId)?.owner_profile ?? null;
 
       const merged: PlanDetailRow = { ...base, owner_profile: ownerProfile };
@@ -840,27 +855,27 @@ export default function ReviewQueuePage() {
   async function bootstrap() {
     setStatus("Loading...");
     try {
-        const profile = await loadMe();
-        if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
+      const profile = await loadMe();
+      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
         setStatus("Not authorized.");
         return;
-        }
+      }
 
-        if (profile.role === "admin") {
+      if (profile.role === "admin") {
         setAllowedTeacherIds(null); // null = no filter
         await refreshQueue(profile, null);
-        } else {
+      } else {
         const list = await fetchActiveTeachers(); // for supervisors this is already filtered correctly
         const ids = list.map((t) => t.id);
         setAllowedTeacherIds(ids);
         await refreshQueue(profile, ids);
-        }
+      }
 
-        setStatus("");
+      setStatus("");
     } catch (e: any) {
-        setStatus("Error: " + (e?.message ?? "unknown"));
+      setStatus("Error: " + (e?.message ?? "unknown"));
     }
-    }
+  }
 
   useEffect(() => {
     bootstrap();

@@ -93,7 +93,7 @@ type EditTarget =
   | { type: "folder"; id: string; name: string; parent_id: string | null }
   | { type: "file"; id: string; name: string; folder_id: string };
 
-type PreviewMode = "pdf" | "image" | "text" | "office" | "video" | "audio" | "unknown";
+type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "unknown";
 
 function extOf(name: string) {
   const i = name.lastIndexOf(".");
@@ -126,6 +126,87 @@ function isVideoExt(ext: string) {
 }
 function isAudioExt(ext: string) {
   return ext === "mp3" || ext === "wav" || ext === "m4a" || ext === "aac" || ext === "ogg" || ext === "flac";
+}
+
+function accessRank(a: PermissionAccess) {
+  if (a === "manage") return 3;
+  if (a === "download") return 2;
+  return 1;
+}
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let i = 0;
+  let inQuotes = false;
+
+  while (i < text.length) {
+    const c = text[i];
+
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i += 1;
+        continue;
+      }
+      field += c;
+      i += 1;
+      continue;
+    }
+
+    if (c === '"') {
+      inQuotes = true;
+      i += 1;
+      continue;
+    }
+
+    if (c === ",") {
+      row.push(field);
+      field = "";
+      i += 1;
+      continue;
+    }
+
+    if (c === "\n") {
+      row.push(field);
+      field = "";
+      rows.push(row);
+      row = [];
+      i += 1;
+      continue;
+    }
+
+    if (c === "\r") {
+      // handle CRLF
+      i += 1;
+      if (text[i] === "\n") {
+        row.push(field);
+        field = "";
+        rows.push(row);
+        row = [];
+        i += 1;
+      }
+      continue;
+    }
+
+    field += c;
+    i += 1;
+  }
+
+  row.push(field);
+  rows.push(row);
+
+  // If the file ends in a newline, we may get a trailing empty row.
+  const last = rows[rows.length - 1];
+  if (text.endsWith("\n") && last.length === 1 && last[0] === "") rows.pop();
+
+  return rows;
 }
 
 type SetupCheckResult =
@@ -164,6 +245,9 @@ export default function Home() {
   const [identifier, setIdentifier] = useState(""); // username OR email
   const [password, setPassword] = useState("");
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
+
+  // Login UI (QOL)
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   // Profile
   const [myProfile, setMyProfile] = useState<TeacherProfile | null>(null);
@@ -220,6 +304,10 @@ export default function Home() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewSignedUrl, setPreviewSignedUrl] = useState<string>("");
 
+  // CSV preview (avoid browser-triggered downloads for CSV)
+  const [previewCsvRows, setPreviewCsvRows] = useState<string[][]>([]);
+  const [previewCsvError, setPreviewCsvError] = useState<string>("");
+
   // Setup modal state
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupStep, setSetupStep] = useState<"identifier" | "password">("identifier");
@@ -232,11 +320,19 @@ export default function Home() {
   const [setupPass2, setSetupPass2] = useState("");
   const [setupSetPassLoading, setSetupSetPassLoading] = useState(false);
 
-  const isAdminOrSupervisor =
-    myProfile?.is_active && (myProfile.role === "admin" || myProfile.role === "supervisor");
+  const isAdmin = !!myProfile?.is_active && myProfile.role === "admin";
+  const isSupervisor = !!myProfile?.is_active && myProfile.role === "supervisor";
+  const isAdminOrSupervisor = isAdmin || isSupervisor;
   const isTeacherAccount = !!sessionEmail && !isAdminOrSupervisor;
 
-  const canManageFiles = !!isAdminOrSupervisor;
+  // Capability matrix (per your requirements)
+  const canShareResources = isAdminOrSupervisor; // admin + supervisor
+  const canCreateFolders = isAdmin; // admin only
+  const canUploadFiles = isAdmin; // admin only
+  const canDownloadFiles = isAdmin; // admin only
+  const canEditItems = isAdmin; // admin only
+  const canDeleteItems = isAdmin; // admin only
+  const canRevokePermissions = isAdmin; // admin only (supervisor can share but not revoke)
 
   const teacherById = useMemo(() => {
     const map = new Map<string, TeacherProfile>();
@@ -249,6 +345,64 @@ export default function Home() {
     if (t) return labelForTeacherNameUsername(t);
     return p.principal_user_id;
   }
+
+  const permGroups = useMemo(() => {
+    // Collapse duplicate grants in UI by principal_user_id.
+    // Keep "best" access if multiple, but store all permission_ids so Revoke can remove them all.
+    const map = new Map<
+      string,
+      {
+        principal_user_id: string;
+        email: string | null;
+        access: PermissionAccess;
+        inherit: boolean;
+        created_at: string;
+        permission_ids: string[];
+      }
+    >();
+
+    for (const p of perms) {
+      const key = p.principal_user_id;
+      const cur = map.get(key);
+
+      if (!cur) {
+        map.set(key, {
+          principal_user_id: p.principal_user_id,
+          email: p.email ?? null,
+          access: p.access,
+          inherit: !!p.inherit,
+          created_at: p.created_at,
+          permission_ids: [p.permission_id],
+        });
+        continue;
+      }
+
+      cur.permission_ids.push(p.permission_id);
+
+      // Prefer higher access; if tie, prefer newest created_at for display
+      const curRank = accessRank(cur.access);
+      const nextRank = accessRank(p.access);
+      const newer = (p.created_at ?? "") > (cur.created_at ?? "");
+
+      if (nextRank > curRank || (nextRank === curRank && newer)) {
+        cur.access = p.access;
+        cur.inherit = !!p.inherit;
+        cur.created_at = p.created_at;
+        cur.email = p.email ?? cur.email;
+      }
+    }
+
+    const out = Array.from(map.values());
+    out.sort((a, b) => teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === a.principal_user_id) as any) }).localeCompare(
+      teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === b.principal_user_id) as any) })
+    ));
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [perms, teacherById]);
+
+  const alreadySharedTeacherIds = useMemo(() => {
+    return new Set(permGroups.map((g) => g.principal_user_id));
+  }, [permGroups]);
 
   // ---------------------------
   // Shared file fetch (direct file grants)
@@ -268,9 +422,11 @@ export default function Home() {
       .map((r: any) => r.resource_id as string)
       .filter(Boolean);
 
-    if (fileIds.length === 0) return [] as FileRow[];
+    // de-dupe ids (prevents redundant queries)
+    const uniq = Array.from(new Set(fileIds));
+    if (uniq.length === 0) return [] as FileRow[];
 
-    const { data: fileRows, error: fileErr } = await supabase.from("files").select("*").in("id", fileIds);
+    const { data: fileRows, error: fileErr } = await supabase.from("files").select("*").in("id", uniq);
     if (fileErr) throw fileErr;
 
     const out = (fileRows ?? []) as FileRow[];
@@ -292,7 +448,7 @@ export default function Home() {
   }
 
   async function refreshPermissions(target: { resourceType: ResourceType; resourceId: string } | null) {
-    if (!isAdminOrSupervisor || !target?.resourceId) {
+    if (!canShareResources || !target?.resourceId) {
       setPerms([]);
       return;
     }
@@ -343,16 +499,26 @@ export default function Home() {
     }
   }
 
-  async function revokePermission(permissionId: string) {
-    if (!isAdminOrSupervisor) return;
+  async function revokePermissionGroup(permissionIds: string[]) {
+    if (!canRevokePermissions) return;
+    if (!permissionIds || permissionIds.length === 0) return;
+
     setStatus("Revoking permission...");
     try {
-      const { error } = await supabase.rpc("revoke_permission", {
-        permission_uuid: permissionId,
-      });
-      if (error) throw error;
+      const results = await Promise.allSettled(
+        permissionIds.map((permissionId) =>
+          supabase.rpc("revoke_permission", { permission_uuid: permissionId }).then(({ error }) => {
+            if (error) throw error;
+          })
+        )
+      );
 
-      setStatus("✅ Permission revoked.");
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const fail = results.length - ok;
+
+      if (fail > 0) setStatus(`⚠️ Revoked ${ok}/${results.length}. Some failed.`);
+      else setStatus("✅ Permission revoked.");
+
       await refreshPermissions(shareTarget ? { resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId } : null);
     } catch (e: any) {
       setStatus("Revoke error: " + (e?.message ?? "unknown"));
@@ -424,9 +590,7 @@ export default function Home() {
       }
 
       await refreshFiles(nextFolder);
-      await refreshPermissions(
-        nextFolder ? { resourceType: "folder", resourceId: nextFolder } : null
-      );
+      await refreshPermissions(nextFolder ? { resourceType: "folder", resourceId: nextFolder } : null);
 
       setStatus("");
     } catch (e: any) {
@@ -625,6 +789,7 @@ export default function Home() {
   }
 
   async function handleCreateFolder() {
+    if (!canCreateFolders) return;
     if (!newFolderName.trim() || !currentFolderId) return;
     try {
       await createFolder(newFolderName.trim(), currentFolderId);
@@ -686,7 +851,7 @@ export default function Home() {
   }
 
   async function handleUploadSelectedFiles(fileList: FileList | null) {
-    if (!isAdminOrSupervisor) return;
+    if (!canUploadFiles) return;
     if (!currentFolderId) return;
 
     if (rootFolder?.id && currentFolderId === rootFolder.id) {
@@ -749,8 +914,8 @@ export default function Home() {
   }
 
   async function handleDownload(fileId: string) {
-    if (!isAdminOrSupervisor) {
-      setStatus("Downloads are disabled for teacher accounts. Ask a supervisor.");
+    if (!canDownloadFiles) {
+      setStatus("Downloads are disabled for non-admin accounts. Ask an admin.");
       return;
     }
     try {
@@ -805,6 +970,11 @@ export default function Home() {
   }
 
   async function handleDownloadFolderAsZip(folderId: string, folderName: string) {
+    if (!canDownloadFiles) {
+      setStatus("Folder downloads are disabled for non-admin accounts. Ask an admin.");
+      return;
+    }
+
     try {
       setStatus("Preparing ZIP…");
 
@@ -866,12 +1036,16 @@ export default function Home() {
     setPreviewMode("unknown");
     setPreviewLoading(false);
     setPreviewSignedUrl("");
+    setPreviewCsvRows([]);
+    setPreviewCsvError("");
   }
 
   async function openPreview(file: FileRow) {
     setPreviewFile(file);
     setPreviewOpen(true);
     setPreviewLoading(true);
+    setPreviewCsvRows([]);
+    setPreviewCsvError("");
 
     try {
       const url = await getSignedDownloadUrl(file.id, "inline");
@@ -894,6 +1068,24 @@ export default function Home() {
         setPreviewLoading(false);
         return;
       }
+
+      // CSV: fetch + render in-app to prevent browser download behavior
+      if (ext === "csv") {
+        setPreviewMode("csv");
+        try {
+          const res = await fetch(url, { method: "GET" });
+          if (!res.ok) throw new Error(`Failed to load CSV (${res.status})`);
+          const text = await res.text();
+          const rows = parseCsv(text);
+          setPreviewCsvRows(rows);
+        } catch (e: any) {
+          setPreviewCsvError(e?.message ?? "Failed to load CSV preview.");
+        } finally {
+          setPreviewLoading(false);
+        }
+        return;
+      }
+
       if (isTextExt(ext)) {
         setPreviewMode("text");
         setPreviewLoading(false);
@@ -967,7 +1159,7 @@ export default function Home() {
   }
 
   function openShareModalForFolder(folderId: string, label: string) {
-    if (!isAdminOrSupervisor) return;
+    if (!canShareResources) return;
     setShareTarget({ resourceType: "folder", resourceId: folderId, label });
     setShareChecked(new Set());
     setShareModalOpen(true);
@@ -975,7 +1167,7 @@ export default function Home() {
   }
 
   function openShareModalForFile(file: FileRow) {
-    if (!isAdminOrSupervisor) return;
+    if (!canShareResources) return;
     setShareTarget({ resourceType: "file", resourceId: file.id, label: `Share file: ${(file as any).name ?? file.id}` });
     setShareChecked(new Set());
     setShareModalOpen(true);
@@ -983,11 +1175,19 @@ export default function Home() {
   }
 
   async function shareToSelectedTeachers() {
-    if (!isAdminOrSupervisor) return;
+    if (!canShareResources) return;
     if (!shareTarget?.resourceId) return;
 
-    const ids = Array.from(shareChecked);
-    if (ids.length === 0) return;
+    // prevent "sharing twice" to the same teacher (UI-level guard)
+    const selected = Array.from(shareChecked);
+    const ids = selected.filter((id) => !alreadySharedTeacherIds.has(id));
+
+    if (selected.length === 0) return;
+
+    if (ids.length === 0) {
+      setStatus("Already shared to the selected teacher(s).");
+      return;
+    }
 
     setStatus("Sharing...");
     try {
@@ -1012,6 +1212,9 @@ export default function Home() {
 
       await refreshAll();
       await refreshPermissions({ resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId });
+
+      // clear selections after share
+      setShareChecked(new Set());
     } catch (e: any) {
       setStatus("Share error: " + (e?.message ?? "unknown"));
     }
@@ -1021,7 +1224,7 @@ export default function Home() {
   // Delete (confirm modal + recursive for folders)
   // ---------------------------
   function openDeleteConfirm(target: DeleteTarget) {
-    if (!isAdminOrSupervisor) return;
+    if (!canDeleteItems) return;
     setDeleteTarget(target);
     setDeleteModalOpen(true);
   }
@@ -1072,6 +1275,7 @@ export default function Home() {
   }
 
   async function handleConfirmDelete() {
+    if (!canDeleteItems) return;
     if (!deleteTarget) return;
 
     setStatus("Deleting...");
@@ -1132,7 +1336,7 @@ export default function Home() {
   }
 
   function openEditModalForFolder(folder: Folder) {
-    if (!isAdminOrSupervisor) return;
+    if (!canEditItems) return;
     setEditTarget({ type: "folder", id: folder.id, name: folder.name, parent_id: folder.parent_id ?? null });
     setEditName(folder.name);
     setEditMoveFolderId(folder.parent_id ?? (rootFolder?.id ?? ""));
@@ -1140,7 +1344,7 @@ export default function Home() {
   }
 
   function openEditModalForFile(file: FileRow) {
-    if (!isAdminOrSupervisor) return;
+    if (!canEditItems) return;
     const folderId = (file as any)?.folder_id ?? currentFolderId;
     if (!folderId) return;
     setEditTarget({ type: "file", id: file.id, name: file.name, folder_id: folderId });
@@ -1150,6 +1354,7 @@ export default function Home() {
   }
 
   async function saveEditChanges() {
+    if (!canEditItems) return;
     if (!editTarget) return;
     const nextName = editName.trim();
     if (!nextName) return;
@@ -1158,7 +1363,10 @@ export default function Home() {
     try {
       if (editTarget.type === "file") {
         const newFolderId = editMoveFolderId || editTarget.folder_id;
-        const { error } = await supabase.from("files").update({ name: nextName, folder_id: newFolderId }).eq("id", editTarget.id);
+        const { error } = await supabase
+          .from("files")
+          .update({ name: nextName, folder_id: newFolderId })
+          .eq("id", editTarget.id);
         if (error) throw error;
       } else {
         const newParentId = editMoveFolderId || editTarget.parent_id || null;
@@ -1265,7 +1473,17 @@ export default function Home() {
   }, [previewSignedUrl]);
 
   const isHomeDir = !!rootFolder?.id && !!currentFolderId && currentFolderId === rootFolder.id;
-  const showUploadInThisFolder = canManageFiles && !isHomeDir;
+  const showUploadInThisFolder = canUploadFiles && !isHomeDir;
+
+  const csvRenderMeta = useMemo(() => {
+    const rows = previewCsvRows ?? [];
+    const rowCount = rows.length;
+    let maxCols = 0;
+    for (const r of rows) maxCols = Math.max(maxCols, r.length);
+    const colsToShow = Math.min(maxCols, 40);
+    const rowsToShow = Math.min(rowCount, 200);
+    return { rowCount, maxCols, colsToShow, rowsToShow };
+  }, [previewCsvRows]);
 
   return (
     <main className="stack">
@@ -1295,19 +1513,45 @@ export default function Home() {
               }}
             />
 
-            <input
-              className="input"
-              placeholder="Password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  signIn();
-                }
-              }}
-            />
+            {/* Password w/ reveal toggle INSIDE the input box */}
+            <div style={{ position: "relative" }}>
+              <input
+                className="input"
+                placeholder="Password"
+                type={showLoginPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                style={{ paddingRight: 92 }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    signIn();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setShowLoginPassword((v) => !v)}
+                title={showLoginPassword ? "Hide password" : "Show password"}
+                aria-label={showLoginPassword ? "Hide password" : "Show password"}
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid var(--border)",
+                  background: "white",
+                  fontWeight: 800,
+                  fontSize: 12,
+                }}
+              >
+                {showLoginPassword ? "Hide" : "Show"}
+              </button>
+            </div>
 
             <button className="btn btn-primary" onClick={signIn}>
               Sign in
@@ -1543,9 +1787,9 @@ export default function Home() {
               </div>
 
               <div className="stack" style={{ gap: 10, minWidth: 320, flex: 1 }}>
-                {canManageFiles ? (
+                {canCreateFolders || canUploadFiles ? (
                   <>
-                    <div style={{ fontWeight: 900 }}>Supervisor tools</div>
+                    <div style={{ fontWeight: 900 }}>Admin tools</div>
 
                     <div className="row" style={{ alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
                       <input
@@ -1554,8 +1798,14 @@ export default function Home() {
                         value={newFolderName}
                         onChange={(e) => setNewFolderName(e.target.value)}
                         style={{ flex: 1, minWidth: 220 }}
+                        disabled={!canCreateFolders}
                       />
-                      <button className="btn btn-primary" onClick={handleCreateFolder} disabled={!currentFolderId}>
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleCreateFolder}
+                        disabled={!currentFolderId || !canCreateFolders}
+                        title={!canCreateFolders ? "Folder creation is admin-only" : "Create folder"}
+                      >
                         Create folder
                       </button>
 
@@ -1564,7 +1814,7 @@ export default function Home() {
                           className="input"
                           type="file"
                           multiple
-                          disabled={uploading || !currentFolderId}
+                          disabled={uploading || !currentFolderId || !canUploadFiles}
                           onChange={(e) => {
                             handleUploadSelectedFiles(e.target.files);
                             e.currentTarget.value = "";
@@ -1592,7 +1842,7 @@ export default function Home() {
                   <div style={{ fontWeight: 950, fontSize: 16 }}>Items</div>
                 </div>
 
-                {currentFolderId && isAdminOrSupervisor ? (
+                {currentFolderId && canShareResources ? (
                   <button className="btn" onClick={() => openShareModalForFolder(currentFolderId, `Share folder: ${currentFolderName}`)}>
                     Share this folder
                   </button>
@@ -1623,8 +1873,8 @@ export default function Home() {
                         📁 {folder.name}
                       </button>
 
-                      {/* Teachers should not see action buttons */}
-                      {isAdminOrSupervisor ? (
+                      {/* Admin: full actions; Supervisor: share only; Teacher: no folder actions */}
+                      {isAdmin ? (
                         <div className="row" style={{ gap: 8 }}>
                           <IconButton title="Rename / move folder" onClick={() => openEditModalForFolder(folder)}>
                             ⚙️
@@ -1640,6 +1890,12 @@ export default function Home() {
 
                           <IconButton title="Delete folder" onClick={() => openDeleteConfirm({ type: "folder", id: folder.id, name: folder.name })}>
                             🗑️
+                          </IconButton>
+                        </div>
+                      ) : isSupervisor ? (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Share folder" onClick={() => openShareModalForFolder(folder.id, `Share folder: ${folder.name}`)}>
+                            🔗
                           </IconButton>
                         </div>
                       ) : null}
@@ -1662,11 +1918,21 @@ export default function Home() {
                         <div className="subtle">{(f as any).mime_type ?? ""}</div>
                       </div>
 
-                      {/* Teachers should see ONLY the preview button */}
+                      {/* Teacher: preview only. Supervisor: preview + share. Admin: preview + edit + download + share + delete */}
                       {isTeacherAccount ? (
                         <div className="row" style={{ gap: 8 }}>
                           <IconButton title="Preview" onClick={() => openPreview(f)}>
                             👁️
+                          </IconButton>
+                        </div>
+                      ) : isSupervisor ? (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Preview" onClick={() => openPreview(f)}>
+                            👁️
+                          </IconButton>
+
+                          <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
+                            🔗
                           </IconButton>
                         </div>
                       ) : (
@@ -1742,6 +2008,8 @@ export default function Home() {
                         ? "PDF preview"
                         : previewMode === "image"
                         ? "Image preview"
+                        : previewMode === "csv"
+                        ? "CSV preview"
                         : previewMode === "text"
                         ? "Text preview"
                         : previewMode === "video"
@@ -1788,6 +2056,65 @@ export default function Home() {
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>Image preview unavailable.</div>
                     )
+                  ) : previewMode === "csv" ? (
+                    <div style={{ height: "100%", background: "white", display: "flex", flexDirection: "column" }}>
+                      <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
+                        {previewCsvError ? (
+                          <div className="subtle" style={{ color: "#b00020", fontWeight: 700 }}>
+                            CSV preview failed: {previewCsvError}
+                          </div>
+                        ) : previewCsvRows.length === 0 ? (
+                          <div className="subtle">(No CSV data)</div>
+                        ) : (
+                          <div className="subtle">
+                            Showing up to {csvRenderMeta.rowsToShow} rows and {csvRenderMeta.colsToShow} columns
+                            {csvRenderMeta.rowCount > csvRenderMeta.rowsToShow || csvRenderMeta.maxCols > csvRenderMeta.colsToShow
+                              ? " (truncated)"
+                              : ""}
+                            .
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                        {!previewCsvError && previewCsvRows.length > 0 ? (
+                          <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
+                            <thead>
+                              <tr>
+                                {previewCsvRows[0].slice(0, csvRenderMeta.colsToShow).map((h, idx) => (
+                                  <th key={idx} style={{ position: "sticky", top: 0, background: "white", zIndex: 1 }}>
+                                    <div style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {h || <span className="subtle">(empty)</span>}
+                                    </div>
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {previewCsvRows.slice(1, csvRenderMeta.rowsToShow).map((r, ridx) => (
+                                <tr key={ridx}>
+                                  {r.slice(0, csvRenderMeta.colsToShow).map((cell, cidx) => (
+                                    <td key={cidx}>
+                                      <div
+                                        title={cell}
+                                        style={{
+                                          maxWidth: 260,
+                                          overflow: "hidden",
+                                          textOverflow: "ellipsis",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        {cell}
+                                      </div>
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : null}
+                      </div>
+                    </div>
                   ) : previewMode === "text" ? (
                     previewSignedUrl ? (
                       <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
@@ -1818,10 +2145,10 @@ export default function Home() {
                     <div style={{ padding: 14, color: "white" }}>
                       No in-app preview for this file type.
                       <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                        {isAdminOrSupervisor ? "You can download it to view." : "Ask a supervisor if you need this file."}
+                        {canDownloadFiles ? "You can download it to view." : "Ask an admin if you need this file."}
                       </div>
 
-                      {isAdminOrSupervisor ? (
+                      {canDownloadFiles ? (
                         <div style={{ marginTop: 10 }}>
                           <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
                             Download
@@ -1878,7 +2205,7 @@ export default function Home() {
                     <button
                       className="btn btn-primary"
                       onClick={shareToSelectedTeachers}
-                      disabled={!isAdminOrSupervisor || shareChecked.size === 0}
+                      disabled={!canShareResources || shareChecked.size === 0}
                       title={shareChecked.size === 0 ? "Select at least 1 teacher" : "Share to selected teachers"}
                     >
                       Share ({shareChecked.size})
@@ -1899,6 +2226,8 @@ export default function Home() {
                       <div className="stack" style={{ gap: 8 }}>
                         {teachers.map((t) => {
                           const checked = shareChecked.has(t.id);
+                          const alreadyHas = alreadySharedTeacherIds.has(t.id);
+
                           return (
                             <label
                               key={t.id}
@@ -1909,12 +2238,15 @@ export default function Home() {
                                 border: "1px solid var(--border)",
                                 borderRadius: 12,
                                 background: checked ? "rgba(230,23,141,0.06)" : "white",
-                                cursor: "pointer",
+                                cursor: alreadyHas ? "not-allowed" : "pointer",
+                                opacity: alreadyHas ? 0.6 : 1,
                               }}
+                              title={alreadyHas ? "Already has access" : "Select to share"}
                             >
                               <input
                                 type="checkbox"
                                 checked={checked}
+                                disabled={alreadyHas}
                                 onChange={(e) => {
                                   const next = new Set(shareChecked);
                                   if (e.target.checked) next.add(t.id);
@@ -1922,7 +2254,10 @@ export default function Home() {
                                   setShareChecked(next);
                                 }}
                               />
-                              <div style={{ fontWeight: 750 }}>{labelForTeacher(t)}</div>
+                              <div style={{ fontWeight: 750 }}>
+                                {labelForTeacher(t)}{" "}
+                                {alreadyHas ? <span className="subtle" style={{ fontWeight: 700 }}>— already shared</span> : null}
+                              </div>
                             </label>
                           );
                         })}
@@ -1948,7 +2283,7 @@ export default function Home() {
 
                     {permsLoading ? (
                       <div className="subtle">Loading…</div>
-                    ) : perms.length === 0 ? (
+                    ) : permGroups.length === 0 ? (
                       <div className="subtle">(No direct shares)</div>
                     ) : (
                       <table className="table">
@@ -1960,14 +2295,19 @@ export default function Home() {
                           </tr>
                         </thead>
                         <tbody>
-                          {perms.map((p) => (
-                            <tr key={p.permission_id}>
-                              <td>{teacherLabelForPermissionRow(p)}</td>
+                          {permGroups.map((g) => (
+                            <tr key={g.principal_user_id}>
+                              <td>{teacherLabelForPermissionRow({ permission_id: "", principal_user_id: g.principal_user_id, email: g.email, access: g.access, inherit: g.inherit, created_at: g.created_at })}</td>
                               <td>
-                                <span className="badge badge-pink">{p.access}</span>
+                                <span className="badge badge-pink">{g.access}</span>
                               </td>
                               <td>
-                                <button className="btn" onClick={() => revokePermission(p.permission_id)}>
+                                <button
+                                  className="btn"
+                                  onClick={() => revokePermissionGroup(g.permission_ids)}
+                                  disabled={!canRevokePermissions}
+                                  title={!canRevokePermissions ? "Only admins can revoke access" : "Revoke"}
+                                >
                                   Revoke
                                 </button>
                               </td>
@@ -2018,7 +2358,7 @@ export default function Home() {
                   <button className="btn" onClick={closeDeleteModal}>
                     Cancel
                   </button>
-                  <button className="btn btn-primary" onClick={handleConfirmDelete}>
+                  <button className="btn btn-primary" onClick={handleConfirmDelete} disabled={!canDeleteItems}>
                     Delete
                   </button>
                 </div>
@@ -2112,6 +2452,12 @@ export default function Home() {
                       Save
                     </button>
                   </div>
+
+                  {!canEditItems ? (
+                    <div className="subtle" style={{ marginTop: 10 }}>
+                      Only admins can rename/move items.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

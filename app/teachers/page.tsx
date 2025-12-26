@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
-import { fetchActiveTeachers, fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import "@fortune-sheet/react/dist/index.css";
 
 // TipTap (Rich Text)
@@ -402,7 +402,6 @@ function RichTextEditor({
   );
 }
 
-
 // New: username validation
 function normalizeUsername(s: string) {
   return s.trim().toLowerCase();
@@ -433,6 +432,12 @@ export default function TeachersPage() {
 
   // Admin-only: delete state
   const [deleteLoading, setDeleteLoading] = useState(false);
+
+  // Admin-only: reset/deactivate state
+  const [adminActionLoading, setAdminActionLoading] = useState<{ reset: boolean; active: boolean }>({
+    reset: false,
+    active: false,
+  });
 
   // permissions
   const [teacherPerms, setTeacherPerms] = useState<UserFolderPermissionRow[]>([]);
@@ -472,6 +477,20 @@ export default function TeachersPage() {
   const isTextSelected = planDetail?.plan_format === "text";
   const isSheetView = sheetView && isSheetSelected;
   const isTextView = textView && isTextSelected;
+
+  useEffect(() => {
+    if (!isSheetView && !isTextView) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (isSheetView) setSheetView(false);
+      if (isTextView) setTextView(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isSheetView, isTextView]);
 
   // comments
   const [comments, setComments] = useState<PlanCommentRow[]>([]);
@@ -517,20 +536,120 @@ export default function TeachersPage() {
     setUserLabelsById(next);
   }
 
-  async function refreshTeacherList() {
-    const list = await fetchActiveTeachers();
+  async function refreshTeacherList(preferSelectId?: string) {
+    // IMPORTANT: include inactive teachers too (required to keep viewing their plans after deactivation)
+    const { data, error } = await supabase.rpc("list_teachers");
+    if (error) throw error;
+
+    const list = ((data ?? []) as any[]).map((r) => ({
+      id: r.id as string,
+      email: (r.email ?? null) as string | null,
+      username: (r.username ?? null) as string | null,
+      full_name: (r.full_name ?? null) as string | null,
+      role: "teacher",
+      is_active: !!r.is_active,
+      has_set_password: (r.has_set_password ?? true) as boolean,
+    })) as TeacherProfile[];
+
+    // sort: active first, then name
+    list.sort((a, b) => {
+      const aActive = a.is_active ? 0 : 1;
+      const bActive = b.is_active ? 0 : 1;
+      if (aActive !== bActive) return aActive - bActive;
+      const an = (a.full_name ?? a.username ?? "").toLowerCase();
+      const bn = (b.full_name ?? b.username ?? "").toLowerCase();
+      return an.localeCompare(bn);
+    });
+
     setTeachers(list);
 
-    if (!selectedTeacherId && list.length > 0) setSelectedTeacherId(list[0].id);
-    if (selectedTeacherId && list.length > 0 && !list.some((t) => t.id === selectedTeacherId)) {
-      // selection was deleted or removed
-      setSelectedTeacherId(list[0].id);
+    const exists = (id: string) => list.some((t) => t.id === id);
+
+    const nextSelect =
+      (preferSelectId && exists(preferSelectId) && preferSelectId) ||
+      (selectedTeacherId && exists(selectedTeacherId) && selectedTeacherId) ||
+      (list.length > 0 ? list[0].id : "");
+
+    if (nextSelect !== selectedTeacherId) {
+      setSelectedTeacherId(nextSelect);
       setSelectedPlanId("");
       setPlanDetail(null);
       setComments([]);
     }
 
     await ensureUserLabels(list.map((t) => t.id));
+  }
+
+  // ADMIN: reset password via Edge Function
+  async function resetSelectedTeacherPassword() {
+    if (!isAdmin) return;
+    if (!selectedTeacherId) return;
+
+    const label = selectedTeacher
+      ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
+      : selectedTeacherId;
+
+    const ok = window.confirm(
+      `Reset password for this teacher?\n\n${label}\n\nThey will need to use "Set up an account" again.`
+    );
+    if (!ok) return;
+
+    setAdminActionLoading((s) => ({ ...s, reset: true }));
+    setStatus("Resetting password...");
+    try {
+      const { error } = await supabase.functions.invoke("admin-reset-user-password", {
+        body: { target_user_id: selectedTeacherId },
+      });
+      if (error) {
+        setStatus("Reset password error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus("✅ Password reset. (has_set_password=false)");
+      await refreshTeacherList(selectedTeacherId);
+    } catch (e: any) {
+      setStatus("Reset password error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAdminActionLoading((s) => ({ ...s, reset: false }));
+    }
+  }
+
+  // ADMIN: deactivate/activate via Edge Function
+  async function setSelectedTeacherActive(nextActive: boolean) {
+    if (!isAdmin) return;
+    if (!selectedTeacherId) return;
+
+    const label = selectedTeacher
+      ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
+      : selectedTeacherId;
+
+    const ok = window.confirm(
+      `${nextActive ? "Activate" : "Deactivate"} this teacher?\n\n${label}\n\n${
+        nextActive
+          ? "They will be able to log in again."
+          : "They will be signed out and won't be able to log in. Their lesson plans will remain viewable here."
+      }`
+    );
+    if (!ok) return;
+
+    setAdminActionLoading((s) => ({ ...s, active: true }));
+    setStatus(nextActive ? "Activating..." : "Deactivating...");
+    try {
+      const { error } = await supabase.functions.invoke("admin-set-user-active", {
+        body: { target_user_id: selectedTeacherId, is_active: nextActive },
+      });
+      if (error) {
+        setStatus((nextActive ? "Activate" : "Deactivate") + " error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus(nextActive ? "✅ Activated." : "✅ Deactivated.");
+      await refreshTeacherList(selectedTeacherId);
+    } catch (e: any) {
+      setStatus((nextActive ? "Activate" : "Deactivate") + " error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAdminActionLoading((s) => ({ ...s, active: false }));
+    }
   }
 
   // ADMIN: create teacher via Edge Function
@@ -574,12 +693,9 @@ export default function TeachersPage() {
       setAddUsername("");
       setAddName("");
 
-      await refreshTeacherList();
-
       const createdId = (data as any)?.teacher_id ?? (data as any)?.id ?? null;
-      if (createdId && typeof createdId === "string") {
-        setSelectedTeacherId(createdId);
-      }
+
+      await refreshTeacherList(typeof createdId === "string" ? createdId : undefined);
     } catch (e: any) {
       setStatus("Create teacher error: " + (e?.message ?? "unknown"));
     } finally {
@@ -984,6 +1100,8 @@ export default function TeachersPage() {
   const showBase = !(isSheetView || isTextView);
   const saveDisabled = planLoading || !planDetail || !hasSupervisorEdits();
 
+  const selectedTeacherIsActive = selectedTeacher ? !!selectedTeacher.is_active : true;
+
   return (
     <main className="stack">
       {/* TipTap polish */}
@@ -1012,6 +1130,12 @@ export default function TeachersPage() {
         <div className="row-between">
           <div>
             <div style={{ fontWeight: 900 }}>Select teacher</div>
+            {selectedTeacher ? (
+              <div className="subtle" style={{ marginTop: 4 }}>
+                Status:{" "}
+                <strong>{selectedTeacher.is_active ? "active" : "inactive"}</strong>
+              </div>
+            ) : null}
           </div>
 
           <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -1021,20 +1145,40 @@ export default function TeachersPage() {
               </button>
             ) : null}
 
-            <button className="btn" onClick={refreshTeacherList}>
+            <button className="btn" onClick={() => refreshTeacherList()}>
               Refresh teachers
             </button>
 
             {isAdmin ? (
-              <button
-                className="btn"
-                title="Delete selected teacher"
-                onClick={() => void deleteSelectedTeacher()}
-                disabled={!selectedTeacherId || deleteLoading}
-                style={{ padding: "8px 10px" }}
-              >
-                🗑
-              </button>
+              <>
+                <button
+                  className="btn"
+                  onClick={() => void resetSelectedTeacherPassword()}
+                  disabled={!selectedTeacherId || adminActionLoading.reset}
+                  title="Reset password for selected teacher"
+                >
+                  {adminActionLoading.reset ? "Resetting..." : "Reset password"}
+                </button>
+
+                <button
+                  className="btn"
+                  onClick={() => void setSelectedTeacherActive(!selectedTeacherIsActive)}
+                  disabled={!selectedTeacherId || adminActionLoading.active}
+                  title={selectedTeacherIsActive ? "Deactivate selected teacher" : "Activate selected teacher"}
+                >
+                  {adminActionLoading.active ? "Saving..." : selectedTeacherIsActive ? "Deactivate" : "Activate"}
+                </button>
+
+                <button
+                  className="btn"
+                  title="Delete selected teacher"
+                  onClick={() => void deleteSelectedTeacher()}
+                  disabled={!selectedTeacherId || deleteLoading}
+                  style={{ padding: "8px 10px" }}
+                >
+                  🗑
+                </button>
+              </>
             ) : null}
           </div>
         </div>
@@ -1044,6 +1188,7 @@ export default function TeachersPage() {
             {teachers.map((t) => (
               <option key={t.id} value={t.id}>
                 {labelForUser(t)}
+                {t.is_active ? "" : " (inactive)"}
               </option>
             ))}
           </select>

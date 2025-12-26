@@ -647,6 +647,26 @@ export default function MyPlansPage() {
 
   const isAnyFullscreen = isSheetView || isTextView;
 
+    // ESC to exit fullscreen (sheet/text)
+  useEffect(() => {
+    if (!isAnyFullscreen) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Prefer closing whichever fullscreen is currently open
+      if (isSheetView) setSheetView(false);
+      else if (isTextView) setTextView(false);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isAnyFullscreen, isSheetView, isTextView]);
+
+
   // "My Plans" should be *my* plans only (even for admin/supervisor),
   // so edit/delete is owner-only.
   const canEdit = !!selectedPlan && selectedPlan.owner_user_id === myUserId;

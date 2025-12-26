@@ -25,10 +25,6 @@ function labelForUser(u: { id: string; email?: string | null; username?: string 
   return u.id;
 }
 
-function isValidEmail(email: string) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-}
-
 function normalizeUsername(s: string) {
   return s.trim().toLowerCase();
 }
@@ -59,6 +55,12 @@ export default function AdminSupervisorsPage() {
   // Admin-only: delete supervisor state
   const [deleteLoading, setDeleteLoading] = useState(false);
 
+  // Admin-only: reset/deactivate state
+  const [adminActionLoading, setAdminActionLoading] = useState<{ reset: boolean; active: boolean }>({
+    reset: false,
+    active: false,
+  });
+
   async function refreshLists(preferSelectId?: string) {
     const [{ data: sData, error: sErr }, { data: tData, error: tErr }] = await Promise.all([
       supabase.rpc("list_supervisors"),
@@ -83,6 +85,14 @@ export default function AdminSupervisorsPage() {
       full_name: (r.full_name ?? null) as string | null,
       is_active: !!r.is_active,
     })) as PersonRow[];
+
+    // sort: active first then name
+    supRows.sort((a, b) => {
+      const aa = a.is_active ? 0 : 1;
+      const bb = b.is_active ? 0 : 1;
+      if (aa !== bb) return aa - bb;
+      return (labelForUser(a).toLowerCase()).localeCompare(labelForUser(b).toLowerCase());
+    });
 
     setSupervisors(supRows);
     setTeachers(teacherRows);
@@ -180,6 +190,76 @@ export default function AdminSupervisorsPage() {
       await loadAssignments(selectedSupervisorId);
     } catch (e: any) {
       setStatus("Unassign error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  // ADMIN: reset password for selected supervisor
+  async function resetSelectedSupervisorPassword() {
+    if (!isAdmin) return;
+    if (!selectedSupervisorId) return;
+
+    const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+    const label = selected ? labelForUser(selected) : selectedSupervisorId;
+
+    const ok = window.confirm(
+      `Reset password for this supervisor?\n\n${label}\n\nThey will need to use "Set up an account" again.`
+    );
+    if (!ok) return;
+
+    setAdminActionLoading((s) => ({ ...s, reset: true }));
+    setStatus("Resetting password...");
+    try {
+      const { error } = await supabase.functions.invoke("admin-reset-user-password", {
+        body: { target_user_id: selectedSupervisorId },
+      });
+      if (error) {
+        setStatus("Reset password error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus("✅ Password reset.");
+      await refreshLists(selectedSupervisorId);
+    } catch (e: any) {
+      setStatus("Reset password error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAdminActionLoading((s) => ({ ...s, reset: false }));
+    }
+  }
+
+  // ADMIN: deactivate/activate selected supervisor
+  async function setSelectedSupervisorActive(nextActive: boolean) {
+    if (!isAdmin) return;
+    if (!selectedSupervisorId) return;
+
+    const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+    const label = selected ? labelForUser(selected) : selectedSupervisorId;
+
+    const ok = window.confirm(
+      `${nextActive ? "Activate" : "Deactivate"} this supervisor?\n\n${label}\n\n${
+        nextActive
+          ? "They will be able to log in again."
+          : "They will be signed out and won't be able to log in."
+      }`
+    );
+    if (!ok) return;
+
+    setAdminActionLoading((s) => ({ ...s, active: true }));
+    setStatus(nextActive ? "Activating..." : "Deactivating...");
+    try {
+      const { error } = await supabase.functions.invoke("admin-set-user-active", {
+        body: { target_user_id: selectedSupervisorId, is_active: nextActive },
+      });
+      if (error) {
+        setStatus((nextActive ? "Activate" : "Deactivate") + " error: " + (error.message ?? "unknown"));
+        return;
+      }
+
+      setStatus(nextActive ? "✅ Activated." : "✅ Deactivated.");
+      await refreshLists(selectedSupervisorId);
+    } catch (e: any) {
+      setStatus((nextActive ? "Activate" : "Deactivate") + " error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAdminActionLoading((s) => ({ ...s, active: false }));
     }
   }
 
@@ -303,6 +383,9 @@ export default function AdminSupervisorsPage() {
     );
   }
 
+  const selectedSupervisor = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+  const selectedSupervisorIsActive = selectedSupervisor ? !!selectedSupervisor.is_active : true;
+
   return (
     <main className="stack">
       <div className="row-between">
@@ -314,7 +397,14 @@ export default function AdminSupervisorsPage() {
 
       <div className="card">
         <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ fontWeight: 900 }}>Select supervisor</div>
+          <div style={{ fontWeight: 900 }}>
+            Select supervisor{" "}
+            {selectedSupervisor ? (
+              <span className="subtle" style={{ marginLeft: 10, fontWeight: 600 }}>
+                ({selectedSupervisor.is_active ? "active" : "inactive"})
+              </span>
+            ) : null}
+          </div>
 
           <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <button className="btn btn-primary" onClick={() => setAddOpen(true)}>
@@ -323,6 +413,24 @@ export default function AdminSupervisorsPage() {
 
             <button className="btn" onClick={() => refreshLists()}>
               Refresh
+            </button>
+
+            <button
+              className="btn"
+              onClick={() => void resetSelectedSupervisorPassword()}
+              disabled={!selectedSupervisorId || adminActionLoading.reset}
+              title="Reset password for selected supervisor"
+            >
+              {adminActionLoading.reset ? "Resetting..." : "Reset password"}
+            </button>
+
+            <button
+              className="btn"
+              onClick={() => void setSelectedSupervisorActive(!selectedSupervisorIsActive)}
+              disabled={!selectedSupervisorId || adminActionLoading.active}
+              title={selectedSupervisorIsActive ? "Deactivate selected supervisor" : "Activate selected supervisor"}
+            >
+              {adminActionLoading.active ? "Saving..." : selectedSupervisorIsActive ? "Deactivate" : "Activate"}
             </button>
 
             <button
@@ -342,6 +450,7 @@ export default function AdminSupervisorsPage() {
             {supervisors.map((s) => (
               <option key={s.id} value={s.id}>
                 {labelForUser(s)}
+                {s.is_active ? "" : " (inactive)"}
               </option>
             ))}
           </select>
