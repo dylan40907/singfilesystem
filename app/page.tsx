@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { createFolder, fetchFolders, fetchRootFolder, Folder } from "@/lib/folders";
 import { fetchActiveTeachers, fetchMyProfile, TeacherProfile } from "@/lib/teachers";
@@ -208,6 +208,175 @@ function parseCsv(text: string) {
 
   return rows;
 }
+
+function PdfCanvasPreview({
+  url,
+  maxPages = 50,
+}: {
+  url: string;
+  maxPages?: number;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [err, setErr] = useState<string>("");
+  const [pdfjs, setPdfjs] = useState<any>(null);
+
+  // 1) Load pdfjs on the client ONLY (avoids DOMMatrix SSR/module-eval crashes)
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        let mod: any = null;
+
+        // Try a few known entrypoints across pdfjs-dist versions.
+        try {
+          // @ts-ignore - some pdfjs-dist versions don't ship TS types for subpaths
+          mod = await import("pdfjs-dist/build/pdf");
+        } catch {}
+
+        if (!mod) {
+          try {
+            // @ts-ignore
+            mod = await import("pdfjs-dist/build/pdf.mjs");
+          } catch {}
+        }
+
+        if (!mod) {
+          try {
+            // @ts-ignore
+            mod = await import("pdfjs-dist/legacy/build/pdf");
+          } catch {}
+        }
+
+        if (!mod) {
+          throw new Error("PDF.js failed to load (pdfjs-dist). Check installed version / paths.");
+        }
+
+        // Configure worker AFTER module loads (client-side).
+        // Try build worker first, then legacy worker.
+        try {
+          mod.GlobalWorkerOptions.workerSrc = new URL(
+            "pdfjs-dist/build/pdf.worker.min.mjs",
+            import.meta.url
+          ).toString();
+        } catch {
+          try {
+            mod.GlobalWorkerOptions.workerSrc = new URL(
+              "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+              import.meta.url
+            ).toString();
+          } catch {
+            // If worker can't be set, pdfjs may still render but slower (falls back).
+          }
+        }
+
+        if (!cancelled) setPdfjs(mod);
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message ?? "Failed to load PDF renderer");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 2) Render whenever url/maxPages/pdfjs changes
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      // If pdfjs hasn't loaded yet, just wait.
+      if (!pdfjs) return;
+
+      setErr("");
+
+      const container = containerRef.current;
+      if (!container) return;
+
+      // clear previous renders
+      container.innerHTML = "";
+
+      try {
+        const loadingTask = pdfjs.getDocument({ url });
+        const pdf = await loadingTask.promise;
+
+        const pagesToRender = Math.min(pdf.numPages, maxPages);
+
+        for (let pageNum = 1; pageNum <= pagesToRender; pageNum++) {
+          if (cancelled) return;
+
+          const page = await pdf.getPage(pageNum);
+
+          // Scale tweak: increase/decrease if you want sharper text vs speed
+          const viewport = page.getViewport({ scale: 1.25 });
+
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+
+          canvas.width = Math.floor(viewport.width);
+          canvas.height = Math.floor(viewport.height);
+
+          // Make it responsive
+          canvas.style.width = "100%";
+          canvas.style.height = "auto";
+          canvas.style.background = "white";
+          canvas.style.borderRadius = "12px";
+          canvas.style.boxShadow = "inset 0 0 0 1px var(--border)";
+
+          const wrapper = document.createElement("div");
+          wrapper.style.padding = "12px";
+          wrapper.appendChild(canvas);
+
+          container.appendChild(wrapper);
+
+          // NOTE: some pdfjs typings want `canvas` + `canvasContext`.
+          const renderTask = page.render({
+            canvas,
+            canvasContext: ctx,
+            viewport,
+          } as any);
+
+          await renderTask.promise;
+        }
+
+        if (pdf.numPages > pagesToRender) {
+          const note = document.createElement("div");
+          note.style.padding = "12px";
+          note.style.color = "#666";
+          note.style.fontWeight = "700";
+          note.textContent = `Preview truncated: showing ${pagesToRender} of ${pdf.numPages} pages.`;
+          container.appendChild(note);
+        }
+      } catch (e: any) {
+        setErr(e?.message ?? "Failed to render PDF");
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [url, maxPages, pdfjs]);
+
+  return (
+    <div
+      style={{ height: "100%", overflow: "auto", background: "#f6f6f6" }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      {err ? (
+        <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>
+          PDF preview failed: {err}
+        </div>
+      ) : (
+        <div ref={containerRef} />
+      )}
+    </div>
+  );
+}
+
+
 
 type SetupCheckResult =
   | { status: "not_found" }
@@ -2040,7 +2209,9 @@ export default function Home() {
                     )
                   ) : previewMode === "pdf" ? (
                     previewSignedUrl ? (
-                      <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
+                      <div style={{ width: "100%", height: "100%", background: "white" }}>
+                        <PdfCanvasPreview url={previewSignedUrl} />
+                      </div>
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>PDF preview unavailable.</div>
                     )
@@ -2126,6 +2297,10 @@ export default function Home() {
                       <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
                         <video
                           controls
+                          controlsList="nodownload noplaybackrate noremoteplayback"
+                          disablePictureInPicture
+                          disableRemotePlayback
+                          onContextMenu={(e) => e.preventDefault()}
                           src={previewSignedUrl}
                           style={{ width: "min(1100px, 100%)", height: "min(700px, 100%)", background: "black" }}
                         />
