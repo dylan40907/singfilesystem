@@ -93,7 +93,7 @@ type EditTarget =
   | { type: "folder"; id: string; name: string; parent_id: string | null }
   | { type: "file"; id: string; name: string; folder_id: string };
 
-type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "unknown";
+type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "link" | "unknown";
 
 function extOf(name: string) {
   const i = name.lastIndexOf(".");
@@ -126,6 +126,95 @@ function isVideoExt(ext: string) {
 }
 function isAudioExt(ext: string) {
   return ext === "mp3" || ext === "wav" || ext === "m4a" || ext === "aac" || ext === "ogg" || ext === "flac";
+}
+
+function normalizeUrl(raw: string) {
+  const s = raw.trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  // default to https if they paste "www..." or a domain without scheme
+  return `https://${s}`;
+}
+
+// --- Link "file type" helpers (stored as files rows with storage_key = `link:<url>` + mime_type = `application/x-link`) ---
+//
+// IMPORTANT: your `files` table has NOT NULL columns:
+//   - original_name
+//   - storage_key
+//
+// For link rows, we store:
+//   - name: either URL (if no display text) OR "Display<DELIM>URL" (if display text provided)
+//   - original_name: ALWAYS the normalized URL (never includes the delimiter)
+//   - storage_key: "link:<normalizedUrl>"
+//   - (optional) object_key: also "link:<normalizedUrl>" (kept for backwards compatibility)
+//   - mime_type: "application/x-link"
+//   - size_bytes: 0
+//
+// This guarantees adding links works even when display text is blank, and satisfies DB constraints.
+const LINK_NAME_DELIM = "\u001F"; // Unit Separator (rarely typed, safe delimiter)
+
+function isLinkRow(file: FileRow) {
+  const mt = (((file as any).mime_type ?? (file as any).mimeType) || "").toString().toLowerCase();
+  const sk = (((file as any).storage_key ?? (file as any).storageKey) || "").toString();
+  const ok = (((file as any).object_key ?? (file as any).objectKey) || "").toString();
+  const key = sk || ok;
+  return mt === "application/x-link" || key.startsWith("link:");
+}
+
+function linkPartsFromName(name: string) {
+  const n = (name ?? "").toString();
+  const idx = n.indexOf(LINK_NAME_DELIM);
+  if (idx >= 0) {
+    const display = n.slice(0, idx).trim();
+    const url = n.slice(idx + LINK_NAME_DELIM.length).trim();
+    return { display, url };
+  }
+  return { display: n.trim(), url: "" };
+}
+
+function linkDisplayNameFromRow(file: FileRow) {
+  const name = ((file as any).name ?? "").toString();
+  const { display } = linkPartsFromName(name);
+  return display || name || "(link)";
+}
+
+function linkUrlFromRow(file: FileRow) {
+  const sk = (((file as any).storage_key ?? (file as any).storageKey) || "").toString().trim();
+  const ok = (((file as any).object_key ?? (file as any).objectKey) || "").toString().trim();
+  const key = (sk || ok).trim();
+
+  const name = (((file as any).name ?? "") || "").toString().trim();
+  const original = (((file as any).original_name ?? (file as any).originalName) || "").toString().trim();
+
+  // Preferred storage: storage_key = "link:https://..."
+  if (key.startsWith("link:")) return key.slice("link:".length).trim();
+
+  // If key is already a URL or domain, accept it
+  if (key) {
+    if (/^https?:\/\//i.test(key)) return key;
+    if (key.startsWith("www.") || key.includes(".")) return normalizeUrl(key);
+  }
+
+  // Reliable storage: original_name is NOT NULL and holds the normalized URL for link rows
+  if (original) {
+    if (/^https?:\/\//i.test(original)) return original;
+    if (original.startsWith("www.") || original.includes(".")) return normalizeUrl(original);
+  }
+
+  // Redundant storage: name may be "Display<DELIM>https://..."
+  const parts = linkPartsFromName(name);
+  if (parts.url) {
+    if (/^https?:\/\//i.test(parts.url)) return parts.url;
+    if (parts.url.startsWith("www.") || parts.url.includes(".")) return normalizeUrl(parts.url);
+  }
+
+  // Last resort: if the name itself is a URL, treat it as such
+  if (name) {
+    if (/^https?:\/\//i.test(name)) return name;
+    if (name.startsWith("www.") || name.includes(".")) return normalizeUrl(name);
+  }
+
+  return "";
 }
 
 function accessRank(a: PermissionAccess) {
@@ -209,13 +298,7 @@ function parseCsv(text: string) {
   return rows;
 }
 
-function PdfCanvasPreview({
-  url,
-  maxPages = 50,
-}: {
-  url: string;
-  maxPages?: number;
-}) {
+function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: number }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [err, setErr] = useState<string>("");
   const [pdfjs, setPdfjs] = useState<any>(null);
@@ -255,16 +338,10 @@ function PdfCanvasPreview({
         // Configure worker AFTER module loads (client-side).
         // Try build worker first, then legacy worker.
         try {
-          mod.GlobalWorkerOptions.workerSrc = new URL(
-            "pdfjs-dist/build/pdf.worker.min.mjs",
-            import.meta.url
-          ).toString();
+          mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
         } catch {
           try {
-            mod.GlobalWorkerOptions.workerSrc = new URL(
-              "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
-              import.meta.url
-            ).toString();
+            mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
           } catch {
             // If worker can't be set, pdfjs may still render but slower (falls back).
           }
@@ -361,22 +438,15 @@ function PdfCanvasPreview({
   }, [url, maxPages, pdfjs]);
 
   return (
-    <div
-      style={{ height: "100%", overflow: "auto", background: "#f6f6f6" }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
+    <div style={{ height: "100%", overflow: "auto", background: "#f6f6f6" }} onContextMenu={(e) => e.preventDefault()}>
       {err ? (
-        <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>
-          PDF preview failed: {err}
-        </div>
+        <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>PDF preview failed: {err}</div>
       ) : (
         <div ref={containerRef} />
       )}
     </div>
   );
 }
-
-
 
 type SetupCheckResult =
   | { status: "not_found" }
@@ -442,6 +512,12 @@ export default function Home() {
 
   // Upload UI
   const [uploading, setUploading] = useState(false);
+
+  // --- Add Link UI ---
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkDisplayText, setLinkDisplayText] = useState("");
+  const [linkAdding, setLinkAdding] = useState(false);
 
   // Permissions list (admin/supervisor only) — shown in share modal
   const [perms, setPerms] = useState<PermissionRowForUi[]>([]);
@@ -562,9 +638,11 @@ export default function Home() {
     }
 
     const out = Array.from(map.values());
-    out.sort((a, b) => teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === a.principal_user_id) as any) }).localeCompare(
-      teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === b.principal_user_id) as any) })
-    ));
+    out.sort((a, b) =>
+      teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === a.principal_user_id) as any) }).localeCompare(
+        teacherLabelForPermissionRow({ ...(perms.find((x) => x.principal_user_id === b.principal_user_id) as any) })
+      )
+    );
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [perms, teacherById]);
@@ -572,6 +650,12 @@ export default function Home() {
   const alreadySharedTeacherIds = useMemo(() => {
     return new Set(permGroups.map((g) => g.principal_user_id));
   }, [permGroups]);
+
+  function openExternalLink(url: string) {
+    const u = url?.trim();
+    if (!u) return;
+    window.open(u, "_blank", "noopener,noreferrer");
+  }
 
   // ---------------------------
   // Shared file fetch (direct file grants)
@@ -587,9 +671,7 @@ export default function Home() {
 
     if (permErr) throw permErr;
 
-    const fileIds = (permRows ?? [])
-      .map((r: any) => r.resource_id as string)
-      .filter(Boolean);
+    const fileIds = (permRows ?? []).map((r: any) => r.resource_id as string).filter(Boolean);
 
     // de-dupe ids (prevents redundant queries)
     const uniq = Array.from(new Set(fileIds));
@@ -633,9 +715,12 @@ export default function Home() {
         setPerms((data ?? []) as PermissionRowForUi[]);
       } else {
         // Try RPC if you add it; otherwise fall back to direct select.
-        const { data: rpcTell, error: rpcErr } = await supabase.rpc("list_file_permissions", {
-          file_uuid: target.resourceId,
-        } as any);
+        const { data: rpcTell, error: rpcErr } = await supabase.rpc(
+          "list_file_permissions",
+          {
+            file_uuid: target.resourceId,
+          } as any
+        );
 
         if (!rpcErr) {
           setPerms((rpcTell ?? []) as PermissionRowForUi[]);
@@ -718,11 +803,7 @@ export default function Home() {
       const profile = await fetchMyProfile();
       setMyProfile(profile);
 
-      const [allFolders, root, sharedFolderList] = await Promise.all([
-        fetchFolders(),
-        fetchRootFolder(),
-        fetchSharedFoldersDirect(),
-      ]);
+      const [allFolders, root, sharedFolderList] = await Promise.all([fetchFolders(), fetchRootFolder(), fetchSharedFoldersDirect()]);
 
       setFolders(allFolders);
       setRootFolder(root);
@@ -1053,6 +1134,83 @@ export default function Home() {
   }
 
   // ---------------------------
+  // Add Link (stored as file row)
+  // ---------------------------
+  function openLinkModal() {
+    if (!canUploadFiles) return;
+    if (!currentFolderId) return;
+    setLinkUrl("");
+    setLinkDisplayText("");
+    setLinkModalOpen(true);
+    setStatus("");
+  }
+
+  function closeLinkModal() {
+    if (linkAdding) return;
+    setLinkModalOpen(false);
+    setLinkUrl("");
+    setLinkDisplayText("");
+  }
+
+  async function handleAddLink() {
+    if (!canUploadFiles) return;
+    if (!currentFolderId) return;
+
+    if (rootFolder?.id && currentFolderId === rootFolder.id) {
+      setStatus("Links are disabled in HOME. Please open a folder first, then add the link inside it.");
+      return;
+    }
+
+    const raw = linkUrl.trim();
+    if (!raw) {
+      setStatus("Add link error: Please enter a link URL.");
+      return;
+    }
+
+    const normalized = normalizeUrl(raw);
+    if (!normalized) {
+      setStatus("Add link error: Invalid link.");
+      return;
+    }
+
+    const display = (linkDisplayText || "").trim();
+    const storedName = display ? `${display}${LINK_NAME_DELIM}${normalized}` : normalized;
+
+    setLinkAdding(true);
+    setStatus("Adding link...");
+    try {
+      // IMPORTANT:
+      // `files.original_name` is NOT NULL and `files.storage_key` is NOT NULL in your schema.
+      // For link rows, we set:
+      //   original_name = normalized URL
+      //   storage_key   = `link:${normalized}`
+      const linkKey = `link:${normalized}`;
+
+      const { error } = await supabase.from("files").insert({
+        folder_id: currentFolderId,
+        name: storedName,
+        original_name: normalized, // satisfies NOT NULL
+        storage_key: linkKey, // satisfies NOT NULL
+        object_key: linkKey, // optional/back-compat (ok to keep)
+        mime_type: "application/x-link",
+        size_bytes: 0,
+      });
+
+      if (error) throw error;
+
+      setStatus("✅ Link added.");
+      setLinkModalOpen(false);
+      setLinkUrl("");
+      setLinkDisplayText("");
+      await refreshFiles(currentFolderId);
+    } catch (e: any) {
+      setStatus("Add link error: " + (e?.message ?? "unknown"));
+    } finally {
+      setLinkAdding(false);
+    }
+  }
+
+  // ---------------------------
   // Download helpers
   // ---------------------------
   async function getSignedDownloadUrl(fileId: string, mode: "inline" | "attachment" = "attachment") {
@@ -1072,9 +1230,7 @@ export default function Home() {
     const body = await readJsonSafely(res);
 
     if (!res.ok) {
-      const msg =
-        (body as any)?.error ||
-        ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "download failed");
+      const msg = (body as any)?.error || ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "download failed");
       throw new Error(msg);
     }
     if ((body as any)?.__nonJson) throw new Error("Download returned non-JSON response.");
@@ -1088,6 +1244,14 @@ export default function Home() {
       return;
     }
     try {
+      const file = files.find((x) => x.id === fileId) ?? null;
+      if (file && isLinkRow(file)) {
+        const u = linkUrlFromRow(file);
+        if (u) openExternalLink(u);
+        else setStatus("This link is missing its URL.");
+        return;
+      }
+
       const url = await getSignedDownloadUrl(fileId, "attachment");
       window.location.href = url;
     } catch (e: any) {
@@ -1125,6 +1289,9 @@ export default function Home() {
 
       const fileRows = await fetchFilesInFolder(cur.folderId);
       for (const fr of fileRows) {
+        // Links are not downloadable objects; skip them in ZIP.
+        if (isLinkRow(fr)) continue;
+
         const url = await getSignedDownloadUrl(fr.id);
         entries.push({ url, path: `${cur.path}/${fr.name}`.replaceAll("//", "/") });
       }
@@ -1151,7 +1318,7 @@ export default function Home() {
       const entries = await collectFolderFileEntries(folderId, safeName);
 
       if (entries.length === 0) {
-        setStatus("Nothing to download (folder has no files).");
+        setStatus("Nothing to download (folder has no downloadable files).");
         return;
       }
 
@@ -1217,6 +1384,15 @@ export default function Home() {
     setPreviewCsvError("");
 
     try {
+      // LINK "file": do not call download signing — just preview/open the URL.
+      if (isLinkRow(file)) {
+        const u = linkUrlFromRow(file);
+        setPreviewSignedUrl(u);
+        setPreviewMode("link");
+        setPreviewLoading(false);
+        return;
+      }
+
       const url = await getSignedDownloadUrl(file.id, "inline");
       setPreviewSignedUrl(url);
 
@@ -1337,7 +1513,8 @@ export default function Home() {
 
   function openShareModalForFile(file: FileRow) {
     if (!canShareResources) return;
-    setShareTarget({ resourceType: "file", resourceId: file.id, label: `Share file: ${(file as any).name ?? file.id}` });
+    const label = isLinkRow(file) ? linkDisplayNameFromRow(file) : (file as any).name ?? file.id;
+    setShareTarget({ resourceType: "file", resourceId: file.id, label: `Share file: ${label}` });
     setShareChecked(new Set());
     setShareModalOpen(true);
     refreshPermissions({ resourceType: "file", resourceId: file.id });
@@ -1465,9 +1642,7 @@ export default function Home() {
           for (const id of ids) await deleteFileRow(id);
         }
 
-        const foldersToDelete = [...allFolderIds].sort(
-          (a, b) => depthOfFolder(b, folderById) - depthOfFolder(a, folderById)
-        );
+        const foldersToDelete = [...allFolderIds].sort((a, b) => depthOfFolder(b, folderById) - depthOfFolder(a, folderById));
         for (const fid of foldersToDelete) await deleteFolderRow(fid);
 
         if (currentFolderId === deleteTarget.id) {
@@ -1516,8 +1691,12 @@ export default function Home() {
     if (!canEditItems) return;
     const folderId = (file as any)?.folder_id ?? currentFolderId;
     if (!folderId) return;
+
+    const isLink = isLinkRow(file);
+    const displayName = isLink ? linkDisplayNameFromRow(file) : file.name;
+
     setEditTarget({ type: "file", id: file.id, name: file.name, folder_id: folderId });
-    setEditName(file.name);
+    setEditName(displayName);
     setEditMoveFolderId(folderId);
     setEditModalOpen(true);
   }
@@ -1532,11 +1711,48 @@ export default function Home() {
     try {
       if (editTarget.type === "file") {
         const newFolderId = editMoveFolderId || editTarget.folder_id;
-        const { error } = await supabase
-          .from("files")
-          .update({ name: nextName, folder_id: newFolderId })
-          .eq("id", editTarget.id);
-        if (error) throw error;
+
+        const existing = files.find((x) => x.id === editTarget.id) ?? null;
+        const isLink = existing ? isLinkRow(existing) : false;
+
+        if (isLink && existing) {
+          const url = linkUrlFromRow(existing);
+          // Preserve the URL; only rename the display text.
+          const storedName = url ? `${nextName}${LINK_NAME_DELIM}${url}` : nextName;
+
+          const patch: any = {
+            name: storedName,
+            folder_id: newFolderId,
+          };
+
+          // Repair/ensure link invariants (including NOT NULL original_name + storage_key).
+          if (url) {
+            const linkKey = `link:${url}`;
+            patch.storage_key = linkKey; // <-- FIX: keep storage_key non-null for link rows
+            patch.object_key = linkKey; // optional/back-compat
+            patch.mime_type = "application/x-link";
+            patch.size_bytes = 0;
+            patch.original_name = url; // <-- FIX: keep original_name non-null for link rows
+          } else {
+            // If URL is somehow missing, at least keep NOT NULL columns populated.
+            const existingOriginal = ((existing as any).original_name ?? (existing as any).originalName ?? "").toString().trim();
+            const fallbackOriginal = existingOriginal || storedName;
+
+            const existingStorage = ((existing as any).storage_key ?? (existing as any).storageKey ?? "").toString().trim();
+            const existingObjectKey = ((existing as any).object_key ?? (existing as any).objectKey ?? "").toString().trim();
+            const fallbackKey = existingStorage || existingObjectKey || `link:${normalizeUrl(storedName) || storedName}`;
+
+            patch.original_name = fallbackOriginal;
+            patch.storage_key = fallbackKey;
+            patch.object_key = fallbackKey;
+          }
+
+          const { error } = await supabase.from("files").update(patch).eq("id", editTarget.id);
+          if (error) throw error;
+        } else {
+          const { error } = await supabase.from("files").update({ name: nextName, folder_id: newFolderId }).eq("id", editTarget.id);
+          if (error) throw error;
+        }
       } else {
         const newParentId = editMoveFolderId || editTarget.parent_id || null;
 
@@ -1653,6 +1869,12 @@ export default function Home() {
     const rowsToShow = Math.min(rowCount, 200);
     return { rowCount, maxCols, colsToShow, rowsToShow };
   }, [previewCsvRows]);
+
+  const previewTitle = useMemo(() => {
+    if (!previewFile) return "";
+    if (previewMode === "link") return linkDisplayNameFromRow(previewFile);
+    return previewFile.name;
+  }, [previewFile, previewMode]);
 
   return (
     <main className="stack">
@@ -1929,28 +2151,40 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Shared files (name + preview button) */}
+                {/* Shared files (name + preview/open button) */}
                 <div className="stack" style={{ gap: 6, marginTop: 6 }}>
                   {sharedFiles.length === 0 ? (
                     <span className="subtle">(No shared files)</span>
                   ) : (
-                    sharedFiles.map((sf) => (
-                      <div
-                        key={sf.id}
-                        className="row-between"
-                        style={{
-                          padding: "8px 10px",
-                          borderRadius: 12,
-                          border: "1px solid var(--border)",
-                          background: "white",
-                        }}
-                      >
-                        <div style={{ fontWeight: 750, overflow: "hidden", textOverflow: "ellipsis" }}>📄 {sf.name}</div>
-                        <IconButton title="Preview" onClick={() => openPreview(sf)}>
-                          👁️
-                        </IconButton>
-                      </div>
-                    ))
+                    sharedFiles.map((sf) => {
+                      const isLink = isLinkRow(sf);
+                      const u = isLink ? linkUrlFromRow(sf) : "";
+                      return (
+                        <div
+                          key={sf.id}
+                          className="row-between"
+                          style={{
+                            padding: "8px 10px",
+                            borderRadius: 12,
+                            border: "1px solid var(--border)",
+                            background: "white",
+                          }}
+                        >
+                          <div style={{ fontWeight: 750, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {isLink ? "🔗" : "📄"} {isLink ? linkDisplayNameFromRow(sf) : sf.name}
+                          </div>
+                          {isLink ? (
+                            <IconButton title="Open link" onClick={() => openExternalLink(u)} disabled={!u}>
+                              ↗️
+                            </IconButton>
+                          ) : (
+                            <IconButton title="Preview" onClick={() => openPreview(sf)}>
+                              👁️
+                            </IconButton>
+                          )}
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -1979,17 +2213,22 @@ export default function Home() {
                       </button>
 
                       {showUploadInThisFolder ? (
-                        <input
-                          className="input"
-                          type="file"
-                          multiple
-                          disabled={uploading || !currentFolderId || !canUploadFiles}
-                          onChange={(e) => {
-                            handleUploadSelectedFiles(e.target.files);
-                            e.currentTarget.value = "";
-                          }}
-                          style={{ flex: 1, minWidth: 220 }}
-                        />
+                        <div className="stack" style={{ gap: 8, flex: 1, minWidth: 220 }}>
+                          <input
+                            className="input"
+                            type="file"
+                            multiple
+                            disabled={uploading || !currentFolderId || !canUploadFiles}
+                            onChange={(e) => {
+                              handleUploadSelectedFiles(e.target.files);
+                              e.currentTarget.value = "";
+                            }}
+                            style={{ width: "100%" }}
+                          />
+                          <button className="btn" type="button" onClick={openLinkModal} disabled={!currentFolderId || linkAdding}>
+                            Add link
+                          </button>
+                        </div>
                       ) : (
                         <div className="subtle" style={{ padding: "6px 2px" }}>
                           Uploads are disabled in HOME (top level).
@@ -2071,68 +2310,213 @@ export default function Home() {
                     </div>
                   ))}
 
-                  {files.map((f) => (
-                    <div
-                      key={f.id}
-                      className="row-between"
-                      style={{
-                        padding: 10,
-                        border: "1px solid var(--border)",
-                        borderRadius: 12,
-                        background: "white",
-                      }}
-                    >
-                      <div className="stack" style={{ gap: 2 }}>
-                        <div style={{ fontWeight: 750 }}>📄 {f.name}</div>
-                        <div className="subtle">{(f as any).mime_type ?? ""}</div>
+                  {files.map((f) => {
+                    const isLink = isLinkRow(f);
+                    const linkUrl = isLink ? linkUrlFromRow(f) : "";
+                    const mt = (f as any).mime_type ?? "";
+                    const displayName = isLink ? linkDisplayNameFromRow(f) : f.name;
+
+                    return (
+                      <div
+                        key={f.id}
+                        className="row-between"
+                        style={{
+                          padding: 10,
+                          border: "1px solid var(--border)",
+                          borderRadius: 12,
+                          background: "white",
+                        }}
+                      >
+                        <div className="stack" style={{ gap: 2, minWidth: 0 }}>
+                          {isLink ? (
+                            linkUrl ? (
+                              <a
+                                className="link"
+                                href={linkUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ fontWeight: 750, textAlign: "left", display: "inline-block" }}
+                                title="Open link"
+                              >
+                                🔗 {displayName}
+                              </a>
+                            ) : (
+                              <span className="subtle" title="Link missing URL" style={{ fontWeight: 750 }}>
+                                🔗 {displayName} (missing URL)
+                              </span>
+                            )
+                          ) : (
+                            <div style={{ fontWeight: 750 }}>📄 {f.name}</div>
+                          )}
+                          <div className="subtle" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {isLink ? linkUrl : mt}
+                          </div>
+                        </div>
+
+                        {/* Teacher: open/preview only. Supervisor: open/preview + share. Admin: open/preview + edit + download + share + delete */}
+                        {isTeacherAccount ? (
+                          <div className="row" style={{ gap: 8 }}>
+                            {isLink ? (
+                              <IconButton title="Open link" onClick={() => openExternalLink(linkUrl)} disabled={!linkUrl}>
+                                ↗️
+                              </IconButton>
+                            ) : (
+                              <IconButton title="Preview" onClick={() => openPreview(f)}>
+                                👁️
+                              </IconButton>
+                            )}
+                          </div>
+                        ) : isSupervisor ? (
+                          <div className="row" style={{ gap: 8 }}>
+                            {isLink ? (
+                              linkUrl ? (
+                                <a href={linkUrl} target="_blank" rel="noopener noreferrer" title="Open link" style={{ textDecoration: "none" }}>
+                                  <IconButton title="Open link">↗️</IconButton>
+                                </a>
+                              ) : (
+                                <IconButton title="Link missing URL" disabled>
+                                  ↗️
+                                </IconButton>
+                              )
+                            ) : (
+                              <IconButton title="Preview" onClick={() => openPreview(f)}>
+                                👁️
+                              </IconButton>
+                            )}
+                            <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
+                              🔗
+                            </IconButton>
+                          </div>
+                        ) : (
+                          <div className="row" style={{ gap: 8 }}>
+                            {isLink ? (
+                              <IconButton title="Open link" onClick={() => openExternalLink(linkUrl)} disabled={!linkUrl}>
+                                ↗️
+                              </IconButton>
+                            ) : (
+                              <IconButton title="Preview" onClick={() => openPreview(f)}>
+                                👁️
+                              </IconButton>
+                            )}
+
+                            <IconButton title="Rename / move file" onClick={() => openEditModalForFile(f)}>
+                              ⚙️
+                            </IconButton>
+
+                            {/* Downloads only apply to real stored files, not link rows */}
+                            {!isLink ? (
+                              <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
+                                ⬇️
+                              </IconButton>
+                            ) : null}
+
+                            <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
+                              🔗
+                            </IconButton>
+
+                            <IconButton title="Delete file" onClick={() => openDeleteConfirm({ type: "file", id: f.id, name: displayName })}>
+                              🗑️
+                            </IconButton>
+                          </div>
+                        )}
                       </div>
-
-                      {/* Teacher: preview only. Supervisor: preview + share. Admin: preview + edit + download + share + delete */}
-                      {isTeacherAccount ? (
-                        <div className="row" style={{ gap: 8 }}>
-                          <IconButton title="Preview" onClick={() => openPreview(f)}>
-                            👁️
-                          </IconButton>
-                        </div>
-                      ) : isSupervisor ? (
-                        <div className="row" style={{ gap: 8 }}>
-                          <IconButton title="Preview" onClick={() => openPreview(f)}>
-                            👁️
-                          </IconButton>
-
-                          <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
-                            🔗
-                          </IconButton>
-                        </div>
-                      ) : (
-                        <div className="row" style={{ gap: 8 }}>
-                          <IconButton title="Preview" onClick={() => openPreview(f)}>
-                            👁️
-                          </IconButton>
-
-                          <IconButton title="Rename / move file" onClick={() => openEditModalForFile(f)}>
-                            ⚙️
-                          </IconButton>
-
-                          <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
-                            ⬇️
-                          </IconButton>
-
-                          <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
-                            🔗
-                          </IconButton>
-
-                          <IconButton title="Delete file" onClick={() => openDeleteConfirm({ type: "file", id: f.id, name: f.name })}>
-                            🗑️
-                          </IconButton>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
           </div>
+
+          {/* ADD LINK MODAL */}
+          {linkModalOpen ? (
+            <div
+              role="dialog"
+              aria-modal="true"
+              style={{
+                position: "fixed",
+                inset: 0,
+                background: "rgba(0,0,0,0.35)",
+                zIndex: 95,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 16,
+              }}
+              onMouseDown={(e) => {
+                if (e.currentTarget === e.target) closeLinkModal();
+              }}
+            >
+              <div
+                className="card"
+                style={{
+                  width: "min(560px, 96vw)",
+                  borderRadius: 16,
+                  padding: 16,
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="row-between" style={{ alignItems: "flex-start", gap: 12 }}>
+                  <div className="stack" style={{ gap: 6 }}>
+                    <div style={{ fontWeight: 950, fontSize: 16 }}>Add link</div>
+                    <div className="subtle">This will create a clickable link item inside “{currentFolderName}”.</div>
+                  </div>
+                  <button className="btn" onClick={closeLinkModal} disabled={linkAdding}>
+                    Close
+                  </button>
+                </div>
+
+                <div className="hr" />
+
+                <div className="stack" style={{ gap: 10 }}>
+                  <div>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Link URL</div>
+                    <input
+                      className="input"
+                      placeholder="https://..."
+                      value={linkUrl}
+                      onChange={(e) => setLinkUrl(e.target.value)}
+                      disabled={linkAdding}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddLink();
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Display text (optional)</div>
+                    <input
+                      className="input"
+                      placeholder="e.g., Lesson plan video"
+                      value={linkDisplayText}
+                      onChange={(e) => setLinkDisplayText(e.target.value)}
+                      disabled={linkAdding}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddLink();
+                        }
+                      }}
+                    />
+                    <div className="subtle" style={{ marginTop: 6 }}>
+                      If left blank, the link URL will be used as the clickable text.
+                    </div>
+                  </div>
+
+                  <div className="row" style={{ justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+                    <button className="btn" onClick={closeLinkModal} disabled={linkAdding}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-primary" onClick={handleAddLink} disabled={linkAdding || !linkUrl.trim()}>
+                      {linkAdding ? "Adding..." : "Add"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {/* PREVIEW MODAL (FULLSCREEN) */}
           {previewOpen && previewFile ? (
@@ -2169,7 +2553,7 @@ export default function Home() {
                   }}
                 >
                   <div className="stack" style={{ gap: 2 }}>
-                    <div style={{ fontWeight: 900 }}>{previewFile.name}</div>
+                    <div style={{ fontWeight: 900 }}>{previewTitle}</div>
                     <div className="subtle">
                       {previewMode === "office"
                         ? "Office preview"
@@ -2185,6 +2569,8 @@ export default function Home() {
                         ? "Video preview"
                         : previewMode === "audio"
                         ? "Audio preview"
+                        : previewMode === "link"
+                        ? "Link"
                         : "Preview"}
                     </div>
                   </div>
@@ -2197,13 +2583,34 @@ export default function Home() {
                 <div style={{ flex: 1, minHeight: 0, background: "#111" }}>
                   {previewLoading ? (
                     <div style={{ padding: 14, color: "white" }}>Loading preview…</div>
+                  ) : previewMode === "link" ? (
+                    <div style={{ height: "100%", background: "white", padding: 16 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>🔗 Link</div>
+                      <div className="subtle" style={{ marginBottom: 12, wordBreak: "break-word" }}>
+                        {previewSignedUrl || "(missing URL)"}
+                      </div>
+                      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                        <button className="btn btn-primary" onClick={() => openExternalLink(previewSignedUrl)} disabled={!previewSignedUrl}>
+                          Open link ↗️
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => {
+                            if (!previewSignedUrl) return;
+                            navigator.clipboard?.writeText(previewSignedUrl).then(
+                              () => setStatus("✅ Link copied."),
+                              () => setStatus("Copy failed.")
+                            );
+                          }}
+                          disabled={!previewSignedUrl}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
                   ) : previewMode === "office" ? (
                     previewSignedUrl ? (
-                      <iframe
-                        src={officeEmbedUrl}
-                        style={{ width: "100%", height: "100%", border: 0, background: "white" }}
-                        allowFullScreen
-                      />
+                      <iframe src={officeEmbedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} allowFullScreen />
                     ) : (
                       <div style={{ padding: 14, color: "white" }}>No preview URL.</div>
                     )
@@ -2239,10 +2646,7 @@ export default function Home() {
                         ) : (
                           <div className="subtle">
                             Showing up to {csvRenderMeta.rowsToShow} rows and {csvRenderMeta.colsToShow} columns
-                            {csvRenderMeta.rowCount > csvRenderMeta.rowsToShow || csvRenderMeta.maxCols > csvRenderMeta.colsToShow
-                              ? " (truncated)"
-                              : ""}
-                            .
+                            {csvRenderMeta.rowCount > csvRenderMeta.rowsToShow || csvRenderMeta.maxCols > csvRenderMeta.colsToShow ? " (truncated)" : ""}.
                           </div>
                         )}
                       </div>
@@ -2472,7 +2876,16 @@ export default function Home() {
                         <tbody>
                           {permGroups.map((g) => (
                             <tr key={g.principal_user_id}>
-                              <td>{teacherLabelForPermissionRow({ permission_id: "", principal_user_id: g.principal_user_id, email: g.email, access: g.access, inherit: g.inherit, created_at: g.created_at })}</td>
+                              <td>
+                                {teacherLabelForPermissionRow({
+                                  permission_id: "",
+                                  principal_user_id: g.principal_user_id,
+                                  email: g.email,
+                                  access: g.access,
+                                  inherit: g.inherit,
+                                  created_at: g.created_at,
+                                })}
+                              </td>
                               <td>
                                 <span className="badge badge-pink">{g.access}</span>
                               </td>
@@ -2572,9 +2985,7 @@ export default function Home() {
               >
                 <div className="row-between" style={{ alignItems: "flex-start", gap: 12 }}>
                   <div className="stack" style={{ gap: 6 }}>
-                    <div style={{ fontWeight: 950, fontSize: 16 }}>
-                      Edit {editTarget.type === "folder" ? "folder" : "file"}
-                    </div>
+                    <div style={{ fontWeight: 950, fontSize: 16 }}>Edit {editTarget.type === "folder" ? "folder" : "file"}</div>
                   </div>
                   <button className="btn" onClick={closeEditModal}>
                     Close
