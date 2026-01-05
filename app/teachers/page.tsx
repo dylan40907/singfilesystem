@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
-import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { fetchMyProfile, TeacherProfile, fetchActiveTeachers } from "@/lib/teachers";
 import "@fortune-sheet/react/dist/index.css";
 
 // TipTap (Rich Text)
@@ -421,6 +421,11 @@ export default function TeachersPage() {
   const isAdmin = !!me?.is_active && me.role === "admin";
   const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
 
+  // ✅ For supervisors: the ONLY teacher IDs they are allowed to see on this page.
+  // - null => admin/no filter
+  // - [] => supervisor with no assignments
+  const [allowedTeacherIds, setAllowedTeacherIds] = useState<string[] | null>(null);
+
   const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
   const [selectedTeacherId, setSelectedTeacherId] = useState<string>("");
 
@@ -514,6 +519,13 @@ export default function TeachersPage() {
     return id;
   }
 
+  function isTeacherAllowed(userId: string) {
+    if (!userId) return false;
+    if (me?.role === "admin") return true;
+    if (me?.role === "supervisor") return Array.isArray(allowedTeacherIds) && allowedTeacherIds.includes(userId);
+    return false;
+  }
+
   async function loadMe() {
     const profile = await fetchMyProfile();
     setMe(profile);
@@ -525,10 +537,7 @@ export default function TeachersPage() {
     const missing = unique.filter((id) => !userLabelsById[id]);
     if (missing.length === 0) return;
 
-    const { data, error } = await supabase
-      .from("user_profiles")
-      .select("id, email, username, full_name")
-      .in("id", missing);
+    const { data, error } = await supabase.from("user_profiles").select("id, email, username, full_name").in("id", missing);
     if (error) throw error;
 
     const next: Record<string, UserLabelRow> = { ...userLabelsById };
@@ -536,48 +545,99 @@ export default function TeachersPage() {
     setUserLabelsById(next);
   }
 
-  async function refreshTeacherList(preferSelectId?: string) {
-    // IMPORTANT: include inactive teachers too (required to keep viewing their plans after deactivation)
-    const { data, error } = await supabase.rpc("list_teachers");
-    if (error) throw error;
+  async function refreshTeacherList(preferSelectId?: string, profileArg?: TeacherProfile | null) {
+    const p = profileArg ?? me;
 
-    const list = ((data ?? []) as any[]).map((r) => ({
-      id: r.id as string,
-      email: (r.email ?? null) as string | null,
-      username: (r.username ?? null) as string | null,
-      full_name: (r.full_name ?? null) as string | null,
-      role: "teacher",
-      is_active: !!r.is_active,
-      has_set_password: (r.has_set_password ?? true) as boolean,
-    })) as TeacherProfile[];
+    // ADMIN => can see all (including inactive) via RPC
+    if (p?.role === "admin") {
+      const { data, error } = await supabase.rpc("list_teachers");
+      if (error) throw error;
 
-    // sort: active first, then name
-    list.sort((a, b) => {
-      const aActive = a.is_active ? 0 : 1;
-      const bActive = b.is_active ? 0 : 1;
-      if (aActive !== bActive) return aActive - bActive;
-      const an = (a.full_name ?? a.username ?? "").toLowerCase();
-      const bn = (b.full_name ?? b.username ?? "").toLowerCase();
-      return an.localeCompare(bn);
-    });
+      const list = ((data ?? []) as any[]).map((r) => ({
+        id: r.id as string,
+        email: (r.email ?? null) as string | null,
+        username: (r.username ?? null) as string | null,
+        full_name: (r.full_name ?? null) as string | null,
+        role: "teacher",
+        is_active: !!r.is_active,
+        has_set_password: (r.has_set_password ?? true) as boolean,
+      })) as TeacherProfile[];
 
-    setTeachers(list);
+      // sort: active first, then name
+      list.sort((a, b) => {
+        const aActive = a.is_active ? 0 : 1;
+        const bActive = b.is_active ? 0 : 1;
+        if (aActive !== bActive) return aActive - bActive;
+        const an = (a.full_name ?? a.username ?? "").toLowerCase();
+        const bn = (b.full_name ?? b.username ?? "").toLowerCase();
+        return an.localeCompare(bn);
+      });
 
-    const exists = (id: string) => list.some((t) => t.id === id);
+      setAllowedTeacherIds(null);
+      setTeachers(list);
 
-    const nextSelect =
-      (preferSelectId && exists(preferSelectId) && preferSelectId) ||
-      (selectedTeacherId && exists(selectedTeacherId) && selectedTeacherId) ||
-      (list.length > 0 ? list[0].id : "");
+      const exists = (id: string) => list.some((t) => t.id === id);
 
-    if (nextSelect !== selectedTeacherId) {
-      setSelectedTeacherId(nextSelect);
-      setSelectedPlanId("");
-      setPlanDetail(null);
-      setComments([]);
+      const nextSelect =
+        (preferSelectId && exists(preferSelectId) && preferSelectId) ||
+        (selectedTeacherId && exists(selectedTeacherId) && selectedTeacherId) ||
+        (list.length > 0 ? list[0].id : "");
+
+      if (nextSelect !== selectedTeacherId) {
+        setSelectedTeacherId(nextSelect);
+        setSelectedPlanId("");
+        setPlanDetail(null);
+        setComments([]);
+      }
+
+      await ensureUserLabels(list.map((t) => t.id));
+      return;
     }
 
-    await ensureUserLabels(list.map((t) => t.id));
+    // SUPERVISOR => ONLY assigned teachers (fetchActiveTeachers already filters correctly for supervisors)
+    if (p?.role === "supervisor") {
+      const list = await fetchActiveTeachers(); // expected: already filtered to assigned teachers for supervisors
+      const safeList = (list ?? []).map((t) => ({
+        ...t,
+        role: "teacher",
+      })) as TeacherProfile[];
+
+      // sort by name (active only typically, but keep consistent)
+      safeList.sort((a, b) => {
+        const an = (a.full_name ?? a.username ?? "").toLowerCase();
+        const bn = (b.full_name ?? b.username ?? "").toLowerCase();
+        return an.localeCompare(bn);
+      });
+
+      const ids = safeList.map((t) => t.id);
+      setAllowedTeacherIds(ids);
+      setTeachers(safeList);
+
+      const exists = (id: string) => safeList.some((t) => t.id === id);
+
+      const nextSelect =
+        (preferSelectId && exists(preferSelectId) && preferSelectId) ||
+        (selectedTeacherId && exists(selectedTeacherId) && selectedTeacherId) ||
+        (safeList.length > 0 ? safeList[0].id : "");
+
+      if (nextSelect !== selectedTeacherId) {
+        setSelectedTeacherId(nextSelect);
+        setSelectedPlanId("");
+        setPlanDetail(null);
+        setComments([]);
+      }
+
+      await ensureUserLabels(safeList.map((t) => t.id));
+      return;
+    }
+
+    // fallback: no access
+    setAllowedTeacherIds([]);
+    setTeachers([]);
+    setSelectedTeacherId("");
+    setSelectedPlanId("");
+    setPlanDetail(null);
+    setComments([]);
   }
 
   // ADMIN: reset password via Edge Function
@@ -589,9 +649,7 @@ export default function TeachersPage() {
       ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
-    const ok = window.confirm(
-      `Reset password for this teacher?\n\n${label}\n\nThey will need to use "Set up an account" again.`
-    );
+    const ok = window.confirm(`Reset password for this teacher?\n\n${label}\n\nThey will need to use "Set up an account" again.`);
     if (!ok) return;
 
     setAdminActionLoading((s) => ({ ...s, reset: true }));
@@ -606,7 +664,7 @@ export default function TeachersPage() {
       }
 
       setStatus("✅ Password reset. (has_set_password=false)");
-      await refreshTeacherList(selectedTeacherId);
+      await refreshTeacherList(selectedTeacherId, me);
     } catch (e: any) {
       setStatus("Reset password error: " + (e?.message ?? "unknown"));
     } finally {
@@ -644,7 +702,7 @@ export default function TeachersPage() {
       }
 
       setStatus(nextActive ? "✅ Activated." : "✅ Deactivated.");
-      await refreshTeacherList(selectedTeacherId);
+      await refreshTeacherList(selectedTeacherId, me);
     } catch (e: any) {
       setStatus((nextActive ? "Activate" : "Deactivate") + " error: " + (e?.message ?? "unknown"));
     } finally {
@@ -695,7 +753,7 @@ export default function TeachersPage() {
 
       const createdId = (data as any)?.teacher_id ?? (data as any)?.id ?? null;
 
-      await refreshTeacherList(typeof createdId === "string" ? createdId : undefined);
+      await refreshTeacherList(typeof createdId === "string" ? createdId : undefined, me);
     } catch (e: any) {
       setStatus("Create teacher error: " + (e?.message ?? "unknown"));
     } finally {
@@ -737,7 +795,7 @@ export default function TeachersPage() {
       setSelectedPlanId("");
       setPlanDetail(null);
       setComments([]);
-      await refreshTeacherList();
+      await refreshTeacherList(undefined, me);
     } catch (e: any) {
       setStatus("Delete teacher error: " + (e?.message ?? "unknown"));
     } finally {
@@ -746,6 +804,13 @@ export default function TeachersPage() {
   }
 
   async function refreshTeacherPerms(userId: string) {
+    // ✅ hard client-side gate (prevents URL/DOM tampering from loading unassigned teacher data)
+    if (!isTeacherAllowed(userId)) {
+      setStatus("Not authorized to view this teacher.");
+      setTeacherPerms([]);
+      return;
+    }
+
     setTeacherPermsLoading(true);
     try {
       const { data, error } = await supabase.rpc("list_user_folder_permissions", { target_user: userId });
@@ -772,6 +837,16 @@ export default function TeachersPage() {
   }
 
   async function refreshTeacherPlans(userId: string) {
+    // ✅ hard client-side gate
+    if (!isTeacherAllowed(userId)) {
+      setStatus("Not authorized to view this teacher.");
+      setPlans([]);
+      setSelectedPlanId("");
+      setPlanDetail(null);
+      setComments([]);
+      return;
+    }
+
     setPlansLoading(true);
     try {
       const { data, error } = await supabase
@@ -811,13 +886,24 @@ export default function TeachersPage() {
     try {
       const { data, error } = await supabase
         .from("lesson_plans")
-        .select("id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at")
+        .select(
+          "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+        )
         .eq("id", planId)
         .single();
 
       if (error) throw error;
 
       const merged = data as any as PlanDetailRow;
+
+      // ✅ extra guard: if plan belongs to a teacher the supervisor isn't allowed to view, stop here
+      if (!isTeacherAllowed(merged.owner_user_id)) {
+        setStatus("Not authorized to view this plan.");
+        setPlanDetail(null);
+        setSelectedPlanId("");
+        return;
+      }
+
       setPlanDetail(merged);
 
       // close fullscreen when switching plans
@@ -963,6 +1049,12 @@ export default function TeachersPage() {
   async function saveSupervisorEdits() {
     if (!planDetail) return;
 
+    // ✅ hard gate (supervisors cannot save edits to unassigned teacher plans)
+    if (!isTeacherAllowed(planDetail.owner_user_id)) {
+      setStatus("Not authorized to edit this plan.");
+      return;
+    }
+
     const anyEdits = hasSupervisorEdits();
     if (!anyEdits) {
       setStatus("Nothing to save.");
@@ -1007,6 +1099,13 @@ export default function TeachersPage() {
   }
 
   async function approvePlan(planId: string) {
+    // ✅ hard gate (use current planDetail if possible)
+    const ownerId = planDetail?.id === planId ? planDetail.owner_user_id : selectedTeacherId;
+    if (ownerId && !isTeacherAllowed(ownerId)) {
+      setStatus("Not authorized to approve this plan.");
+      return;
+    }
+
     setStatus("Approving...");
     try {
       const { error } = await supabase.rpc("approve_lesson_plan", { plan_uuid: planId });
@@ -1020,6 +1119,12 @@ export default function TeachersPage() {
   }
 
   async function requestChanges(planId: string) {
+    const ownerId = planDetail?.id === planId ? planDetail.owner_user_id : selectedTeacherId;
+    if (ownerId && !isTeacherAllowed(ownerId)) {
+      setStatus("Not authorized to request changes for this plan.");
+      return;
+    }
+
     setStatus("Requesting changes...");
     try {
       const { error } = await supabase.rpc("request_changes_lesson_plan", { plan_uuid: planId });
@@ -1040,7 +1145,10 @@ export default function TeachersPage() {
         setStatus("Not authorized.");
         return;
       }
-      await refreshTeacherList();
+
+      // ✅ load teacher list using the same "assigned teachers only" logic as review queue
+      await refreshTeacherList(undefined, profile);
+
       setStatus("");
     } catch (e: any) {
       setStatus("Error: " + (e?.message ?? "unknown"));
@@ -1052,9 +1160,37 @@ export default function TeachersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // If a supervisor somehow ends up with a selectedTeacherId that isn't allowed, immediately clear it.
   useEffect(() => {
     if (!isAdminOrSupervisor) return;
     if (!selectedTeacherId) return;
+
+    if (me?.role === "supervisor" && Array.isArray(allowedTeacherIds) && !allowedTeacherIds.includes(selectedTeacherId)) {
+      setStatus("Not authorized to view that teacher.");
+      setSelectedTeacherId("");
+      setSelectedPlanId("");
+      setPlanDetail(null);
+      setPlans([]);
+      setTeacherPerms([]);
+      setComments([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTeacherId, allowedTeacherIds, me?.role, isAdminOrSupervisor]);
+
+  useEffect(() => {
+    if (!isAdminOrSupervisor) return;
+    if (!selectedTeacherId) return;
+
+    // ✅ only load data if allowed
+    if (!isTeacherAllowed(selectedTeacherId)) {
+      setStatus("Not authorized to view this teacher.");
+      setTeacherPerms([]);
+      setPlans([]);
+      setSelectedPlanId("");
+      setPlanDetail(null);
+      setComments([]);
+      return;
+    }
 
     refreshTeacherPerms(selectedTeacherId);
     refreshTeacherPlans(selectedTeacherId);
@@ -1102,6 +1238,9 @@ export default function TeachersPage() {
 
   const selectedTeacherIsActive = selectedTeacher ? !!selectedTeacher.is_active : true;
 
+  const supervisorHasNoTeachers =
+    me?.role === "supervisor" && Array.isArray(allowedTeacherIds) && allowedTeacherIds.length === 0;
+
   return (
     <main className="stack">
       {/* TipTap polish */}
@@ -1132,8 +1271,11 @@ export default function TeachersPage() {
             <div style={{ fontWeight: 900 }}>Select teacher</div>
             {selectedTeacher ? (
               <div className="subtle" style={{ marginTop: 4 }}>
-                Status:{" "}
-                <strong>{selectedTeacher.is_active ? "active" : "inactive"}</strong>
+                Status: <strong>{selectedTeacher.is_active ? "active" : "inactive"}</strong>
+              </div>
+            ) : supervisorHasNoTeachers ? (
+              <div className="subtle" style={{ marginTop: 4 }}>
+                Status: <strong>no assigned teachers</strong>
               </div>
             ) : null}
           </div>
@@ -1145,7 +1287,7 @@ export default function TeachersPage() {
               </button>
             ) : null}
 
-            <button className="btn" onClick={() => refreshTeacherList()}>
+            <button className="btn" onClick={() => refreshTeacherList(undefined, me)}>
               Refresh teachers
             </button>
 
@@ -1184,7 +1326,12 @@ export default function TeachersPage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <select className="select" value={selectedTeacherId} onChange={(e) => setSelectedTeacherId(e.target.value)}>
+          <select
+            className="select"
+            value={selectedTeacherId}
+            onChange={(e) => setSelectedTeacherId(e.target.value)}
+            disabled={teachers.length === 0}
+          >
             {teachers.map((t) => (
               <option key={t.id} value={t.id}>
                 {labelForUser(t)}
@@ -1192,6 +1339,12 @@ export default function TeachersPage() {
               </option>
             ))}
           </select>
+
+          {supervisorHasNoTeachers ? (
+            <div className="subtle" style={{ marginTop: 10 }}>
+              You don’t have any teachers assigned yet. Ask an admin to assign teachers to you in <strong>Supervisors</strong>.
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -1212,11 +1365,7 @@ export default function TeachersPage() {
             if (!addLoading) setAddOpen(false);
           }}
         >
-          <div
-            className="card"
-            style={{ width: "min(520px, 100%)", borderRadius: 14 }}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <div className="card" style={{ width: "min(520px, 100%)", borderRadius: 14 }} onClick={(e) => e.stopPropagation()}>
             <div className="row-between">
               <div style={{ fontWeight: 950, fontSize: 16 }}>Add teacher</div>
               <button className="btn" onClick={() => !addLoading && setAddOpen(false)} disabled={addLoading}>
@@ -1266,13 +1415,21 @@ export default function TeachersPage() {
                 <div>
                   <div style={{ fontWeight: 900 }}>Folder permissions</div>
                 </div>
-                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)} disabled={!selectedTeacherId || teacherPermsLoading}>
+                <button
+                  className="btn"
+                  onClick={() => selectedTeacherId && refreshTeacherPerms(selectedTeacherId)}
+                  disabled={!selectedTeacherId || teacherPermsLoading || !isTeacherAllowed(selectedTeacherId)}
+                >
                   Refresh
                 </button>
               </div>
 
               <div style={{ marginTop: 12 }}>
-                {teacherPermsLoading ? (
+                {!selectedTeacherId ? (
+                  <div className="subtle">(Select a teacher)</div>
+                ) : !isTeacherAllowed(selectedTeacherId) ? (
+                  <div className="subtle">(Not authorized)</div>
+                ) : teacherPermsLoading ? (
                   <div className="subtle">Loading…</div>
                 ) : teacherPerms.length === 0 ? (
                   <div className="subtle">(No direct folder shares)</div>
@@ -1295,7 +1452,7 @@ export default function TeachersPage() {
                           </td>
                           <td>{p.inherit ? "true" : "false"}</td>
                           <td>
-                            <button className="btn" onClick={() => revokePermission(p.permission_id)}>
+                            <button className="btn" onClick={() => revokePermission(p.permission_id)} disabled={!isTeacherAllowed(selectedTeacherId)}>
                               Revoke
                             </button>
                           </td>
@@ -1315,14 +1472,22 @@ export default function TeachersPage() {
                     Plans created by: <strong>{selectedTeacherLabel || "—"}</strong>
                   </div>
                 </div>
-                <button className="btn" onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)} disabled={!selectedTeacherId || plansLoading}>
+                <button
+                  className="btn"
+                  onClick={() => selectedTeacherId && refreshTeacherPlans(selectedTeacherId)}
+                  disabled={!selectedTeacherId || plansLoading || !isTeacherAllowed(selectedTeacherId)}
+                >
                   Refresh
                 </button>
               </div>
 
               <div className="hr" />
 
-              {plansLoading ? (
+              {!selectedTeacherId ? (
+                <div className="subtle">(Select a teacher)</div>
+              ) : !isTeacherAllowed(selectedTeacherId) ? (
+                <div className="subtle">(Not authorized)</div>
+              ) : plansLoading ? (
                 <div className="subtle">Loading…</div>
               ) : plans.length === 0 ? (
                 <div className="subtle">(No plans)</div>
@@ -1381,10 +1546,10 @@ export default function TeachersPage() {
 
               {selectedPlan ? (
                 <div className="row" style={{ flexWrap: "wrap", gap: 10 }}>
-                  <button className="btn" onClick={() => requestChanges(selectedPlan.id)}>
+                  <button className="btn" onClick={() => requestChanges(selectedPlan.id)} disabled={!!planDetail && !isTeacherAllowed(planDetail.owner_user_id)}>
                     Request changes
                   </button>
-                  <button className="btn btn-primary" onClick={() => approvePlan(selectedPlan.id)}>
+                  <button className="btn btn-primary" onClick={() => approvePlan(selectedPlan.id)} disabled={!!planDetail && !isTeacherAllowed(planDetail.owner_user_id)}>
                     Approve
                   </button>
                 </div>
@@ -1413,7 +1578,7 @@ export default function TeachersPage() {
                     </div>
 
                     <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                      <button className="btn" onClick={saveSupervisorEdits} disabled={saveDisabled}>
+                      <button className="btn" onClick={saveSupervisorEdits} disabled={saveDisabled || (!!planDetail && !isTeacherAllowed(planDetail.owner_user_id))}>
                         Save edits
                       </button>
 
@@ -1437,6 +1602,8 @@ export default function TeachersPage() {
                     </div>
                   ) : !planDetail ? (
                     <div className="subtle">(No plan loaded)</div>
+                  ) : !isTeacherAllowed(planDetail.owner_user_id) ? (
+                    <div className="subtle">(Not authorized)</div>
                   ) : (
                     <div className="stack" style={{ gap: 10 }}>
                       <input
@@ -1498,7 +1665,7 @@ export default function TeachersPage() {
 
                   <div className="stack">
                     <textarea className="textarea" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Write feedback… (optional)" />
-                    <button className="btn btn-primary" onClick={() => addComment(selectedPlan.id)}>
+                    <button className="btn btn-primary" onClick={() => addComment(selectedPlan.id)} disabled={!!planDetail && !isTeacherAllowed(planDetail.owner_user_id)}>
                       Post comment
                     </button>
 
@@ -1560,6 +1727,7 @@ export default function TeachersPage() {
                 }}
                 placeholder="Lesson plan title"
                 style={{ minWidth: 280 }}
+                disabled={!isTeacherAllowed(planDetail.owner_user_id)}
               />
 
               <span className="subtle">{hasSupervisorEdits() ? "Unsaved changes" : "All changes saved"}</span>
@@ -1569,13 +1737,13 @@ export default function TeachersPage() {
               <button className="btn" onClick={() => setSheetView(false)}>
                 Exit full screen
               </button>
-              <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled}>
+              <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled || !isTeacherAllowed(planDetail.owner_user_id)}>
                 Save edits
               </button>
-              <button className="btn" onClick={() => requestChanges(planDetail.id)}>
+              <button className="btn" onClick={() => requestChanges(planDetail.id)} disabled={!isTeacherAllowed(planDetail.owner_user_id)}>
                 Request changes
               </button>
-              <button className="btn btn-primary" onClick={() => approvePlan(planDetail.id)}>
+              <button className="btn btn-primary" onClick={() => approvePlan(planDetail.id)} disabled={!isTeacherAllowed(planDetail.owner_user_id)}>
                 Approve
               </button>
             </div>
@@ -1585,6 +1753,10 @@ export default function TeachersPage() {
             {sheetLoadedPlanId !== planDetail.id ? (
               <div className="subtle" style={{ padding: 12 }}>
                 Loading sheet…
+              </div>
+            ) : !isTeacherAllowed(planDetail.owner_user_id) ? (
+              <div className="subtle" style={{ padding: 12 }}>
+                (Not authorized)
               </div>
             ) : (
               <div style={{ height: "100%", width: "100%" }}>
@@ -1623,6 +1795,7 @@ export default function TeachersPage() {
                 }}
                 placeholder="Lesson plan title"
                 style={{ minWidth: 280 }}
+                disabled={!isTeacherAllowed(planDetail.owner_user_id)}
               />
 
               <span className="subtle">{hasSupervisorEdits() ? "Unsaved changes" : "All changes saved"}</span>
@@ -1632,28 +1805,34 @@ export default function TeachersPage() {
               <button className="btn" onClick={() => setTextView(false)}>
                 Exit full screen
               </button>
-              <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled}>
+              <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled || !isTeacherAllowed(planDetail.owner_user_id)}>
                 Save edits
               </button>
-              <button className="btn" onClick={() => requestChanges(planDetail.id)}>
+              <button className="btn" onClick={() => requestChanges(planDetail.id)} disabled={!isTeacherAllowed(planDetail.owner_user_id)}>
                 Request changes
               </button>
-              <button className="btn btn-primary" onClick={() => approvePlan(planDetail.id)}>
+              <button className="btn btn-primary" onClick={() => approvePlan(planDetail.id)} disabled={!isTeacherAllowed(planDetail.owner_user_id)}>
                 Approve
               </button>
             </div>
           </div>
 
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            <RichTextEditor
-              valueHtml={editContentHtml}
-              onChangeHtml={(html) => {
-                setEditContentHtml(html);
-                setTextDirty(true);
-              }}
-              disabled={false}
-              minBodyHeight={520}
-            />
+            {!isTeacherAllowed(planDetail.owner_user_id) ? (
+              <div className="subtle" style={{ padding: 12 }}>
+                (Not authorized)
+              </div>
+            ) : (
+              <RichTextEditor
+                valueHtml={editContentHtml}
+                onChangeHtml={(html) => {
+                  setEditContentHtml(html);
+                  setTextDirty(true);
+                }}
+                disabled={false}
+                minBodyHeight={520}
+              />
+            )}
           </div>
         </div>
       ) : null}
