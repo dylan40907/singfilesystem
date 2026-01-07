@@ -298,10 +298,42 @@ function parseCsv(text: string) {
   return rows;
 }
 
+/**
+ * PDF Preview goals:
+ * 1) Fit each page fully within the available preview viewport (no "fit-to-width" cropping the height).
+ * 2) Render sharp text (avoid CSS scaling blur) by rendering at devicePixelRatio.
+ */
 function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: number }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
   const [err, setErr] = useState<string>("");
   const [pdfjs, setPdfjs] = useState<any>(null);
+  const [vp, setVp] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  // Track available viewport size (so we can fit each page fully).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const w = Math.floor(el.clientWidth);
+      const h = Math.floor(el.clientHeight);
+      setVp((cur) => (cur.w === w && cur.h === h ? cur : { w, h }));
+    };
+
+    update();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => update());
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+
+    // Fallback
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   // 1) Load pdfjs on the client ONLY (avoids DOMMatrix SSR/module-eval crashes)
   useEffect(() => {
@@ -358,13 +390,13 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
     };
   }, []);
 
-  // 2) Render whenever url/maxPages/pdfjs changes
+  // 2) Render whenever url/maxPages/pdfjs/viewport changes
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
-      // If pdfjs hasn't loaded yet, just wait.
       if (!pdfjs) return;
+      if (!vp.w || !vp.h) return;
 
       setErr("");
 
@@ -380,39 +412,62 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
 
         const pagesToRender = Math.min(pdf.numPages, maxPages);
 
+        // Leave some breathing room so the page never touches edges.
+        const OUTER_PAD = 16; // px padding inside scroll viewport
+        const INNER_PAD = 12; // px padding around each page
+        const availW = Math.max(1, vp.w - OUTER_PAD * 2 - INNER_PAD * 2);
+        const availH = Math.max(1, vp.h - OUTER_PAD * 2 - INNER_PAD * 2);
+
+        const dpr = Math.max(1, (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1);
+
         for (let pageNum = 1; pageNum <= pagesToRender; pageNum++) {
           if (cancelled) return;
 
           const page = await pdf.getPage(pageNum);
 
-          // Scale tweak: increase/decrease if you want sharper text vs speed
-          const viewport = page.getViewport({ scale: 1.25 });
+          // Base viewport to compute natural page size
+          const base = page.getViewport({ scale: 1 });
+
+          // Fit the entire page within the available viewport
+          const fitScale = Math.min(availW / base.width, availH / base.height);
+
+          // CSS size (what the user sees)
+          const cssViewport = page.getViewport({ scale: fitScale });
+
+          // Render size (higher res for crisp text)
+          const renderViewport = page.getViewport({ scale: fitScale * dpr });
 
           const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d");
+          const ctx = canvas.getContext("2d", { alpha: false });
           if (!ctx) continue;
 
-          canvas.width = Math.floor(viewport.width);
-          canvas.height = Math.floor(viewport.height);
-
-          // Make it responsive
-          canvas.style.width = "100%";
-          canvas.style.height = "auto";
+          // IMPORTANT: set intrinsic pixel size to renderViewport (already includes dpr),
+          // but set CSS size to cssViewport to avoid browser scaling blur.
+          canvas.width = Math.max(1, Math.floor(renderViewport.width));
+          canvas.height = Math.max(1, Math.floor(renderViewport.height));
+          canvas.style.width = `${Math.floor(cssViewport.width)}px`;
+          canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+          canvas.style.display = "block";
           canvas.style.background = "white";
           canvas.style.borderRadius = "12px";
           canvas.style.boxShadow = "inset 0 0 0 1px var(--border)";
 
           const wrapper = document.createElement("div");
-          wrapper.style.padding = "12px";
-          wrapper.appendChild(canvas);
+          wrapper.style.display = "flex";
+          wrapper.style.alignItems = "center";
+          wrapper.style.justifyContent = "center";
+          wrapper.style.padding = `${INNER_PAD}px`;
+          wrapper.style.minHeight = `${vp.h - OUTER_PAD * 2}px`;
+          wrapper.style.boxSizing = "border-box";
 
+          // A subtle "page card" feel without scaling artifacts
+          wrapper.appendChild(canvas);
           container.appendChild(wrapper);
 
-          // NOTE: some pdfjs typings want `canvas` + `canvasContext`.
           const renderTask = page.render({
             canvas,
             canvasContext: ctx,
-            viewport,
+            viewport: renderViewport,
           } as any);
 
           await renderTask.promise;
@@ -420,7 +475,7 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
 
         if (pdf.numPages > pagesToRender) {
           const note = document.createElement("div");
-          note.style.padding = "12px";
+          note.style.padding = "12px 16px 18px";
           note.style.color = "#666";
           note.style.fontWeight = "700";
           note.textContent = `Preview truncated: showing ${pagesToRender} of ${pdf.numPages} pages.`;
@@ -435,10 +490,20 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
     return () => {
       cancelled = true;
     };
-  }, [url, maxPages, pdfjs]);
+  }, [url, maxPages, pdfjs, vp.w, vp.h]);
 
   return (
-    <div style={{ height: "100%", overflow: "auto", background: "#f6f6f6" }} onContextMenu={(e) => e.preventDefault()}>
+    <div
+      ref={scrollRef}
+      style={{
+        height: "100%",
+        overflow: "auto",
+        background: "#f6f6f6",
+        padding: 16,
+        boxSizing: "border-box",
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
       {err ? (
         <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>PDF preview failed: {err}</div>
       ) : (
