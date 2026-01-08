@@ -301,7 +301,8 @@ function parseCsv(text: string) {
 /**
  * PDF Preview goals:
  * 1) Fit each page fully within the available preview viewport (no "fit-to-width" cropping the height).
- * 2) Render sharp text (avoid CSS scaling blur) by rendering at devicePixelRatio.
+ * 2) Render sharp text (avoid CSS scaling blur) by rendering at devicePixelRatio (with a small quality boost).
+ * 3) Make links inside PDFs clickable by rendering an annotation overlay layer (external + internal links).
  */
 function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: number }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -418,7 +419,43 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
         const availW = Math.max(1, vp.w - OUTER_PAD * 2 - INNER_PAD * 2);
         const availH = Math.max(1, vp.h - OUTER_PAD * 2 - INNER_PAD * 2);
 
-        const dpr = Math.max(1, (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1);
+        const rawDpr = Math.max(1, (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1);
+        const DPR_CAP = 3; // avoid extreme memory usage on very high DPR devices
+        const QUALITY_BOOST = 1.25; // small oversample to reduce "slightly soft" text vs original
+        const dpr = Math.min(rawDpr, DPR_CAP);
+
+        async function resolveDestToPageNum(dest: any): Promise<number | null> {
+          try {
+            let destArray: any = dest;
+
+            // Named destination -> array
+            if (typeof destArray === "string") {
+              destArray = await pdf.getDestination(destArray);
+            }
+
+            if (!Array.isArray(destArray) || destArray.length === 0) return null;
+
+            const pageRef = destArray[0];
+
+            // Sometimes the first element can be a number, but most commonly it's a reference.
+            if (typeof pageRef === "number") {
+              // Interpret as zero-based page index in some PDFs; clamp defensively.
+              const idx = Math.max(0, Math.min(pdf.numPages - 1, pageRef));
+              return idx + 1;
+            }
+
+            const pageIndex = await pdf.getPageIndex(pageRef);
+            return pageIndex + 1;
+          } catch {
+            return null;
+          }
+        }
+
+        function scrollToPage(pageNum: number) {
+          const el = container.querySelector(`[data-pdf-page="${pageNum}"]`) as HTMLElement | null;
+          if (!el) return;
+          el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
 
         for (let pageNum = 1; pageNum <= pagesToRender; pageNum++) {
           if (cancelled) return;
@@ -435,7 +472,27 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
           const cssViewport = page.getViewport({ scale: fitScale });
 
           // Render size (higher res for crisp text)
-          const renderViewport = page.getViewport({ scale: fitScale * dpr });
+          const renderViewport = page.getViewport({ scale: fitScale * dpr * QUALITY_BOOST });
+
+          const pageCard = document.createElement("div");
+          pageCard.dataset.pdfPage = String(pageNum);
+          pageCard.setAttribute("data-pdf-page", String(pageNum));
+          pageCard.style.display = "flex";
+          pageCard.style.alignItems = "center";
+          pageCard.style.justifyContent = "center";
+          pageCard.style.padding = `${INNER_PAD}px`;
+          pageCard.style.minHeight = `${vp.h - OUTER_PAD * 2}px`;
+          pageCard.style.boxSizing = "border-box";
+
+          // "Stage" is relative so we can overlay clickable link rectangles
+          const stage = document.createElement("div");
+          stage.style.position = "relative";
+          stage.style.width = `${Math.floor(cssViewport.width)}px`;
+          stage.style.height = `${Math.floor(cssViewport.height)}px`;
+          stage.style.borderRadius = "12px";
+          stage.style.boxShadow = "inset 0 0 0 1px var(--border)";
+          stage.style.background = "white";
+          stage.style.overflow = "hidden";
 
           const canvas = document.createElement("canvas");
           const ctx = canvas.getContext("2d", { alpha: false });
@@ -449,20 +506,20 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
           canvas.style.height = `${Math.floor(cssViewport.height)}px`;
           canvas.style.display = "block";
           canvas.style.background = "white";
-          canvas.style.borderRadius = "12px";
-          canvas.style.boxShadow = "inset 0 0 0 1px var(--border)";
 
-          const wrapper = document.createElement("div");
-          wrapper.style.display = "flex";
-          wrapper.style.alignItems = "center";
-          wrapper.style.justifyContent = "center";
-          wrapper.style.padding = `${INNER_PAD}px`;
-          wrapper.style.minHeight = `${vp.h - OUTER_PAD * 2}px`;
-          wrapper.style.boxSizing = "border-box";
+          // Overlay for clickable annotations (links)
+          const overlay = document.createElement("div");
+          overlay.style.position = "absolute";
+          overlay.style.left = "0";
+          overlay.style.top = "0";
+          overlay.style.width = `${Math.floor(cssViewport.width)}px`;
+          overlay.style.height = `${Math.floor(cssViewport.height)}px`;
+          overlay.style.pointerEvents = "none"; // allow only anchors to capture clicks
 
-          // A subtle "page card" feel without scaling artifacts
-          wrapper.appendChild(canvas);
-          container.appendChild(wrapper);
+          stage.appendChild(canvas);
+          stage.appendChild(overlay);
+          pageCard.appendChild(stage);
+          container.appendChild(pageCard);
 
           const renderTask = page.render({
             canvas,
@@ -471,6 +528,64 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
           } as any);
 
           await renderTask.promise;
+
+          // --- Annotation layer (clickable links) ---
+          try {
+            const annots = await page.getAnnotations({ intent: "display" });
+
+            for (const a of annots ?? []) {
+              if (cancelled) return;
+              if (!a || a.subtype !== "Link") continue;
+              if (!Array.isArray(a.rect) || a.rect.length !== 4) continue;
+
+              const rect = cssViewport.convertToViewportRectangle(a.rect);
+              const left = Math.min(rect[0], rect[2]);
+              const top = Math.min(rect[1], rect[3]);
+              const width = Math.abs(rect[0] - rect[2]);
+              const height = Math.abs(rect[1] - rect[3]);
+
+              // Ignore tiny/invalid rectangles
+              if (!isFinite(left) || !isFinite(top) || !isFinite(width) || !isFinite(height)) continue;
+              if (width < 1 || height < 1) continue;
+
+              const linkEl = document.createElement("a");
+              linkEl.style.position = "absolute";
+              linkEl.style.left = `${left}px`;
+              linkEl.style.top = `${top}px`;
+              linkEl.style.width = `${width}px`;
+              linkEl.style.height = `${height}px`;
+              linkEl.style.pointerEvents = "auto";
+              linkEl.style.background = "transparent";
+              linkEl.style.cursor = "pointer";
+              linkEl.style.textDecoration = "none";
+
+              // External URL (most common)
+              const href = (a.url ?? a.unsafeUrl ?? "").toString().trim();
+              if (href) {
+                linkEl.href = href;
+                linkEl.target = "_blank";
+                linkEl.rel = "noopener noreferrer";
+                linkEl.title = href;
+              } else if (a.dest) {
+                // Internal "Go To" destination inside the PDF
+                linkEl.href = "#";
+                linkEl.title = "Go to destination";
+                linkEl.addEventListener("click", async (ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  const targetPage = await resolveDestToPageNum(a.dest);
+                  if (targetPage) scrollToPage(targetPage);
+                });
+              } else {
+                // Some PDFs store actions differently; if no url/dest, ignore.
+                continue;
+              }
+
+              overlay.appendChild(linkEl);
+            }
+          } catch {
+            // If annotations fail, keep rendering pages (preview still works).
+          }
         }
 
         if (pdf.numPages > pagesToRender) {
