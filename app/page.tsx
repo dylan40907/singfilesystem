@@ -452,8 +452,12 @@ function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: numb
         }
 
         function scrollToPage(pageNum: number) {
-          const el = container.querySelector(`[data-pdf-page="${pageNum}"]`) as HTMLElement | null;
+          const c = containerRef.current;
+          if (!c) return;
+
+          const el = c.querySelector(`[data-pdf-page="${pageNum}"]`) as HTMLElement | null;
           if (!el) return;
+
           el.scrollIntoView({ behavior: "smooth", block: "start" });
         }
 
