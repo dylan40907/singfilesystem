@@ -1,7 +1,6 @@
 import "./globals.css";
-import Navbar from "@/components/Navbar";
 import "@fortune-sheet/react/dist/index.css";
-
+import LayoutShell from "@/components/LayoutShell";
 
 export const metadata = {
   title: "Sing Portal",
@@ -12,10 +11,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <Navbar />
-        <div className="page">
-          <div className="container">{children}</div>
-        </div>
+        <LayoutShell>{children}</LayoutShell>
       </body>
     </html>
   );

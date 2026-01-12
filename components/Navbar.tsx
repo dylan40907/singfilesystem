@@ -74,6 +74,9 @@ export default function Navbar() {
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const showSupervisors = !!sessionEmail && isAdmin;
 
+  // NEW: HR tab (admin-only)
+  const showHr = !!sessionEmail && isAdmin;
+
   // Keep latest pathname without re-subscribing
   const pathnameRef = useRef(pathname);
   useEffect(() => {
@@ -159,6 +162,7 @@ export default function Navbar() {
 
   const activeTab = useMemo(() => {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
+    if (pathname.startsWith("/admin/hr")) return "hr";
     if (pathname === "/teachers") return "teachers";
     if (pathname === "/review-queue") return "review-queue";
     if (pathname === "/my-plans") return "my-plans";
@@ -213,6 +217,7 @@ export default function Navbar() {
               {showSupervisors && (
                 <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />
               )}
+              {showHr && <NavLink href="/admin/hr" label="HR" active={activeTab === "hr"} />}
             </div>
           </div>
 
