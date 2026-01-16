@@ -91,13 +91,13 @@ Deno.serve(async (req) => {
       return json({ error: "Refusing to delete an admin/supervisor." }, 400);
     }
 
-    // Delete auth user
-    const { error: delErr } = await admin.auth.admin.deleteUser(targetId);
-    if (delErr) return json({ error: delErr.message }, 400);
+    // Delete profile first (cascades HR via hr_employees.profile_id ON DELETE CASCADE, etc.)
+  const { error: profDelErr } = await admin.from("user_profiles").delete().eq("id", targetId);
+  if (profDelErr) return json({ error: "DB error deleting profile: " + profDelErr.message }, 400);
 
-    // Best-effort cleanup
-    await admin.from("user_profiles").delete().eq("id", targetId);
-    // If you have other tables referencing teacher ids, you may need more cleanup here.
+  // Then delete auth user
+  const { error: delErr } = await admin.auth.admin.deleteUser(targetId);
+  if (delErr) return json({ error: "Auth delete error: " + delErr.message, details: delErr as any }, 400);
 
     return json({ ok: true });
   } catch (e) {

@@ -41,7 +41,10 @@ Deno.serve(async (req) => {
     }
     if (!SERVICE_ROLE_KEY) {
       return json(
-        { error: "Missing SERVICE_ROLE_KEY secret. Run: npx supabase secrets set SERVICE_ROLE_KEY=... --project-ref <ref>" },
+        {
+          error:
+            "Missing SERVICE_ROLE_KEY secret. Run: npx supabase secrets set SERVICE_ROLE_KEY=... --project-ref <ref>",
+        },
         500
       );
     }
@@ -91,15 +94,22 @@ Deno.serve(async (req) => {
     if (targetProfile?.role === "admin") return json({ error: "Refusing to delete an admin." }, 400);
     if (targetProfile?.role !== "supervisor") return json({ error: "Refusing to delete a non-supervisor." }, 400);
 
+    // IMPORTANT: delete DB rows first (cascades, FK constraints), then delete auth user last.
+
+    // Clear supervisor assignments first (avoid FK / business-rule blockers)
+    const { error: asnErr } = await admin
+      .from("supervisor_teacher_assignments")
+      .delete()
+      .eq("supervisor_user_id", targetId);
+    if (asnErr) return json({ error: "DB error deleting supervisor assignments: " + asnErr.message }, 400);
+
+    // Delete profile (this should cascade any linked HR records via hr_employees.profile_id ON DELETE CASCADE, etc.)
+    const { error: profDelErr } = await admin.from("user_profiles").delete().eq("id", targetId);
+    if (profDelErr) return json({ error: "DB error deleting profile: " + profDelErr.message }, 400);
+
     // Delete auth user
     const { error: delErr } = await admin.auth.admin.deleteUser(targetId);
-    if (delErr) return json({ error: delErr.message }, 400);
-
-    // Best-effort cleanup
-    await admin.from("user_profiles").delete().eq("id", targetId);
-
-    // If your supervisor has assignments, you likely want to clear them too:
-    await admin.from("supervisor_teacher_assignments").delete().eq("supervisor_user_id", targetId);
+    if (delErr) return json({ error: "Auth delete error: " + delErr.message, details: delErr as any }, 400);
 
     return json({ ok: true });
   } catch (e) {

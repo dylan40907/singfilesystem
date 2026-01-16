@@ -3,11 +3,17 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 type HrSettings = {
   id: boolean;
-  admin_email: string | null;
+  admin_email: string | null; // legacy (no longer used for sending)
   reminders_enabled: boolean | null;
   reminders_time: string | null; // "HH:MM:SS"
   reminders_tz: string | null; // e.g. "America/Los_Angeles"
   reminders_last_ran_at: string | null; // timestamptz
+};
+
+type RecipientRow = {
+  id: string;
+  email: string;
+  is_enabled: boolean;
 };
 
 type Employee = {
@@ -73,12 +79,82 @@ function mmddyyyyFromDate(dateKey: string) {
   return `${m}/${d}/${y}`;
 }
 
+function yyyymmdd(dateKey: string) {
+  // "YYYY-MM-DD" -> "YYYYMMDD"
+  return dateKey.replaceAll("-", "");
+}
+
+function addDays(dateKey: string, days: number) {
+  const [y, m, d] = dateKey.split("-").map((x) => Number(x));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+function toBase64Utf8(s: string) {
+  // btoa expects binary; this makes it UTF-8 safe
+  const bytes = new TextEncoder().encode(s);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function makeAllDayIcs(args: {
+  uid: string;
+  summary: string;
+  description: string;
+  organizerEmail: string;
+  organizerName: string;
+  attendees: string[];
+  dateKey: string; // YYYY-MM-DD (event date)
+}) {
+  const dtStart = yyyymmdd(args.dateKey);
+  const dtEnd = yyyymmdd(addDays(args.dateKey, 1)); // all-day end is next day
+  const dtStamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+
+  const esc = (x: string) =>
+    (x ?? "")
+      .replaceAll("\\", "\\\\")
+      .replaceAll("\n", "\\n")
+      .replaceAll(",", "\\,")
+      .replaceAll(";", "\\;");
+
+  const lines: string[] = [
+    "BEGIN:VCALENDAR",
+    "PRODID:-//Sing In Chinese//SING HR//EN",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${esc(args.uid)}`,
+    `DTSTAMP:${dtStamp}`,
+    `DTSTART;VALUE=DATE:${dtStart}`,
+    `DTEND;VALUE=DATE:${dtEnd}`,
+    `SUMMARY:${esc(args.summary)}`,
+    `DESCRIPTION:${esc(args.description)}`,
+    `ORGANIZER;CN=${esc(args.organizerName)}:mailto:${esc(args.organizerEmail)}`,
+    ...args.attendees.map((e) => `ATTENDEE;CN=${esc(e)};ROLE=REQ-PARTICIPANT;RSVP=TRUE:mailto:${esc(e)}`),
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+
+  return lines.join("\r\n");
+}
+
 async function resendSendEmail(args: {
   apiKey: string;
   from: string;
-  to: string;
+  to: string[]; // multiple recipients
   subject: string;
   text: string;
+  attachments?: Array<{
+    filename: string;
+    content: string; // base64
+    content_type?: string;
+  }>;
 }) {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -88,9 +164,11 @@ async function resendSendEmail(args: {
     },
     body: JSON.stringify({
       from: args.from,
-      to: [args.to],
+      to: args.to,
       subject: args.subject,
       text: args.text,
+      // Resend supports attachments on /emails send (base64). :contentReference[oaicite:1]{index=1}
+      attachments: args.attachments,
     }),
   });
 
@@ -102,15 +180,24 @@ async function resendSendEmail(args: {
   return await res.json().catch(() => ({}));
 }
 
+async function getEnabledRecipients(admin: any) {
+  const { data: recipientsRaw, error: rErr } = await admin
+    .from("hr_admin_notifications_recipients")
+    .select("id, email, is_enabled")
+    .eq("is_enabled", true);
+
+  if (rErr) throw new Error(rErr.message);
+
+  const recipients = (recipientsRaw ?? []) as RecipientRow[];
+  const toList = recipients
+    .map((r) => (r.email ?? "").trim())
+    .filter((e) => e.length > 0);
+
+  return toList;
+}
+
 Deno.serve(async (req) => {
   try {
-    // ---- auth: shared secret header (cron only) ----
-    const CRON_SECRET = (Deno.env.get("CRON_SECRET") ?? "").trim();
-    const got = (req.headers.get("x-cron-secret") ?? "").trim();
-    if (!CRON_SECRET || got !== CRON_SECRET) {
-      return json(401, { error: "Unauthorized" });
-    }
-
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
@@ -118,6 +205,124 @@ Deno.serve(async (req) => {
 
     const admin = createClient(supabaseUrl, serviceKey);
 
+    // -----------------------------
+    // MODE A: CRON (existing behavior)
+    // -----------------------------
+    const CRON_SECRET = (Deno.env.get("CRON_SECRET") ?? "").trim();
+    const gotCron = (req.headers.get("x-cron-secret") ?? "").trim();
+    const isCron = !!CRON_SECRET && gotCron === CRON_SECRET;
+
+    // -----------------------------
+    // MODE B: INTERNAL (milestone created)
+    // -----------------------------
+    const HR_INTERNAL_SECRET = (Deno.env.get("HR_INTERNAL_SECRET") ?? "").trim();
+    const gotInternal = (req.headers.get("x-hr-internal-secret") ?? "").trim();
+    const isInternal = !!HR_INTERNAL_SECRET && gotInternal === HR_INTERNAL_SECRET;
+
+    if (!isCron && !isInternal) {
+      return json(401, { error: "Unauthorized" });
+    }
+
+    if (!RESEND_API_KEY) {
+      return json(500, { error: "Missing RESEND_API_KEY env var." });
+    }
+
+    // ---- recipients list (shared) ----
+    const toList = await getEnabledRecipients(admin);
+    if (toList.length === 0) {
+      return json(200, { total_sent: 0, message: "No enabled recipients in hr_admin_notifications_recipients." });
+    }
+
+    // ==========================================
+    // INTERNAL: send email immediately when milestone created
+    // ==========================================
+    if (isInternal) {
+      const body = await req.json().catch(() => ({}));
+      const mode = String(body?.mode ?? "");
+
+      if (mode !== "milestone_created") {
+        return json(400, { error: "Bad request", message: 'Expected body: { mode: "milestone_created", employee_event_id }' });
+      }
+
+      const employeeEventId = String(body?.employee_event_id ?? "").trim();
+      if (!employeeEventId) {
+        return json(400, { error: "Bad request", message: "Missing employee_event_id" });
+      }
+
+      // Pull event + employee + event type name
+      const { data: ev, error: evErr } = await admin
+        .from("hr_employee_events")
+        .select(
+          `
+            id,
+            employee_id,
+            event_date,
+            notes,
+            event_type:hr_event_types!hr_employee_events_event_type_id_fkey(id,name),
+            employee:hr_employees!hr_employee_events_employee_id_fkey(id,legal_first_name,legal_last_name)
+          `
+        )
+        .eq("id", employeeEventId)
+        .single();
+
+      if (evErr) return json(500, { error: evErr.message });
+      if (!ev) return json(404, { error: "Not found" });
+
+      const eventTypeName = (Array.isArray((ev as any).event_type) ? (ev as any).event_type?.[0]?.name : (ev as any).event_type?.name) ?? "Milestone";
+      const emp = Array.isArray((ev as any).employee) ? (ev as any).employee?.[0] : (ev as any).employee;
+
+      const first = String(emp?.legal_first_name ?? "Unknown");
+      const last = String(emp?.legal_last_name ?? "Employee");
+      const dateKey = String((ev as any).event_date ?? "");
+      const when = dateKey ? mmddyyyyFromDate(dateKey) : "(unknown date)";
+
+      const subject = `SING HR: Milestone Created — ${eventTypeName} for ${first} ${last} (${when})`;
+      const text =
+        `SING HR System Message:\n` +
+        `A new milestone/event was created.\n\n` +
+        `Employee: ${first} ${last}\n` +
+        `Event: ${eventTypeName}\n` +
+        `Event Date: ${when}\n` +
+        (String((ev as any).notes ?? "").trim() ? `Notes: ${(ev as any).notes}\n` : "");
+
+      // Build an all-day ICS invite on event_date (simple + timezone-safe)
+      const uid = `${employeeEventId}@singinchinese.com`;
+      const ics = makeAllDayIcs({
+        uid,
+        summary: `${eventTypeName} — ${first} ${last}`,
+        description: `Milestone: ${eventTypeName}\nEmployee: ${first} ${last}\nDate: ${when}`,
+        organizerEmail: (RESEND_FROM.match(/<([^>]+)>/)?.[1] ?? RESEND_FROM).trim(),
+        organizerName: "SING HR",
+        attendees: toList,
+        dateKey: dateKey || getZonedParts(new Date(), "UTC").dateKey,
+      });
+
+      await resendSendEmail({
+        apiKey: RESEND_API_KEY,
+        from: RESEND_FROM,
+        to: toList,
+        subject,
+        text,
+        attachments: [
+          {
+            filename: "milestone-invite.ics",
+            content: toBase64Utf8(ics),
+            content_type: "text/calendar; method=REQUEST; charset=UTF-8",
+          },
+        ],
+      });
+
+      return json(200, {
+        ok: true,
+        mode,
+        recipients: toList.length,
+        employee_event_id: employeeEventId,
+      });
+    }
+
+    // ==========================================
+    // CRON: existing PTO + milestone reminder logic
+    // ==========================================
     // ---- read hr_settings (single row: id=true) ----
     const { data: settings, error: sErr } = await admin
       .from("hr_settings")
@@ -128,17 +333,9 @@ Deno.serve(async (req) => {
     if (sErr) return json(500, { error: sErr.message });
     const s = settings as HrSettings;
 
-    if (!s.admin_email) {
-      return json(200, { total_sent: 0, message: "hr_settings.admin_email not set" });
-    }
-
     const enabled = s.reminders_enabled ?? false;
     if (!enabled) {
       return json(200, { total_sent: 0, message: "Reminders disabled (hr_settings.reminders_enabled=false)." });
-    }
-
-    if (!RESEND_API_KEY) {
-      return json(500, { error: "Missing RESEND_API_KEY env var." });
     }
 
     const tz = s.reminders_tz || "UTC";
@@ -164,6 +361,10 @@ Deno.serve(async (req) => {
 
     const todayKey = nowLocal.dateKey;
 
+    let ptoSent = 0;
+    let milestoneSent = 0;
+    let emailsSent = 0;
+
     // =========================
     // 1) PTO reminders (due up to today, unsent)
     // =========================
@@ -177,7 +378,6 @@ Deno.serve(async (req) => {
 
     if (ptoErr) return json(500, { error: ptoErr.message });
 
-    let ptoSent = 0;
     const ptoEmployees = (ptoDue ?? []) as Employee[];
 
     for (const emp of ptoEmployees) {
@@ -192,10 +392,12 @@ Deno.serve(async (req) => {
       await resendSendEmail({
         apiKey: RESEND_API_KEY,
         from: RESEND_FROM,
-        to: s.admin_email,
+        to: toList,
         subject,
         text,
       });
+
+      emailsSent += toList.length;
 
       const { error: markErr } = await admin
         .from("hr_employees")
@@ -239,8 +441,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    let milestoneSent = 0;
-
     for (const r of milestoneRows) {
       const name = employeeNameById.get(r.employee_id);
       const first = name?.first ?? "Unknown";
@@ -259,10 +459,12 @@ Deno.serve(async (req) => {
       await resendSendEmail({
         apiKey: RESEND_API_KEY,
         from: RESEND_FROM,
-        to: s.admin_email,
+        to: toList,
         subject,
         text,
       });
+
+      emailsSent += toList.length;
 
       // mark this reminder sent
       const { error: markRErr } = await admin
@@ -277,22 +479,24 @@ Deno.serve(async (req) => {
       }
     }
 
-    const totalSent = ptoSent + milestoneSent;
+    const totalReminders = ptoSent + milestoneSent;
 
-    if (totalSent > 0) {
+    if (totalReminders > 0) {
       await admin.from("hr_settings").update({ reminders_last_ran_at: new Date().toISOString() }).eq("id", true);
     }
 
     return json(200, {
-      total_sent: totalSent,
+      total_sent: totalReminders,
+      emails_sent: emailsSent,
+      recipients: toList.length,
       pto_sent: ptoSent,
       milestone_sent: milestoneSent,
       timezone: tz,
       ran_for_local_date: todayKey,
       message:
-        totalSent === 0
+        totalReminders === 0
           ? "No due reminders (PTO or milestones)."
-          : `Sent ${totalSent} reminder(s).`,
+          : `Sent ${totalReminders} reminder(s) to ${toList.length} recipient(s).`,
     });
   } catch (err) {
     console.error(err);

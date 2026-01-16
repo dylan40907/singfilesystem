@@ -9,6 +9,11 @@ type HrCampus = {
   name: string;
 };
 
+type HrJobLevel = {
+  id: string;
+  name: string;
+};
+
 type HrEmployee = {
   id: string;
   legal_first_name?: string | null;
@@ -17,6 +22,9 @@ type HrEmployee = {
   nicknames?: string[] | null;
   campus_id?: string | null;
   is_active?: boolean | null;
+
+  job_level_id?: string | null;
+  job_level?: HrJobLevel | HrJobLevel[] | null;
 };
 
 type OrgNodeRow = {
@@ -38,6 +46,18 @@ function employeeLabel(e: HrEmployee) {
 
   if (nick && legal) return `${nick} (${legal})`;
   return nick || legal || e.id;
+}
+
+function jobLevelName(e?: HrEmployee | null) {
+  if (!e) return "No job level assigned";
+  const jl = (e as any).job_level;
+  const single = Array.isArray(jl) ? jl[0] : jl;
+  const name = (single?.name ?? "").trim();
+  return name || "No job level assigned";
+}
+
+function employeeLabelWithJobLevel(e: HrEmployee) {
+  return `${employeeLabel(e)} — ${jobLevelName(e)}`;
 }
 
 function safeSortByName(a: HrEmployee, b: HrEmployee) {
@@ -133,8 +153,8 @@ export default function HrOrgChartPage() {
       arr.sort((a, b) => {
         const ea = employeesById.get(a);
         const eb = employeesById.get(b);
-        const la = ea ? employeeLabel(ea) : a;
-        const lb = eb ? employeeLabel(eb) : b;
+        const la = ea ? employeeLabelWithJobLevel(ea) : a;
+        const lb = eb ? employeeLabelWithJobLevel(eb) : b;
         return la.localeCompare(lb);
       });
       m.set(pid, arr);
@@ -147,8 +167,8 @@ export default function HrOrgChartPage() {
     roots.sort((a, b) => {
       const ea = employeesById.get(a);
       const eb = employeesById.get(b);
-      const la = ea ? employeeLabel(ea) : a;
-      const lb = eb ? employeeLabel(eb) : b;
+      const la = ea ? employeeLabelWithJobLevel(ea) : a;
+      const lb = eb ? employeeLabelWithJobLevel(eb) : b;
       return la.localeCompare(lb);
     });
     return roots;
@@ -193,7 +213,12 @@ export default function HrOrgChartPage() {
       const [empRes, nodeRes] = await Promise.all([
         supabase
           .from("hr_employees")
-          .select("*")
+          .select(
+            `
+              *,
+              job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name)
+            `
+          )
           .eq("campus_id", campusId)
           .order("legal_last_name", { ascending: true })
           .order("legal_first_name", { ascending: true })
@@ -365,6 +390,7 @@ export default function HrOrgChartPage() {
     const emp = employeesById.get(employeeId);
     const kids = childrenByParentId.get(employeeId) ?? [];
     const label = emp ? employeeLabel(emp) : employeeId;
+    const jl = jobLevelName(emp);
 
     return (
       <li key={employeeId}>
@@ -385,8 +411,11 @@ export default function HrOrgChartPage() {
           }}
         >
           <div className="name-box">
-            <div className="name-text" title={label}>
+            <div className="name-text" title={`${label} — ${jl}`}>
               {label}
+            </div>
+            <div className="joblevel-text" title={jl}>
+              {jl}
             </div>
           </div>
         </div>
@@ -585,7 +614,7 @@ export default function HrOrgChartPage() {
                             <b>
                               {(() => {
                                 const p = employeesById.get(pickerParentEmployeeId);
-                                return p ? employeeLabel(p) : pickerParentEmployeeId;
+                                return p ? employeeLabelWithJobLevel(p) : pickerParentEmployeeId;
                               })()}
                             </b>
                           </>
@@ -610,7 +639,7 @@ export default function HrOrgChartPage() {
                         <option value="">— Select an employee —</option>
                         {availableEmployeesForCampus.map((e) => (
                           <option key={e.id} value={e.id}>
-                            {employeeLabel(e)}
+                            {employeeLabelWithJobLevel(e)}
                           </option>
                         ))}
                       </select>
@@ -732,6 +761,7 @@ export default function HrOrgChartPage() {
                 border: 1px solid var(--border);
                 background: white;
                 box-shadow: 0 10px 22px rgba(0, 0, 0, 0.06);
+                text-align: left;
               }
 
               .node-card:hover .name-box {
@@ -747,6 +777,20 @@ export default function HrOrgChartPage() {
                 /* readable, non-overlapping labels */
                 display: -webkit-box;
                 -webkit-line-clamp: 2;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                word-break: break-word;
+              }
+
+              .joblevel-text {
+                margin-top: 6px;
+                font-size: 12px;
+                font-weight: 800;
+                color: rgba(0, 0, 0, 0.62);
+                line-height: 1.2;
+
+                display: -webkit-box;
+                -webkit-line-clamp: 1;
                 -webkit-box-orient: vertical;
                 overflow: hidden;
                 word-break: break-word;

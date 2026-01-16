@@ -5,7 +5,7 @@ export type TeacherProfile = {
   email: string | null;
   username: string | null;
   full_name: string | null;
-  role: "admin" | "supervisor" | "teacher";
+  role: "admin" | "supervisor" | "teacher" | "employee";
   is_active: boolean;
 };
 

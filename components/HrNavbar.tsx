@@ -42,7 +42,12 @@ export default function HrNavbar() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
 
-  const isAdmin = !!profile?.is_active && profile.role === "admin";
+  const isActive = !!profile?.is_active;
+  const isAdmin = isActive && profile?.role === "admin";
+  const isSupervisor = isActive && profile?.role === "supervisor";
+
+  // ✅ HR access: admin OR supervisor
+  const canUseHr = !!sessionEmail && isActive && (isAdmin || isSupervisor);
 
   const pathnameRef = useRef(pathname);
   useEffect(() => {
@@ -96,6 +101,17 @@ export default function HrNavbar() {
     return "employees";
   }, [pathname]);
 
+  // ✅ For supervisors, send "home" to Attendance
+  const hrHomeHref = isAdmin ? "/admin/hr/employees" : "/admin/hr/attendance";
+
+  const subtitle = useMemo(() => {
+    if (!sessionEmail) return "Not signed in";
+    if (!isActive) return "Inactive account";
+    if (isAdmin) return "Admin";
+    if (isSupervisor) return "Supervisor";
+    return "No HR access";
+  }, [sessionEmail, isActive, isAdmin, isSupervisor]);
+
   return (
     <div
       style={{
@@ -110,7 +126,7 @@ export default function HrNavbar() {
         <div className="row-between" style={{ padding: "12px 0" }}>
           <div className="row" style={{ gap: 14 }}>
             <Link
-              href="/admin/hr/employees"
+              href={hrHomeHref}
               aria-label="Go to HR home"
               style={{ display: "block", width: 48, height: 34, position: "relative" }}
             >
@@ -126,17 +142,27 @@ export default function HrNavbar() {
 
             <div>
               <div style={{ fontWeight: 800, fontSize: 15 }}>HR Portal</div>
-              <div className="subtle">Admin only</div>
+              <div className="subtle">{subtitle}</div>
             </div>
 
-            {isAdmin && (
+            {/* ✅ Admin sees all tabs; Supervisor sees Attendance + Performance Review */}
+            {canUseHr && (
               <div className="row" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
-                <NavLink href="/admin/hr/employees" label="Employees" active={activeTab === "employees"} />
-                <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
-                <NavLink href="/admin/hr/meetings" label="Meetings" active={activeTab === "meetings"} />
-                <NavLink href="/admin/hr/org-chart" label="Org Chart" active={activeTab === "org-chart"} />
-                <NavLink href="/admin/hr/performance-review" label="Performance Review" active={activeTab === "performance-review"} />
-                <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
+                {isAdmin ? (
+                  <>
+                    <NavLink href="/admin/hr/employees" label="Employees" active={activeTab === "employees"} />
+                    <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
+                    <NavLink href="/admin/hr/meetings" label="Meetings" active={activeTab === "meetings"} />
+                    <NavLink href="/admin/hr/org-chart" label="Org Chart" active={activeTab === "org-chart"} />
+                    <NavLink href="/admin/hr/performance-review" label="Performance Review" active={activeTab === "performance-review"} />
+                    <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
+                  </>
+                ) : (
+                  <>
+                    <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
+                    <NavLink href="/admin/hr/performance-review" label="Performance Review" active={activeTab === "performance-review"} />
+                  </>
+                )}
               </div>
             )}
           </div>

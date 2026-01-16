@@ -11,24 +11,42 @@ type HrEmployee = {
   legal_last_name?: string | null;
   nicknames?: string[] | null;
   is_active?: boolean | null;
+};
 
-  // ✅ This is what you actually have on hr_employees:
-  // attendance_points: int (1–5) or numeric (we display like a score)
-  attendance_points?: number | null;
+type ReviewFormType = "monthly" | "annual";
+
+type HrReviewForm = {
+  id: string;
+  form_type: ReviewFormType;
+  title: string;
+  scale_max: number; // 3 or 5
+  is_active: boolean;
 };
 
 type ReviewQuestion = {
   id: string;
+  form_id: string;
   question_text: string;
   sort_order: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 };
 
-type ReviewAnswer = {
+type HrReview = {
+  id: string;
   employee_id: string;
+  form_type: ReviewFormType;
+  period_year: number;
+  period_month: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type HrReviewAnswer = {
+  review_id: string;
   question_id: string;
-  score: number; // 1..5
+  score: number;
   created_at: string;
   updated_at: string;
 };
@@ -57,22 +75,20 @@ function safeSortByName(a: HrEmployee, b: HrEmployee) {
   return a.id < b.id ? -1 : 1;
 }
 
-function clampScore(n: any) {
+function clampScore(n: any, scaleMax: number) {
   const v = Number(n);
   if (!Number.isFinite(v)) return null;
-  return Math.max(1, Math.min(5, v));
+  return Math.max(1, Math.min(scaleMax, Math.trunc(v)));
 }
 
-// ceil to 1 decimal place (e.g. 4.134 -> 4.2)
-function ceil1dp(n: number) {
-  return Math.ceil(n * 10) / 10;
+// normal rounding to 1 decimal (4.11 -> 4.1, 4.15 -> 4.2)
+function round1dp(n: number) {
+  return Math.round(n * 10) / 10;
 }
 
-function recommendedRaisePct(total: number) {
-  if (total >= 8) return 4;
-  if (total >= 7) return 3;
-  if (total >= 6) return 2;
-  return 0;
+function monthName(m: number) {
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return names[m - 1] ?? `M${m}`;
 }
 
 function IconButton({
@@ -120,18 +136,29 @@ export default function HrPerformanceReviewsPage() {
   const isAdmin = !!profile?.is_active && profile.role === "admin";
 
   const [employees, setEmployees] = useState<HrEmployee[]>([]);
+  const [forms, setForms] = useState<HrReviewForm[]>([]);
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
-  const [answers, setAnswers] = useState<ReviewAnswer[]>([]);
 
-  // Change questions modal
+  // ---- Question editor modal
   const [editOpen, setEditOpen] = useState(false);
+  const [editFormType, setEditFormType] = useState<ReviewFormType>("annual");
   const [editQuestions, setEditQuestions] = useState<EditQuestion[]>([]);
   const editRef = useRef<HTMLDivElement | null>(null);
 
-  // Review modal (per employee)
+  // ---- Review modal
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewEmployeeId, setReviewEmployeeId] = useState<string>("");
-  const [reviewValues, setReviewValues] = useState<Record<string, number>>({}); // question_id -> 1..5
+
+  const now = useMemo(() => new Date(), []);
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  const [reviewFormType, setReviewFormType] = useState<ReviewFormType>("annual");
+  const [reviewYear, setReviewYear] = useState<number>(currentYear);
+  const [reviewMonth, setReviewMonth] = useState<number>(currentMonth);
+
+  const [reviewId, setReviewId] = useState<string>(""); // resolved/created when loading
+  const [reviewValues, setReviewValues] = useState<Record<string, number>>({}); // question_id -> score
   const reviewRef = useRef<HTMLDivElement | null>(null);
 
   const employeesById = useMemo(() => {
@@ -140,54 +167,43 @@ export default function HrPerformanceReviewsPage() {
     return m;
   }, [employees]);
 
-  const reviewQuestions = useMemo(() => {
-    return (questions ?? [])
-      .slice()
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.question_text.localeCompare(b.question_text));
-  }, [questions]);
-
-  const answersByEmployee = useMemo(() => {
-    const m = new Map<string, Map<string, number>>();
-    for (const a of answers) {
-      const inner = m.get(a.employee_id) ?? new Map<string, number>();
-      inner.set(a.question_id, a.score);
-      m.set(a.employee_id, inner);
-    }
+  const formsByType = useMemo(() => {
+    const m = new Map<ReviewFormType, HrReviewForm>();
+    for (const f of forms) m.set(f.form_type, f);
     return m;
-  }, [answers]);
+  }, [forms]);
 
-  function computePerformanceScore(employeeId: string) {
-    const inner = answersByEmployee.get(employeeId);
-    if (!inner) return null;
+  const questionsByFormType = useMemo(() => {
+    const annualForm = formsByType.get("annual");
+    const monthlyForm = formsByType.get("monthly");
 
-    const vals: number[] = [];
-    for (const q of reviewQuestions) {
-      const v = inner.get(q.id);
-      if (typeof v === "number" && Number.isFinite(v)) vals.push(v);
-    }
-    if (vals.length === 0) return null;
+    const annualId = annualForm?.id ?? "";
+    const monthlyId = monthlyForm?.id ?? "";
 
-    const avg = vals.reduce((s, x) => s + x, 0) / vals.length;
-    return ceil1dp(avg);
-  }
+    const annualQs = (questions ?? []).filter((q) => q.form_id === annualId && q.is_active !== false);
+    const monthlyQs = (questions ?? []).filter((q) => q.form_id === monthlyId && q.is_active !== false);
 
-  function computeAttendanceScore(e: HrEmployee) {
-    const v = e.attendance_points; // ✅ FIXED: use attendance_points
-    if (v === null || v === undefined) return null;
+    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) =>
+      (a.sort_order ?? 0) - (b.sort_order ?? 0) || (a.question_text ?? "").localeCompare(b.question_text ?? "");
 
-    const n = Number(v);
-    if (!Number.isFinite(n)) return null;
+    return {
+      annual: annualQs.slice().sort(sortFn),
+      monthly: monthlyQs.slice().sort(sortFn),
+    };
+  }, [questions, formsByType]);
 
-    // Attendance score is meant to be a 1–5 scale
-    const clamped = Math.max(1, Math.min(5, n));
-    return ceil1dp(clamped);
-  }
+  const activeReviewQuestions = useMemo(() => {
+    return reviewFormType === "annual" ? questionsByFormType.annual : questionsByFormType.monthly;
+  }, [questionsByFormType, reviewFormType]);
 
-  function computeTotalScore(att: number | null, perf: number | null) {
-    const a = Number.isFinite(Number(att)) ? Number(att) : 0;
-    const p = Number.isFinite(Number(perf)) ? Number(perf) : 0;
-    return ceil1dp(a + p);
-  }
+  const reviewScaleMax = useMemo(() => {
+    return formsByType.get(reviewFormType)?.scale_max ?? (reviewFormType === "monthly" ? 3 : 5);
+  }, [formsByType, reviewFormType]);
+
+  const reviewEmployee = useMemo(() => {
+    if (!reviewEmployeeId) return null;
+    return employeesById.get(reviewEmployeeId) ?? null;
+  }, [employeesById, reviewEmployeeId]);
 
   async function loadBoot() {
     setStatus("Loading...");
@@ -210,74 +226,68 @@ export default function HrPerformanceReviewsPage() {
   async function loadAll() {
     setStatus("Loading data...");
 
-    const empRes = await supabase
-      .from("hr_employees")
-      .select("*")
-      .order("legal_last_name", { ascending: true })
-      .order("legal_first_name", { ascending: true })
-      .order("legal_middle_name", { ascending: true });
+    const [empRes, formRes, qRes] = await Promise.all([
+      supabase
+        .from("hr_employees")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active")
+        .order("legal_last_name", { ascending: true })
+        .order("legal_first_name", { ascending: true })
+        .order("legal_middle_name", { ascending: true }),
+
+      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").eq("is_active", true),
+
+      supabase
+        .from("hr_review_questions")
+        .select("id, form_id, question_text, sort_order, is_active, created_at, updated_at")
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true }),
+    ]);
 
     if (empRes.error) throw empRes.error;
-
-    const empList = ((empRes.data ?? []) as HrEmployee[]).slice().sort(safeSortByName);
-    setEmployees(empList);
-
-    const qRes = await supabase
-      .from("hr_performance_review_questions")
-      .select("id, question_text, sort_order, created_at, updated_at")
-      .order("sort_order", { ascending: true })
-      .order("created_at", { ascending: true });
-
+    if (formRes.error) throw formRes.error;
     if (qRes.error) throw qRes.error;
 
-    const qList = (qRes.data ?? []) as ReviewQuestion[];
-    setQuestions(qList);
+    setEmployees(((empRes.data ?? []) as HrEmployee[]).slice().sort(safeSortByName));
+    setForms((formRes.data ?? []) as HrReviewForm[]);
+    setQuestions((qRes.data ?? []) as ReviewQuestion[]);
 
-    const qIds = qList.map((q) => q.id);
-    if (qIds.length === 0) {
-      setAnswers([]);
-      setStatus("");
-      return;
-    }
-
-    const aRes = await supabase
-      .from("hr_performance_review_answers")
-      .select("*")
-      .in("question_id", qIds);
-
-    if (aRes.error) throw aRes.error;
-
-    const seen = new Set<string>();
-    const dedup: ReviewAnswer[] = [];
-    for (const r of (aRes.data ?? []) as ReviewAnswer[]) {
-      const k = `${r.employee_id}:${r.question_id}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      dedup.push(r);
-    }
-
-    setAnswers(dedup);
     setStatus("");
   }
 
-  // ----- Change Questions modal -----
-  function openEditQuestions() {
-    const list: EditQuestion[] = (questions ?? [])
+  // ----------------------------
+  // Question editor helpers
+  // ----------------------------
+  function openEditQuestions(which: ReviewFormType) {
+    const form = formsByType.get(which);
+    if (!form) {
+      setStatus("Missing hr_review_forms rows. Run the SQL schema block first.");
+      return;
+    }
+
+    const list: EditQuestion[] = (which === "annual" ? questionsByFormType.annual : questionsByFormType.monthly)
       .slice()
-      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.question_text.localeCompare(b.question_text))
       .map((q, idx) => ({
         id: q.id,
         question_text: q.question_text ?? "",
         sort_order: Number.isFinite(Number(q.sort_order)) ? Number(q.sort_order) : idx,
       }));
 
+    // If empty, give starter questions
     if (list.length === 0) {
-      list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Quality of work", sort_order: 0 });
-      list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Communication", sort_order: 1 });
-      list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Reliability", sort_order: 2 });
+      if (which === "annual") {
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Quality of work", sort_order: 0 });
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Communication", sort_order: 1 });
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Reliability", sort_order: 2 });
+      } else {
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Preparedness", sort_order: 0 });
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Classroom management", sort_order: 1 });
+        list.push({ id: `new:${crypto.randomUUID()}`, question_text: "Team collaboration", sort_order: 2 });
+      }
     }
 
     list.forEach((q, i) => (q.sort_order = i));
+    setEditFormType(which);
     setEditQuestions(list);
     setEditOpen(true);
   }
@@ -321,57 +331,65 @@ export default function HrPerformanceReviewsPage() {
   async function saveQuestions() {
     setStatus("Saving questions...");
     try {
+      const form = formsByType.get(editFormType);
+      if (!form) {
+        setStatus("Missing hr_review_forms rows. Run the SQL schema block first.");
+        return;
+      }
+
       const cleaned = editQuestions
         .map((q, i) => ({
           ...q,
           sort_order: i,
           question_text: (q.question_text ?? "").trim(),
         }))
-        .filter((q) => q.question_text.length > 0); // drop empty rows silently
+        .filter((q) => q.question_text.length > 0);
 
       if (cleaned.length === 0) {
         setStatus("Add at least 1 question.");
         return;
       }
 
-      const existingIds = new Set((questions ?? []).map((q) => q.id));
+      const currentIds = new Set(
+        (editFormType === "annual" ? questionsByFormType.annual : questionsByFormType.monthly).map((q) => q.id)
+      );
       const desiredExistingIds = new Set(cleaned.filter((q) => !q.id.startsWith("new:")).map((q) => q.id));
+      const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
-      const toDelete = Array.from(existingIds).filter((id) => !desiredExistingIds.has(id));
       if (toDelete.length > 0) {
         const ok = confirm(
-          `Delete ${toDelete.length} question(s)? This will also delete their saved answers (for all employees).`
+          `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete their saved answers for any reviews that used them.`
         );
         if (!ok) {
           setStatus("");
           return;
         }
-
-        const { error: delErr } = await supabase.from("hr_performance_review_questions").delete().in("id", toDelete);
+        const { error: delErr } = await supabase.from("hr_review_questions").delete().in("id", toDelete);
         if (delErr) throw delErr;
       }
 
       const newRows = cleaned.filter((q) => q.id.startsWith("new:"));
       if (newRows.length > 0) {
         const insertRows = newRows.map((q) => ({
+          form_id: form.id,
           question_text: q.question_text,
           sort_order: q.sort_order,
+          is_active: true,
         }));
-
-        const { error } = await supabase.from("hr_performance_review_questions").insert(insertRows);
+        const { error } = await supabase.from("hr_review_questions").insert(insertRows);
         if (error) throw error;
       }
 
       const existing = cleaned.filter((q) => !q.id.startsWith("new:"));
       for (const q of existing) {
         const { error } = await supabase
-          .from("hr_performance_review_questions")
+          .from("hr_review_questions")
           .update({
             question_text: q.question_text,
             sort_order: q.sort_order,
+            is_active: true,
           })
           .eq("id", q.id);
-
         if (error) throw error;
       }
 
@@ -384,61 +402,191 @@ export default function HrPerformanceReviewsPage() {
     }
   }
 
-  // ----- Review modal (per employee) -----
+  // ----------------------------
+  // Review modal helpers
+  // ----------------------------
   function openReview(employeeId: string) {
-    const inner = answersByEmployee.get(employeeId);
-    const init: Record<string, number> = {};
-
-    for (const q of reviewQuestions) {
-      const v = inner?.get(q.id);
-      if (typeof v === "number" && Number.isFinite(v)) init[q.id] = v;
-      else init[q.id] = 3; // default mid score for new questions
-    }
-
     setReviewEmployeeId(employeeId);
-    setReviewValues(init);
+    setReviewId("");
+    setReviewFormType("annual");
+    setReviewYear(currentYear);
+    setReviewMonth(currentMonth);
+    setReviewValues({});
     setReviewOpen(true);
   }
 
   function closeReview() {
     setReviewOpen(false);
     setReviewEmployeeId("");
+    setReviewId("");
     setReviewValues({});
+  }
+
+  function periodKey(ft: ReviewFormType, y: number, m: number) {
+    return ft === "annual" ? `annual:${y}` : `monthly:${y}-${String(m).padStart(2, "0")}`;
+  }
+
+  async function loadReviewForSelection(employeeId: string, formType: ReviewFormType, year: number, month: number) {
+    const qs = formType === "annual" ? questionsByFormType.annual : questionsByFormType.monthly;
+    const scaleMax = formsByType.get(formType)?.scale_max ?? (formType === "monthly" ? 3 : 5);
+
+    // If no questions yet, just clear
+    if (!qs || qs.length === 0) {
+      setReviewId("");
+      setReviewValues({});
+      return;
+    }
+
+    // Find review row if it exists
+    const base = supabase
+      .from("hr_reviews")
+      .select("id, employee_id, form_type, period_year, period_month, created_at, updated_at")
+      .eq("employee_id", employeeId)
+      .eq("form_type", formType)
+      .eq("period_year", year);
+
+    const revRes = formType === "annual" ? await base.is("period_month", null).maybeSingle() : await base.eq("period_month", month).maybeSingle();
+
+    if (revRes.error) throw revRes.error;
+
+    const existingReview = (revRes.data ?? null) as HrReview | null;
+
+    if (!existingReview?.id) {
+      // No review yet: initialize defaults (annual mid=3 of 5; monthly mid=2 of 3)
+      const init: Record<string, number> = {};
+      const def = formType === "monthly" ? 2 : 3;
+      for (const q of qs) init[q.id] = def;
+
+      setReviewId("");
+      setReviewValues(init);
+      return;
+    }
+
+    // Load answers
+    const ansRes = await supabase
+      .from("hr_review_answers")
+      .select("review_id, question_id, score, created_at, updated_at")
+      .eq("review_id", existingReview.id);
+
+    if (ansRes.error) throw ansRes.error;
+
+    const init: Record<string, number> = {};
+    const byQ = new Map<string, number>();
+    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score);
+
+    const def = formType === "monthly" ? 2 : 3;
+    for (const q of qs) {
+      const v = byQ.get(q.id);
+      init[q.id] = typeof v === "number" && Number.isFinite(v) ? clampScore(v, scaleMax) ?? def : def;
+    }
+
+    setReviewId(existingReview.id);
+    setReviewValues(init);
+  }
+
+  async function ensureReviewRow(employeeId: string, formType: ReviewFormType, year: number, month: number) {
+    // Upsert the review row to get an ID
+    const payload: any = {
+      employee_id: employeeId,
+      form_type: formType,
+      period_year: year,
+      period_month: formType === "annual" ? null : month,
+    };
+
+    const up = await supabase
+      .from("hr_reviews")
+      .upsert(payload, { onConflict: "employee_id,form_type,period_year,period_month" })
+      .select("id")
+      .single();
+
+    if (up.error) throw up.error;
+    return String((up.data as any)?.id ?? "");
   }
 
   async function saveReview() {
     if (!reviewEmployeeId) return;
 
-    if (reviewQuestions.length === 0) {
-      setStatus("No questions. Click “Change questions” first.");
+    const qs = activeReviewQuestions;
+    if (!qs || qs.length === 0) {
+      setStatus("No questions for this review type. Edit questions first.");
       return;
+    }
+
+    if (!Number.isFinite(Number(reviewYear)) || reviewYear < 2000 || reviewYear > 2100) {
+      setStatus("Invalid year.");
+      return;
+    }
+    if (reviewFormType === "monthly") {
+      if (!Number.isFinite(Number(reviewMonth)) || reviewMonth < 1 || reviewMonth > 12) {
+        setStatus("Invalid month.");
+        return;
+      }
     }
 
     setStatus("Saving review...");
     try {
-      const rows = reviewQuestions.map((q) => {
-        const v = clampScore(reviewValues[q.id]);
+      const scaleMax = reviewScaleMax;
+
+      const rid = await ensureReviewRow(reviewEmployeeId, reviewFormType, reviewYear, reviewMonth);
+      setReviewId(rid);
+
+      const rows = qs.map((q) => {
+        const v = clampScore(reviewValues[q.id], scaleMax);
+        const fallback = reviewFormType === "monthly" ? 2 : 3;
         return {
-          employee_id: reviewEmployeeId,
+          review_id: rid,
           question_id: q.id,
-          score: v ?? 3,
+          score: v ?? fallback,
         };
       });
 
-      const { error } = await supabase
-        .from("hr_performance_review_answers")
-        .upsert(rows, { onConflict: "employee_id,question_id" });
-
+      const { error } = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
       if (error) throw error;
 
-      closeReview();
-      await loadAll();
       setStatus("✅ Saved.");
       setTimeout(() => setStatus(""), 900);
+      closeReview();
     } catch (e: any) {
       setStatus("Save review error: " + (e?.message ?? "unknown"));
     }
   }
+
+  const computedAvg = useMemo(() => {
+    const qs = activeReviewQuestions;
+    if (!qs || qs.length === 0) return null;
+    const scaleMax = reviewScaleMax;
+
+    const vals = qs.map((q) => clampScore(reviewValues[q.id], scaleMax)).filter((v): v is number => typeof v === "number");
+    if (vals.length === 0) return null;
+
+    const avg = vals.reduce((s, x) => s + x, 0) / vals.length;
+    return round1dp(avg);
+  }, [activeReviewQuestions, reviewValues, reviewScaleMax]);
+
+  // Auto-load review answers whenever selection changes while modal is open
+  useEffect(() => {
+    if (!reviewOpen) return;
+    if (!reviewEmployeeId) return;
+    const k = periodKey(reviewFormType, reviewYear, reviewMonth);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setStatus(`Loading ${reviewFormType} review (${k})...`);
+        await loadReviewForSelection(reviewEmployeeId, reviewFormType, reviewYear, reviewMonth);
+        if (!cancelled) {
+          setStatus("");
+        }
+      } catch (e: any) {
+        if (!cancelled) setStatus("Load review error: " + (e?.message ?? "unknown"));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewOpen, reviewEmployeeId, reviewFormType, reviewYear, reviewMonth, questionsByFormType, formsByType]);
 
   // Close modals on outside click / escape
   useEffect(() => {
@@ -473,22 +621,6 @@ export default function HrPerformanceReviewsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const rows = useMemo(() => {
-    return (employees ?? []).map((e) => {
-      const attendance = computeAttendanceScore(e);
-      const perf = computePerformanceScore(e.id);
-      const total = computeTotalScore(attendance, perf);
-      const raisePct = recommendedRaisePct(total);
-      return { e, attendance, perf, total, raisePct };
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, reviewQuestions, answersByEmployee]);
-
-  const reviewEmployee = useMemo(() => {
-    if (!reviewEmployeeId) return null;
-    return employeesById.get(reviewEmployeeId) ?? null;
-  }, [employeesById, reviewEmployeeId]);
-
   return (
     <main className="stack">
       <div className="container">
@@ -496,13 +628,17 @@ export default function HrPerformanceReviewsPage() {
           <div className="stack" style={{ gap: 6 }}>
             <h1 className="h1">Performance Reviews</h1>
             <div className="subtle">
-              Questions are editable any time. Performance score is the average of the current question set (1–5), rounded up to 1 decimal.
+              Two review types:
+              <b> Annual (1–5)</b> and <b>Monthly (1–3)</b>. Averages are computed with normal rounding to 1 decimal.
             </div>
           </div>
 
           <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-            <button className="btn" type="button" onClick={openEditQuestions} disabled={!isAdmin}>
-              Change questions
+            <button className="btn" type="button" onClick={() => openEditQuestions("annual")} disabled={!isAdmin}>
+              Edit annual questions
+            </button>
+            <button className="btn" type="button" onClick={() => openEditQuestions("monthly")} disabled={!isAdmin}>
+              Edit monthly questions
             </button>
             <IconButton title="Reload" onClick={() => void loadAll()} disabled={!isAdmin}>
               ↻
@@ -521,10 +657,10 @@ export default function HrPerformanceReviewsPage() {
             <div className="card" style={{ marginTop: 14, padding: 16 }}>
               <div className="row-between" style={{ gap: 10, flexWrap: "wrap" }}>
                 <div className="subtle">
-                  Questions: <b>{reviewQuestions.length}</b>
+                  Annual questions: <b>{questionsByFormType.annual.length}</b>
                 </div>
                 <div className="subtle">
-                  Raise rule: total ≥ 8 → 4% · total ≥ 7 → 3% · total ≥ 6 → 2% · else 0%
+                  Monthly questions: <b>{questionsByFormType.monthly.length}</b>
                 </div>
               </div>
             </div>
@@ -533,48 +669,31 @@ export default function HrPerformanceReviewsPage() {
               <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    <th style={{ minWidth: 240 }}>Employee</th>
-                    <th style={{ width: 150 }}>Attendance</th>
-                    <th style={{ width: 160 }}>Performance</th>
-                    <th style={{ width: 120 }}>Total</th>
-                    <th style={{ width: 220 }}>Recommended increase</th>
-                    <th style={{ width: 140 }} />
+                    <th style={{ minWidth: 260 }}>Employee</th>
+                    <th style={{ width: 160 }}>Status</th>
+                    <th style={{ width: 170 }} />
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.length === 0 ? (
+                  {employees.length === 0 ? (
                     <tr>
-                      <td colSpan={6} style={{ padding: 14 }}>
+                      <td colSpan={3} style={{ padding: 14 }}>
                         <span className="subtle">(No employees found.)</span>
                       </td>
                     </tr>
                   ) : (
-                    rows.map(({ e, attendance, perf, total, raisePct }) => (
+                    employees.map((e) => (
                       <tr key={e.id}>
                         <td style={{ padding: 12 }}>
                           <div style={{ fontWeight: 900, lineHeight: 1.2 }}>{employeeLabel(e)}</div>
                           <div className="subtle" style={{ marginTop: 4 }}>ID: {e.id}</div>
                         </td>
-                        <td style={{ padding: 12, fontWeight: 900 }}>
-                          {attendance === null ? <span className="subtle">—</span> : attendance.toFixed(1)}
-                        </td>
-                        <td style={{ padding: 12, fontWeight: 900 }}>
-                          {perf === null ? <span className="subtle">—</span> : perf.toFixed(1)}
-                        </td>
-                        <td style={{ padding: 12, fontWeight: 950 }}>{total.toFixed(1)}</td>
                         <td style={{ padding: 12 }}>
-                          <span style={{ fontWeight: 950 }}>{raisePct}%</span>{" "}
-                          <span className="subtle">(based on total)</span>
+                          {e.is_active === false ? <span className="badge">inactive</span> : <span className="badge badge-green">active</span>}
                         </td>
                         <td style={{ padding: 12, textAlign: "right" }}>
-                          <button
-                            className="btn btn-primary"
-                            type="button"
-                            onClick={() => openReview(e.id)}
-                            disabled={reviewQuestions.length === 0}
-                            title={reviewQuestions.length === 0 ? "Add questions first" : "Answer review questions (1–5)"}
-                          >
-                            Review
+                          <button className="btn btn-primary" type="button" onClick={() => openReview(e.id)}>
+                            Write / edit review
                           </button>
                         </td>
                       </tr>
@@ -584,7 +703,9 @@ export default function HrPerformanceReviewsPage() {
               </table>
             </div>
 
-            {/* CHANGE QUESTIONS MODAL */}
+            {/* ===========================
+                EDIT QUESTIONS MODAL
+               =========================== */}
             {editOpen ? (
               <div
                 role="dialog"
@@ -613,8 +734,12 @@ export default function HrPerformanceReviewsPage() {
                 >
                   <div className="row-between" style={{ gap: 10 }}>
                     <div className="stack" style={{ gap: 4 }}>
-                      <div style={{ fontWeight: 950, fontSize: 16 }}>Change review questions</div>
-                      <div className="subtle">Questions are always answered 1–5. Deactivation is not supported—delete removes it.</div>
+                      <div style={{ fontWeight: 950, fontSize: 16 }}>
+                        Edit {editFormType === "annual" ? "Annual" : "Monthly"} questions
+                      </div>
+                      <div className="subtle">
+                        {editFormType === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
+                      </div>
                     </div>
                     <button className="btn" type="button" onClick={closeEditQuestions} title="Close">
                       ✕
@@ -646,7 +771,7 @@ export default function HrPerformanceReviewsPage() {
                           <input
                             className="input"
                             value={q.question_text}
-                            placeholder="Question text (e.g., 'Communication')"
+                            placeholder="Question text"
                             onChange={(e) => {
                               const v = e.target.value;
                               setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, question_text: v } : x)));
@@ -706,7 +831,9 @@ export default function HrPerformanceReviewsPage() {
               </div>
             ) : null}
 
-            {/* REVIEW MODAL */}
+            {/* ===========================
+                REVIEW MODAL
+               =========================== */}
             {reviewOpen && reviewEmployeeId ? (
               <div
                 role="dialog"
@@ -726,18 +853,22 @@ export default function HrPerformanceReviewsPage() {
                   ref={reviewRef}
                   className="card"
                   style={{
-                    width: "min(860px, 100%)",
+                    width: "min(920px, 100%)",
                     padding: 16,
                     borderRadius: 16,
-                    maxHeight: "min(780px, 90vh)",
+                    maxHeight: "min(820px, 90vh)",
                     overflow: "auto",
                   }}
                 >
                   <div className="row-between" style={{ gap: 10 }}>
                     <div className="stack" style={{ gap: 4 }}>
-                      <div style={{ fontWeight: 950, fontSize: 16 }}>Performance review</div>
+                      <div style={{ fontWeight: 950, fontSize: 16 }}>Write performance review</div>
                       <div className="subtle">
                         Employee: <b>{reviewEmployee ? employeeLabel(reviewEmployee) : reviewEmployeeId}</b>
+                      </div>
+                      <div className="subtle">
+                        Saved review id:{" "}
+                        {reviewId ? <b>{reviewId}</b> : <span>(not created yet — will create on Save)</span>}
                       </div>
                     </div>
                     <button className="btn" type="button" onClick={closeReview} title="Close (Esc)">
@@ -747,11 +878,80 @@ export default function HrPerformanceReviewsPage() {
 
                   <div className="hr" />
 
-                  {reviewQuestions.length === 0 ? (
-                    <div className="subtle">(No questions. Close this and click “Change questions”.)</div>
+                  {/* Type + period selection */}
+                  <div
+                    className="card"
+                    style={{
+                      padding: 12,
+                      borderRadius: 14,
+                      border: "1px solid var(--border)",
+                      background: "rgba(0,0,0,0.015)",
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+                      <div style={{ minWidth: 220 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Review type</div>
+                        <select
+                          className="select"
+                          value={reviewFormType}
+                          onChange={(e) => {
+                            const ft = e.target.value as ReviewFormType;
+                            setReviewFormType(ft);
+                            // reset default values when switching type
+                            setReviewValues({});
+                            setReviewId("");
+                          }}
+                        >
+                          <option value="annual">Annual (1–5)</option>
+                          <option value="monthly">Monthly (1–3)</option>
+                        </select>
+                      </div>
+
+                      <div style={{ width: 140 }}>
+                        <div style={{ fontWeight: 900, marginBottom: 6 }}>Year</div>
+                        <input
+                          className="input"
+                          type="number"
+                          value={reviewYear}
+                          onChange={(e) => setReviewYear(Number(e.target.value))}
+                          min={2000}
+                          max={2100}
+                        />
+                      </div>
+
+                      {reviewFormType === "monthly" ? (
+                        <div style={{ width: 200 }}>
+                          <div style={{ fontWeight: 900, marginBottom: 6 }}>Month</div>
+                          <select className="select" value={reviewMonth} onChange={(e) => setReviewMonth(Number(e.target.value))}>
+                            {Array.from({ length: 12 }).map((_, i) => {
+                              const m = i + 1;
+                              return (
+                                <option key={m} value={m}>
+                                  {monthName(m)}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                      ) : null}
+
+                      <div className="subtle" style={{ alignSelf: "center", marginLeft: "auto" }}>
+                        {reviewFormType === "annual"
+                          ? `Editing: Annual ${reviewYear}`
+                          : `Editing: Monthly ${monthName(reviewMonth)} ${reviewYear}`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {activeReviewQuestions.length === 0 ? (
+                    <div className="subtle">
+                      No questions for this review type yet. Close and click{" "}
+                      <b>{reviewFormType === "annual" ? "Edit annual questions" : "Edit monthly questions"}</b>.
+                    </div>
                   ) : (
                     <div className="stack" style={{ gap: 10 }}>
-                      {reviewQuestions.map((q) => (
+                      {activeReviewQuestions.map((q) => (
                         <div
                           key={q.id}
                           style={{
@@ -764,41 +964,41 @@ export default function HrPerformanceReviewsPage() {
                           <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
 
                           <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                            <div className="subtle" style={{ minWidth: 130 }}>
-                              Score (1–5)
+                            <div className="subtle" style={{ minWidth: 140 }}>
+                              Score (1–{reviewScaleMax})
                             </div>
 
                             <select
                               className="select"
-                              value={String(reviewValues[q.id] ?? 3)}
+                              value={String(reviewValues[q.id] ?? (reviewFormType === "monthly" ? 2 : 3))}
                               onChange={(e) => {
-                                const v = clampScore(e.target.value) ?? 3;
+                                const v = clampScore(e.target.value, reviewScaleMax) ?? (reviewFormType === "monthly" ? 2 : 3);
                                 setReviewValues((cur) => ({ ...cur, [q.id]: v }));
                               }}
                               style={{ width: 140 }}
                             >
-                              <option value="1">1</option>
-                              <option value="2">2</option>
-                              <option value="3">3</option>
-                              <option value="4">4</option>
-                              <option value="5">5</option>
+                              {Array.from({ length: reviewScaleMax }).map((_, i) => {
+                                const v = i + 1;
+                                return (
+                                  <option key={v} value={v}>
+                                    {v}
+                                  </option>
+                                );
+                              })}
                             </select>
 
-                            <div className="subtle">1 = needs improvement · 5 = excellent</div>
+                            <div className="subtle">
+                              {reviewFormType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                            </div>
                           </div>
                         </div>
                       ))}
 
                       <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
                         <div className="subtle">
-                          Performance score (auto):{" "}
-                          <b>
-                            {(() => {
-                              const vals = reviewQuestions.map((q) => clampScore(reviewValues[q.id]) ?? 3);
-                              const avg = vals.reduce((s, x) => s + x, 0) / Math.max(1, vals.length);
-                              return ceil1dp(avg).toFixed(1);
-                            })()}
-                          </b>
+                          Average (auto):{" "}
+                          <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>
+                          <span className="subtle"> (normal rounding)</span>
                         </div>
 
                         <div className="row" style={{ gap: 10 }}>

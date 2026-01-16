@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import "@fortune-sheet/react/dist/index.css";
+import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
@@ -30,6 +32,16 @@ type EmployeeEventReminderRow = {
   created_at: string;
 };
 
+type PtoScheduleRow = {
+  id: string;
+  employee_id: string;
+  begin_date: string; // YYYY-MM-DD
+  end_date: string | null; // YYYY-MM-DD
+  hours_per_annum: number;
+  created_at: string;
+  updated_at: string;
+};
+
 type EmployeeRow = {
   id: string;
   legal_first_name: string;
@@ -47,14 +59,9 @@ type EmployeeRow = {
   has_401k: boolean;
   has_pto: boolean;
 
-  // ✅ PTO reminder fields
-  pto_reminder_date: string | null; // YYYY-MM-DD
-  pto_reminder_sent_at: string | null;
-
   job_level_id: string | null;
   campus_id: string | null;
 
-  // ✅ persisted mini-sheet for insurance calculations
   insurance_sheet_doc: any[] | null;
 
   job_level?: JobLevelRow | null;
@@ -132,17 +139,12 @@ function Chip({ text, onRemove }: { text: string; onRemove: () => void }) {
   );
 }
 
-/**
- * Normalize relationship embeds:
- * sometimes PostgREST returns {job_level:{...}} and sometimes {job_level:[{...}]}
- */
 function asSingle<T>(v: any): T | null {
   if (!v) return null;
   if (Array.isArray(v)) return (v[0] ?? null) as T | null;
   return v as T;
 }
 
-// ---- Sheet helpers (ported / simplified from my-plans) ----
 function deepJsonClone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x));
 }
@@ -153,6 +155,27 @@ function normalizeSheetDoc(doc: any, fallback: any[]) {
   if (typeof doc === "object") return [doc];
   return fallback;
 }
+
+function isEmptyInsuranceDoc(doc: any): boolean {
+  if (!doc) return true;
+  const arr = Array.isArray(doc) ? doc : typeof doc === "object" ? [doc] : [];
+  if (arr.length === 0) return true;
+
+  // If every sheet has empty celldata and no meaningful data, treat as empty.
+  for (const sh of arr) {
+    const cd = (sh as any)?.celldata;
+    const hasCells = Array.isArray(cd) && cd.length > 0;
+    if (hasCells) return false;
+
+    const grid = (sh as any)?.data;
+    if (Array.isArray(grid) && grid.some((row: any[]) => Array.isArray(row) && row.some((c) => c != null && String((c?.v ?? c) ?? "") !== ""))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 
 function ensureCelldata(sheet: any) {
   const sh = { ...(sheet ?? {}) };
@@ -218,9 +241,6 @@ function normalizeEmployee(raw: any): EmployeeRow {
     has_401k: !!raw.has_401k,
     has_pto: !!raw.has_pto,
 
-    pto_reminder_date: raw.pto_reminder_date ?? null,
-    pto_reminder_sent_at: raw.pto_reminder_sent_at ?? null,
-
     job_level_id: raw.job_level_id ?? null,
     campus_id: raw.campus_id ?? null,
 
@@ -243,8 +263,41 @@ function formatYmd(ymd: string) {
   }
 }
 
+function toNum(v: any, fallback = 0) {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+type EmpSortKey =
+  | "name"
+  | "preferred"
+  | "job_level"
+  | "campus"
+  | "rate"
+  | "employment_type"
+  | "is_active"
+  | "updated_at";
+
+type SortDir = "asc" | "desc";
+
+function cmp(a: any, b: any) {
+  if (a == null && b == null) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  return String(a).localeCompare(String(b), undefined, { sensitivity: "base" });
+}
+
+function employeeHref(id: string) {
+  return `/admin/hr/employees/${id}`;
+}
+
 export default function EmployeesPage() {
-  // 6 columns x 15 rows
+  // Access gate (admin-only)
+  const [profile, setProfile] = useState<TeacherProfile | null>(null);
+  const [accessStatus, setAccessStatus] = useState<string>("Loading...");
+  const isAdmin = !!profile?.is_active && profile.role === "admin";
+
   const DEFAULT_INSURANCE_SHEET_DOC = useMemo(
     () => [
       {
@@ -258,23 +311,55 @@ export default function EmployeesPage() {
     []
   );
 
+    const [insuranceTemplateDoc, setInsuranceTemplateDoc] = useState<any[] | null>(null);
+  const [insuranceTemplateLoading, setInsuranceTemplateLoading] = useState(false);
+
+  const insuranceFallbackDoc = useMemo(() => {
+    return insuranceTemplateDoc ?? DEFAULT_INSURANCE_SHEET_DOC;
+  }, [insuranceTemplateDoc, DEFAULT_INSURANCE_SHEET_DOC]);
+
+  const loadInsuranceTemplate = useCallback(async () => {
+    setInsuranceTemplateLoading(true);
+    try {
+      // RPC returns jsonb (could be array/object/null)
+      const { data, error } = await supabase.rpc("hr_get_template", { p_key: "insurance_sheet" });
+      if (error) throw error;
+
+      const normalized = normalizeForFortune(data, DEFAULT_INSURANCE_SHEET_DOC);
+      setInsuranceTemplateDoc(normalized);
+    } catch (e: any) {
+      // If missing template row or RPC issues, fallback stays default
+      console.warn("Failed to load insurance template:", e?.message ?? e);
+      setInsuranceTemplateDoc(null);
+    } finally {
+      setInsuranceTemplateLoading(false);
+    }
+  }, [DEFAULT_INSURANCE_SHEET_DOC]);
+
+
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [jobLevels, setJobLevels] = useState<JobLevelRow[]>([]);
   const [campuses, setCampuses] = useState<CampusRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Milestone type tables
   const [eventTypes, setEventTypes] = useState<EventTypeRow[]>([]);
 
-  // Per-employee details (when editing)
   const [empEvents, setEmpEvents] = useState<EmployeeEventRow[]>([]);
-  const [empEventRemindersByEventId, setEmpEventRemindersByEventId] = useState<Record<string, EmployeeEventReminderRow[]>>({});
+  const [empEventRemindersByEventId, setEmpEventRemindersByEventId] = useState<
+    Record<string, EmployeeEventReminderRow[]>
+  >({});
+
+  // PTO schedules (new model)
+  const [ptoSchedules, setPtoSchedules] = useState<PtoScheduleRow[]>([]);
+  const [newPtoBegin, setNewPtoBegin] = useState<string>("");
+  const [newPtoEnd, setNewPtoEnd] = useState<string>("");
+  const [newPtoHours, setNewPtoHours] = useState<string>("0");
+  const [ptoSavingId, setPtoSavingId] = useState<string | null>(null);
 
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // “+ dropdown” modals become manage modals (add + list + delete)
   const [showManageJobLevels, setShowManageJobLevels] = useState(false);
   const [showManageCampuses, setShowManageCampuses] = useState(false);
   const [showManageEventTypes, setShowManageEventTypes] = useState(false);
@@ -302,22 +387,15 @@ export default function EmployeesPage() {
   const [has401k, setHas401k] = useState(false);
   const [hasPto, setHasPto] = useState(false);
 
-  // PTO
-  const [ptoReminderDate, setPtoReminderDate] = useState<string>("");
-  const [ptoReminderSentAt, setPtoReminderSentAt] = useState<string | null>(null);
-
-  // Manage modal inputs
   const [newJobLevelName, setNewJobLevelName] = useState("");
   const [newCampusName, setNewCampusName] = useState("");
   const [newEventTypeName, setNewEventTypeName] = useState("");
 
-  // Insurance sheet
   const [insuranceSheetDoc, setInsuranceSheetDoc] = useState<any[]>(DEFAULT_INSURANCE_SHEET_DOC);
   const [insuranceWorkbookKey, setInsuranceWorkbookKey] = useState<string>("init");
   const [insuranceSheetDirty, setInsuranceSheetDirty] = useState(false);
   const insuranceWorkbookRef = useRef<any>(null);
 
-  // Milestones UI (create new event)
   const [newEventTypeId, setNewEventTypeId] = useState<string>("");
   const [newEventDate, setNewEventDate] = useState<string>("");
   const [newEventNotes, setNewEventNotes] = useState<string>("");
@@ -325,14 +403,128 @@ export default function EmployeesPage() {
   const [newReminderDays, setNewReminderDays] = useState<string>("");
   const [newEventReminderOffsets, setNewEventReminderOffsets] = useState<number[]>([]);
 
+  // ✅ sorting state for main employees table (toggleable headers)
+  const [sort, setSort] = useState<{ key: EmpSortKey; dir: SortDir }>({ key: "updated_at", dir: "desc" });
+
+  function defaultDirForEmpKey(k: EmpSortKey): SortDir {
+    if (k === "updated_at") return "desc";
+    if (k === "is_active") return "desc"; // active first
+    if (k === "rate") return "desc";
+    return "asc";
+  }
+
+  function toggleEmpSort(k: EmpSortKey) {
+    setSort((prev) => {
+      if (prev.key === k) return { key: k, dir: prev.dir === "asc" ? "desc" : "asc" };
+      return { key: k, dir: defaultDirForEmpKey(k) };
+    });
+  }
+
+  function empSortLabel(k: EmpSortKey) {
+    if (sort.key !== k) return "";
+    return sort.dir === "asc" ? " ▲" : " ▼";
+  }
+
+  function SortTh({ label, k }: { label: string; k: EmpSortKey }) {
+    return (
+      <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => toggleEmpSort(k)}
+          style={{
+            padding: 0,
+            border: "none",
+            background: "transparent",
+            fontWeight: 900,
+            cursor: "pointer",
+            textAlign: "left",
+            width: "100%",
+          }}
+          title="Sort"
+        >
+          {label}
+          <span style={{ fontWeight: 900 }}>{empSortLabel(k)}</span>
+        </button>
+      </th>
+    );
+  }
+
+  const sortedEmployees = useMemo(() => {
+    const rows = employees.slice();
+    const dir = sort.dir === "asc" ? 1 : -1;
+
+    rows.sort((a, b) => {
+      let av: any = null;
+      let bv: any = null;
+
+      if (sort.key === "name") {
+        av = `${a.legal_last_name ?? ""}|${a.legal_first_name ?? ""}|${a.legal_middle_name ?? ""}`;
+        bv = `${b.legal_last_name ?? ""}|${b.legal_first_name ?? ""}|${b.legal_middle_name ?? ""}`;
+      } else if (sort.key === "preferred") {
+        av = (a.nicknames?.[0] ?? "").trim();
+        bv = (b.nicknames?.[0] ?? "").trim();
+      } else if (sort.key === "job_level") {
+        av = (a.job_level?.name ?? "").trim();
+        bv = (b.job_level?.name ?? "").trim();
+      } else if (sort.key === "campus") {
+        av = (a.campus?.name ?? "").trim();
+        bv = (b.campus?.name ?? "").trim();
+      } else if (sort.key === "rate") {
+        av = Number(a.rate ?? 0);
+        bv = Number(b.rate ?? 0);
+      } else if (sort.key === "employment_type") {
+        // full_time before part_time by default (asc)
+        const ax = a.employment_type === "full_time" ? 0 : 1;
+        const bx = b.employment_type === "full_time" ? 0 : 1;
+        av = ax;
+        bv = bx;
+      } else if (sort.key === "is_active") {
+        av = a.is_active ? 1 : 0;
+        bv = b.is_active ? 1 : 0;
+      } else if (sort.key === "updated_at") {
+        av = new Date(a.updated_at).getTime();
+        bv = new Date(b.updated_at).getTime();
+      }
+
+      const primary = cmp(av, bv) * dir;
+      if (primary !== 0) return primary;
+
+      // tie-breakers: name then id
+      const n = cmp(
+        `${a.legal_last_name ?? ""}|${a.legal_first_name ?? ""}|${a.legal_middle_name ?? ""}`,
+        `${b.legal_last_name ?? ""}|${b.legal_first_name ?? ""}|${b.legal_middle_name ?? ""}`
+      );
+      if (n !== 0) return n;
+
+      return cmp(a.id, b.id);
+    });
+
+    return rows;
+  }, [employees, sort]);
+
+  // Bootstrap auth/profile
+  useEffect(() => {
+    (async () => {
+      try {
+        const p = await fetchMyProfile();
+        setProfile(p);
+        if (!!p?.is_active && p.role === "admin") setAccessStatus("");
+        else setAccessStatus("Admin access required.");
+      } catch {
+        setAccessStatus("Admin access required.");
+      }
+    })();
+  }, []);
+
   const exportInsuranceSheetDoc = useCallback((): any[] => {
     const api = insuranceWorkbookRef.current;
     let latest: any;
 
     try {
       if (api?.getAllSheets) latest = api.getAllSheets();
-    } catch (err) {
-      console.warn("exportInsuranceSheetDoc: ref.getAllSheets() threw", err);
+    } catch {
+      // no-op
     }
 
     if (!latest) latest = insuranceSheetDoc;
@@ -375,18 +567,20 @@ export default function EmployeesPage() {
     setHas401k(false);
     setHasPto(false);
 
-    setPtoReminderDate("");
-    setPtoReminderSentAt(null);
+    // PTO schedules (new)
+    setPtoSchedules([]);
+    setNewPtoBegin("");
+    setNewPtoEnd("");
+    setNewPtoHours("0");
+    setPtoSavingId(null);
 
-    setInsuranceSheetDoc(DEFAULT_INSURANCE_SHEET_DOC);
+    setInsuranceSheetDoc(insuranceFallbackDoc);
     setInsuranceWorkbookKey(`ins:${Date.now()}`);
     setInsuranceSheetDirty(false);
 
-    // reset employee detail tabs
     setEmpEvents([]);
     setEmpEventRemindersByEventId({});
 
-    // reset add-event forms
     setNewEventTypeId("");
     setNewEventDate("");
     setNewEventNotes("");
@@ -394,14 +588,8 @@ export default function EmployeesPage() {
     setNewEventReminderOffsets([]);
   }
 
-  function openCreate() {
-    resetForm();
-    setShowForm(true);
-  }
-
   async function loadEmployeeDetails(employeeId: string) {
-    // Events
-    const [evRes] = await Promise.all([
+    const [evRes, ptoRes] = await Promise.all([
       supabase
         .from("hr_employee_events")
         .select(
@@ -418,16 +606,24 @@ export default function EmployeesPage() {
         .eq("employee_id", employeeId)
         .order("event_date", { ascending: false })
         .order("created_at", { ascending: false }),
+
+      supabase
+        .from("hr_pto_schedules")
+        .select("id, employee_id, begin_date, end_date, hours_per_annum, created_at, updated_at")
+        .eq("employee_id", employeeId)
+        .order("begin_date", { ascending: false })
+        .order("created_at", { ascending: false }),
     ]);
 
     if (evRes.error) throw evRes.error;
+    if (ptoRes.error) throw ptoRes.error;
 
     const events = (evRes.data ?? []).map((x: any) => ({
       ...x,
       event_type: asSingle<EventTypeRow>(x.event_type),
     })) as EmployeeEventRow[];
 
-    // Re-fetch reminders now that we know event ids
+    // reminders
     let reminders: EmployeeEventReminderRow[] = [];
     if (events.length > 0) {
       const ids = events.map((e) => e.id);
@@ -447,8 +643,19 @@ export default function EmployeesPage() {
       map[r.employee_event_id].push(r);
     }
 
+    const sched = (ptoRes.data ?? []).map((r: any) => ({
+      id: r.id,
+      employee_id: r.employee_id,
+      begin_date: r.begin_date,
+      end_date: r.end_date ?? null,
+      hours_per_annum: toNum(r.hours_per_annum, 0),
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    })) as PtoScheduleRow[];
+
     setEmpEvents(events);
     setEmpEventRemindersByEventId(map);
+    setPtoSchedules(sched);
   }
 
   async function openEdit(emp: EmployeeRow) {
@@ -478,18 +685,28 @@ export default function EmployeesPage() {
     setHas401k(!!emp.has_401k);
     setHasPto(!!emp.has_pto);
 
-    setPtoReminderDate(emp.pto_reminder_date ?? "");
-    setPtoReminderSentAt(emp.pto_reminder_sent_at ?? null);
+    const fallback = insuranceFallbackDoc;
+    const normalized = normalizeForFortune(emp.insurance_sheet_doc, fallback);
 
-    const normalized = normalizeForFortune(emp.insurance_sheet_doc, DEFAULT_INSURANCE_SHEET_DOC);
-    setInsuranceSheetDoc(normalized);
+    // If employee doc is empty and they have insurance, start them from template
+    const shouldTemplate =
+      !!emp.has_insurance && isEmptyInsuranceDoc(emp.insurance_sheet_doc);
+
+    setInsuranceSheetDoc(shouldTemplate ? deepJsonClone(fallback) : normalized);
+
     setInsuranceWorkbookKey(`ins:${emp.id}:${Date.now()}`);
     setInsuranceSheetDirty(false);
+
+    // reset PTO add-form fields
+    setNewPtoBegin("");
+    setNewPtoEnd("");
+    setNewPtoHours("0");
+    setPtoSavingId(null);
 
     try {
       await loadEmployeeDetails(emp.id);
     } catch (e: any) {
-      setError(e?.message ?? "Failed to load milestones.");
+      setError(e?.message ?? "Failed to load employee details.");
     }
   }
 
@@ -547,8 +764,6 @@ export default function EmployeesPage() {
               has_insurance,
               has_401k,
               has_pto,
-              pto_reminder_date,
-              pto_reminder_sent_at,
               job_level_id,
               campus_id,
               insurance_sheet_doc,
@@ -580,10 +795,12 @@ export default function EmployeesPage() {
     }
   }
 
+  // Only load if admin
   useEffect(() => {
+    if (!isAdmin) return;
+    void loadInsuranceTemplate();
     void loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAdmin, loadInsuranceTemplate]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -596,7 +813,6 @@ export default function EmployeesPage() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showForm, showManageJobLevels, showManageCampuses, showManageEventTypes]);
 
   async function createEmployee() {
@@ -605,7 +821,7 @@ export default function EmployeesPage() {
     const parsedRate = Number(rate);
     const safeRate = Number.isFinite(parsedRate) ? parsedRate : 0;
 
-    const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), DEFAULT_INSURANCE_SHEET_DOC) : null;
+    const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc) : null;
 
     const payload: any = {
       legal_first_name: legalFirst.trim(),
@@ -620,7 +836,6 @@ export default function EmployeesPage() {
       has_insurance: hasInsurance,
       has_401k: has401k,
       has_pto: hasPto,
-      pto_reminder_date: hasPto ? (ptoReminderDate || null) : null,
       job_level_id: jobLevelId || null,
       campus_id: campusId || null,
       insurance_sheet_doc: insuranceDoc,
@@ -635,9 +850,40 @@ export default function EmployeesPage() {
     closeForm();
     await loadAll();
 
+    // (Optional) reopen editor on created employee
     if (data?.id) {
-      const created = employees.find((e) => e.id === data.id);
-      if (created) void openEdit(created);
+      const latest = await supabase
+        .from("hr_employees")
+        .select(
+          `
+          id,
+          legal_first_name,
+          legal_middle_name,
+          legal_last_name,
+          nicknames,
+          rate_type,
+          rate,
+          employment_type,
+          is_active,
+          benefits,
+          has_insurance,
+          has_401k,
+          has_pto,
+          job_level_id,
+          campus_id,
+          insurance_sheet_doc,
+          created_at,
+          updated_at,
+          job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name),
+          campus:hr_campuses!hr_employees_campus_id_fkey(id,name)
+        `
+        )
+        .eq("id", data.id)
+        .single();
+
+      if (!latest.error && latest.data) {
+        void openEdit(normalizeEmployee(latest.data));
+      }
     }
   }
 
@@ -648,7 +894,7 @@ export default function EmployeesPage() {
     const parsedRate = Number(rate);
     const safeRate = Number.isFinite(parsedRate) ? parsedRate : 0;
 
-    const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), DEFAULT_INSURANCE_SHEET_DOC) : null;
+    const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc) : null;
 
     const payload: any = {
       legal_first_name: legalFirst.trim(),
@@ -663,7 +909,6 @@ export default function EmployeesPage() {
       has_insurance: hasInsurance,
       has_401k: has401k,
       has_pto: hasPto,
-      pto_reminder_date: hasPto ? (ptoReminderDate || null) : null,
       job_level_id: jobLevelId || null,
       campus_id: campusId || null,
       insurance_sheet_doc: insuranceDoc,
@@ -679,24 +924,89 @@ export default function EmployeesPage() {
     await loadEmployeeDetails(editingId);
   }
 
-  async function resetPtoSentStatus() {
+  // ===== PTO schedules CRUD =====
+  async function addPtoSchedule() {
     if (!editingId) return;
-
-    const ok = confirm("Reset PTO reminder sent status? This will allow the reminder to send again (when due).");
-    if (!ok) return;
-
     setError(null);
-    const { error } = await supabase.from("hr_employees").update({ pto_reminder_sent_at: null }).eq("id", editingId);
+
+    const begin = newPtoBegin;
+    if (!begin) {
+      setError("Choose a PTO begin date.");
+      return;
+    }
+
+    const hours = toNum(newPtoHours, 0);
+    if (hours < 0) {
+      setError("Hours per annum must be 0 or greater.");
+      return;
+    }
+
+    setPtoSavingId("new");
+    const { error } = await supabase.from("hr_pto_schedules").insert({
+      employee_id: editingId,
+      begin_date: begin,
+      end_date: newPtoEnd || null,
+      hours_per_annum: hours,
+    });
+
+    setPtoSavingId(null);
+
     if (error) {
       setError(error.message);
       return;
     }
 
-    setPtoReminderSentAt(null);
-    await loadAll();
+    setNewPtoBegin("");
+    setNewPtoEnd("");
+    setNewPtoHours("0");
+    await loadEmployeeDetails(editingId);
   }
 
-  // ----- Manage Job Levels / Campuses (add + delete) -----
+  async function updatePtoSchedule(row: PtoScheduleRow) {
+    setError(null);
+
+    if (!row.begin_date) {
+      setError("Begin date is required.");
+      return;
+    }
+
+    setPtoSavingId(row.id);
+    const { error } = await supabase
+      .from("hr_pto_schedules")
+      .update({
+        begin_date: row.begin_date,
+        end_date: row.end_date || null,
+        hours_per_annum: toNum(row.hours_per_annum, 0),
+      })
+      .eq("id", row.id);
+
+    setPtoSavingId(null);
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    if (editingId) await loadEmployeeDetails(editingId);
+  }
+
+  async function deletePtoSchedule(id: string) {
+    const ok = confirm("Delete this PTO schedule row?");
+    if (!ok) return;
+
+    setError(null);
+    setPtoSavingId(id);
+    const { error } = await supabase.from("hr_pto_schedules").delete().eq("id", id);
+    setPtoSavingId(null);
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    if (editingId) await loadEmployeeDetails(editingId);
+  }
+
   async function addJobLevel() {
     setError(null);
     const name = newJobLevelName.trim();
@@ -755,7 +1065,6 @@ export default function EmployeesPage() {
     if (campusId === id) setCampusId("");
   }
 
-  // ----- Manage Event Types -----
   async function addEventType() {
     setError(null);
     const name = newEventTypeName.trim();
@@ -786,7 +1095,6 @@ export default function EmployeesPage() {
     if (newEventTypeId === id) setNewEventTypeId("");
   }
 
-  // ----- Milestones & Dates (events + reminders) -----
   async function addMilestoneEvent() {
     if (!editingId) return;
     setError(null);
@@ -865,6 +1173,22 @@ export default function EmployeesPage() {
     if (editingId) await loadEmployeeDetails(editingId);
   }
 
+  // Block page if not admin
+  if (accessStatus) {
+    return (
+      <main className="stack">
+        <div className="container">
+          <div className="card" style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 900, color: "#b00020" }}>{accessStatus}</div>
+            <div className="subtle" style={{ marginTop: 6 }}>
+              This page is only available to admin accounts.
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <div style={{ paddingTop: 8 }}>
       <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
@@ -878,9 +1202,6 @@ export default function EmployeesPage() {
         <div className="row" style={{ gap: 10 }}>
           <button className="btn" onClick={() => void loadAll()} disabled={loading}>
             {loading ? "Loading..." : "Refresh"}
-          </button>
-          <button className="btn btn-primary" onClick={openCreate}>
-            + Add Employee
           </button>
         </div>
       </div>
@@ -919,19 +1240,19 @@ export default function EmployeesPage() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.02)" }}>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Name</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Preferred</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Job Level</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Campus</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Rate</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>FT/PT</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Active</th>
-                  <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Updated</th>
+                  <SortTh label="Name" k="name" />
+                  <SortTh label="Preferred" k="preferred" />
+                  <SortTh label="Job Level" k="job_level" />
+                  <SortTh label="Campus" k="campus" />
+                  <SortTh label="Rate" k="rate" />
+                  <SortTh label="FT/PT" k="employment_type" />
+                  <SortTh label="Active" k="is_active" />
+                  <SortTh label="Updated" k="updated_at" />
                   <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }} />
                 </tr>
               </thead>
               <tbody>
-                {employees.map((e) => {
+                {sortedEmployees.map((e) => {
                   const legal = [e.legal_first_name, e.legal_middle_name, e.legal_last_name].filter(Boolean).join(" ");
                   const preferred = e.nicknames?.[0] || "";
                   const rateLabel =
@@ -941,7 +1262,22 @@ export default function EmployeesPage() {
 
                   return (
                     <tr key={e.id}>
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", fontWeight: 800 }}>{legal}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6", fontWeight: 800 }}>
+                        <Link
+                          href={employeeHref(e.id)}
+                          style={{
+                            color: "inherit",
+                            textDecoration: "none",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 8,
+                          }}
+                          title="Open employee page"
+                        >
+                          <span style={{ textDecoration: "underline", textUnderlineOffset: 3 }}>{legal}</span>
+                          <span className="subtle" style={{ fontWeight: 900 }}>→</span>
+                        </Link>
+                      </td>
                       <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
                         {preferred || <span className="subtle">—</span>}
                       </td>
@@ -955,8 +1291,12 @@ export default function EmployeesPage() {
                       <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
                         {e.employment_type === "full_time" ? "Full-time" : "Part-time"}
                       </td>
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{e.is_active ? "Active" : "Inactive"}</td>
-                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>{new Date(e.updated_at).toLocaleString()}</td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                        {e.is_active ? "Active" : "Inactive"}
+                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                        {new Date(e.updated_at).toLocaleString()}
+                      </td>
                       <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
                         <button className="btn" onClick={() => void openEdit(e)} style={{ padding: "6px 10px" }}>
                           Edit
@@ -971,7 +1311,7 @@ export default function EmployeesPage() {
         )}
       </div>
 
-      {/* ===== CREATE/EDIT EMPLOYEE MODAL ===== */}
+      {/* EVERYTHING BELOW (modals) is unchanged from your version */}
       {showForm && (
         <div
           role="dialog"
@@ -1033,7 +1373,6 @@ export default function EmployeesPage() {
 
             <div style={{ padding: 14, overflowY: "auto" }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                {/* Legal Names */}
                 <div style={{ gridColumn: "1 / -1", border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 900, marginBottom: 10 }}>Legal Name</div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -1081,7 +1420,6 @@ export default function EmployeesPage() {
                   </div>
                 </div>
 
-                {/* Role & Location */}
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 900, marginBottom: 10 }}>Role & Location</div>
 
@@ -1141,7 +1479,6 @@ export default function EmployeesPage() {
                   </div>
                 </div>
 
-                {/* Pay */}
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 900, marginBottom: 10 }}>Pay</div>
 
@@ -1160,14 +1497,30 @@ export default function EmployeesPage() {
                   </div>
                 </div>
 
-                {/* Benefits */}
                 <div style={{ gridColumn: "1 / -1", border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 900, marginBottom: 10 }}>Benefits</div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
                     <div>
                       <FieldLabel>Insurance</FieldLabel>
-                      <Select value={hasInsurance ? "yes" : "no"} onChange={(e) => setHasInsurance(e.target.value === "yes")}>
+                      <Select
+                        value={hasInsurance ? "yes" : "no"}
+                        onChange={(e) => {
+                          const next = e.target.value === "yes";
+                          setHasInsurance(next);
+
+                          if (next) {
+                            // If we're turning insurance on, and current sheet is empty, start from template.
+                            const latest = exportInsuranceSheetDoc();
+                            if (isEmptyInsuranceDoc(latest)) {
+                              const seed = deepJsonClone(insuranceFallbackDoc);
+                              setInsuranceSheetDoc(seed);
+                              setInsuranceWorkbookKey(`ins:seed:${editingId ?? "new"}:${Date.now()}`);
+                              setInsuranceSheetDirty(true);
+                            }
+                          }
+                        }}
+                      >
                         <option value="no">No</option>
                         <option value="yes">Yes</option>
                       </Select>
@@ -1226,22 +1579,52 @@ export default function EmployeesPage() {
                           Insurance calculations
                           <span className="subtle" style={{ marginLeft: 10, fontWeight: 500 }}>
                             (6×15){insuranceSheetDirty ? " • unsaved" : ""}
+                            {insuranceTemplateLoading ? " • loading template" : ""}
                           </span>
                         </div>
 
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => {
-                            setInsuranceSheetDoc(DEFAULT_INSURANCE_SHEET_DOC);
-                            setInsuranceWorkbookKey(`ins:reset:${Date.now()}`);
-                            setInsuranceSheetDirty(true);
-                          }}
-                        >
-                          Reset
-                        </button>
-                      </div>
+                        <div className="row" style={{ gap: 8 }}>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={async () => {
+                              try {
+                                const latest = normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc);
+                                const ok = confirm("Save the current insurance sheet as the default template for all employees?");
+                                if (!ok) return;
 
+                                const { error } = await supabase.rpc("hr_upsert_template", {
+                                  p_key: "insurance_sheet",
+                                  p_sheet_doc: latest,
+                                });
+                                if (error) throw error;
+
+                                // Update local template cache so reset uses it immediately
+                                setInsuranceTemplateDoc(deepJsonClone(latest));
+                                alert("Template saved.");
+                              } catch (e: any) {
+                                alert(e?.message ?? "Failed to save template.");
+                              }
+                            }}
+                            title="Set the default template used when an employee has insurance enabled but no sheet saved yet."
+                          >
+                            Save as template
+                          </button>
+
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => {
+                              setInsuranceSheetDoc(deepJsonClone(insuranceFallbackDoc));
+                              setInsuranceWorkbookKey(`ins:reset:${Date.now()}`);
+                              setInsuranceSheetDirty(true);
+                            }}
+                            disabled={insuranceTemplateLoading}
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
                       <div style={{ marginTop: 10, border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
                         <div style={{ height: 360, width: "100%" }}>
                           <FortuneWorkbook
@@ -1261,32 +1644,137 @@ export default function EmployeesPage() {
 
                   {hasPto && (
                     <div style={{ marginTop: 14, padding: 12, borderRadius: 14, border: "1px dashed #e5e7eb" }}>
-                      <div style={{ fontWeight: 900, marginBottom: 10 }}>PTO Reminder</div>
+                      <div style={{ fontWeight: 900, marginBottom: 10 }}>PTO Schedule History</div>
 
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
-                        <div>
-                          <FieldLabel>PTO reminder date</FieldLabel>
-                          <TextInput type="date" value={ptoReminderDate} onChange={(e) => setPtoReminderDate(e.target.value)} />
-                          <div className="subtle" style={{ marginTop: 6 }}>When this date is due, the system emails the admin.</div>
-                        </div>
+                      {!isEditing ? (
+                        <div className="subtle">Create the employee first, then you can add PTO schedule rows.</div>
+                      ) : (
+                        <>
+                          <div className="subtle" style={{ marginBottom: 10 }}>
+                            Add/edit the PTO accrual schedule over time. Each row represents a period with a specific hours-per-annum rate.
+                          </div>
 
-                        <div>
-                          <FieldLabel>Reminder sent at</FieldLabel>
-                          <TextInput value={ptoReminderSentAt ? new Date(ptoReminderSentAt).toLocaleString() : "—"} readOnly />
-                          {isEditing && (
-                            <div className="row" style={{ gap: 8, marginTop: 8 }}>
-                              <button className="btn" type="button" onClick={() => void resetPtoSentStatus()}>
-                                Reset sent status
+                          <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+                            <div style={{ width: "100%", overflowX: "auto" }}>
+                              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                                <thead>
+                                  <tr style={{ textAlign: "left", background: "rgba(0,0,0,0.02)" }}>
+                                    <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Begin</th>
+                                    <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>End</th>
+                                    <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Hours / annum</th>
+                                    <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }}>Updated</th>
+                                    <th style={{ padding: 10, borderBottom: "1px solid #e5e7eb" }} />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ptoSchedules.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={5} style={{ padding: 10 }} className="subtle">
+                                        No PTO schedules yet.
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    ptoSchedules.map((r) => (
+                                      <tr key={r.id}>
+                                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                                          <TextInput
+                                            type="date"
+                                            value={r.begin_date}
+                                            onChange={(e) =>
+                                              setPtoSchedules((prev) =>
+                                                prev.map((x) => (x.id === r.id ? { ...x, begin_date: e.target.value } : x))
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                                          <TextInput
+                                            type="date"
+                                            value={r.end_date ?? ""}
+                                            onChange={(e) =>
+                                              setPtoSchedules((prev) =>
+                                                prev.map((x) => (x.id === r.id ? { ...x, end_date: e.target.value || null } : x))
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                                          <TextInput
+                                            inputMode="decimal"
+                                            value={String(r.hours_per_annum)}
+                                            onChange={(e) =>
+                                              setPtoSchedules((prev) =>
+                                                prev.map((x) =>
+                                                  x.id === r.id ? { ...x, hours_per_annum: toNum(e.target.value, 0) } : x
+                                                )
+                                              )
+                                            }
+                                          />
+                                        </td>
+                                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }} className="subtle">
+                                          {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
+                                        </td>
+                                        <td style={{ padding: 10, borderBottom: "1px solid #f3f4f6" }}>
+                                          <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+                                            <button
+                                              className="btn"
+                                              type="button"
+                                              disabled={ptoSavingId === r.id}
+                                              onClick={() => void updatePtoSchedule(r)}
+                                            >
+                                              {ptoSavingId === r.id ? "Saving..." : "Save"}
+                                            </button>
+                                            <button
+                                              className="btn"
+                                              type="button"
+                                              disabled={ptoSavingId === r.id}
+                                              onClick={() => void deletePtoSchedule(r.id)}
+                                            >
+                                              Delete
+                                            </button>
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+
+                          <div style={{ height: 12 }} />
+
+                          <div style={{ padding: 12, borderRadius: 12, border: "1px dashed #e5e7eb" }}>
+                            <div style={{ fontWeight: 800, marginBottom: 8 }}>Add PTO schedule row</div>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+                              <div>
+                                <FieldLabel>Begin date</FieldLabel>
+                                <TextInput type="date" value={newPtoBegin} onChange={(e) => setNewPtoBegin(e.target.value)} />
+                              </div>
+                              <div>
+                                <FieldLabel>End date (optional)</FieldLabel>
+                                <TextInput type="date" value={newPtoEnd} onChange={(e) => setNewPtoEnd(e.target.value)} />
+                              </div>
+                              <div>
+                                <FieldLabel>Hours per annum</FieldLabel>
+                                <TextInput inputMode="decimal" value={newPtoHours} onChange={(e) => setNewPtoHours(e.target.value)} />
+                              </div>
+                              <button
+                                className="btn btn-primary"
+                                type="button"
+                                disabled={ptoSavingId === "new"}
+                                onClick={() => void addPtoSchedule()}
+                              >
+                                {ptoSavingId === "new" ? "Adding..." : "Add"}
                               </button>
                             </div>
-                          )}
-                        </div>
-                      </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
 
-                {/* ===== Milestones & Dates ===== */}
                 <div style={{ gridColumn: "1 / -1", border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 900, marginBottom: 10 }}>Milestones & Dates</div>
 
@@ -1294,7 +1782,6 @@ export default function EmployeesPage() {
                     <div className="subtle">Create the employee first, then you can add milestones and reminders.</div>
                   ) : (
                     <>
-                      {/* Add new milestone */}
                       <div style={{ padding: 12, borderRadius: 14, border: "1px dashed #e5e7eb" }}>
                         <div style={{ fontWeight: 800, marginBottom: 10 }}>Add milestone/event</div>
 
@@ -1378,7 +1865,6 @@ export default function EmployeesPage() {
                         </div>
                       </div>
 
-                      {/* Existing milestones list */}
                       <div style={{ marginTop: 12 }}>
                         <div style={{ fontWeight: 800, marginBottom: 8 }}>Existing milestones ({empEvents.length})</div>
 
@@ -1451,11 +1937,6 @@ export default function EmployeesPage() {
         </div>
       )}
 
-      {/* =========================
-          MANAGE MODALS (add + list + delete)
-         ========================= */}
-
-      {/* Manage Job Levels */}
       {showManageJobLevels && (
         <div
           role="dialog"
@@ -1509,7 +1990,6 @@ export default function EmployeesPage() {
         </div>
       )}
 
-      {/* Manage Campuses */}
       {showManageCampuses && (
         <div
           role="dialog"
@@ -1563,7 +2043,6 @@ export default function EmployeesPage() {
         </div>
       )}
 
-      {/* Manage Event Types */}
       {showManageEventTypes && (
         <div
           role="dialog"

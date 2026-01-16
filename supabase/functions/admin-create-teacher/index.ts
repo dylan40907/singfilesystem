@@ -127,7 +127,7 @@ Deno.serve(async (req) => {
       user_metadata: { full_name: fullName, username },
     });
 
-    if (createErr) return json({ error: createErr.message }, 400);
+    if (createErr) return json({ error: createErr.message, authEmail }, 400);
     if (!created?.user?.id) return json({ error: "Create user returned no id" }, 500);
 
     const newUserId = created.user.id;

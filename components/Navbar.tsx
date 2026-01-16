@@ -65,17 +65,20 @@ export default function Navbar() {
   const [signingOut, setSigningOut] = useState(false);
 
   const isActive = !!profile?.is_active;
+
   const isAdminOrSupervisor =
     !!profile?.is_active && (profile.role === "admin" || profile.role === "supervisor");
 
   const showMyPlans = !!sessionEmail && isActive;
   const showTeachers = !!sessionEmail && isAdminOrSupervisor;
   const showReviewQueue = !!sessionEmail && isAdminOrSupervisor;
+
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const showSupervisors = !!sessionEmail && isAdmin;
 
-  // NEW: HR tab (admin-only)
-  const showHr = !!sessionEmail && isAdmin;
+  // ✅ HR visible to ALL active users (admin goes to /admin/hr, everyone else to /hr)
+  const showHr = !!sessionEmail && isActive;
+  const hrHref = isAdmin ? "/admin/hr" : "/hr";
 
   // Keep latest pathname without re-subscribing
   const pathnameRef = useRef(pathname);
@@ -127,7 +130,6 @@ export default function Navbar() {
       // Otherwise, go back to home/login normally.
       router.replace("/");
     } finally {
-      // If we reload, this code won't matter, but keep correct for other routes.
       setSigningOut(false);
       signingOutRef.current = false;
     }
@@ -162,7 +164,7 @@ export default function Navbar() {
 
   const activeTab = useMemo(() => {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
-    if (pathname.startsWith("/admin/hr")) return "hr";
+    if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname === "/teachers") return "teachers";
     if (pathname === "/review-queue") return "review-queue";
     if (pathname === "/my-plans") return "my-plans";
@@ -217,7 +219,7 @@ export default function Navbar() {
               {showSupervisors && (
                 <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />
               )}
-              {showHr && <NavLink href="/admin/hr" label="HR" active={activeTab === "hr"} />}
+              {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
             </div>
           </div>
 
