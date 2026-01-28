@@ -14,6 +14,25 @@ type HrJobLevel = {
   name: string;
 };
 
+type HrJobLevelRow = {
+  id: string;
+  name: string;
+  responsibilities: string | null;
+  tpv: string | null; // Postgres numrange serialized as string, e.g. "[18,20]"
+  nt: string | null;  // Postgres numrange serialized as string
+};
+
+type JobLevelFormRow = {
+  id: string;
+  name: string;
+  responsibilities: string;
+  tpvMin: string;
+  tpvMax: string;
+  ntMin: string;
+  ntMax: string;
+};
+
+
 type HrEmployee = {
   id: string;
   legal_first_name?: string | null;
@@ -35,6 +54,73 @@ type OrgNodeRow = {
   updated_at: string;
 };
 
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>{children}</div>;
+}
+
+function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        outline: "none",
+        fontSize: 14,
+        ...(props.style ?? {}),
+      }}
+    />
+  );
+}
+
+function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      {...props}
+      style={{
+        width: "100%",
+        padding: "10px 12px",
+        borderRadius: 12,
+        border: "1px solid #e5e7eb",
+        outline: "none",
+        fontSize: 14,
+        minHeight: 96,
+        resize: "vertical",
+        ...(props.style ?? {}),
+      }}
+    />
+  );
+}
+
+function parseNumRange(v: string | null | undefined): { min: string; max: string } {
+  // Accepts strings like "[18,20)" or "(69000,89000]" or "[,]" etc.
+  if (!v) return { min: "", max: "" };
+  const s = String(v).trim();
+  const m = s.match(/^[\[(]\s*([^,]*)\s*,\s*([^\])}]*)\s*[\])]/);
+  if (!m) return { min: "", max: "" };
+  const min = (m[1] ?? "").trim();
+  const max = (m[2] ?? "").trim();
+  return { min: min === "" ? "" : min, max: max === "" ? "" : max };
+}
+
+function buildNumRange(minStr: string, maxStr: string): { range: string | null; error?: string } {
+  const minT = (minStr ?? "").trim();
+  const maxT = (maxStr ?? "").trim();
+  if (!minT && !maxT) return { range: null };
+
+  if (!minT || !maxT) return { range: null, error: "Both min and max are required for ranges." };
+
+  const min = Number(minT);
+  const max = Number(maxT);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { range: null, error: "Ranges must be numeric." };
+  if (min > max) return { range: null, error: "Range min must be ≤ max." };
+
+  // Inclusive bounds by default.
+  return { range: `[${min},${max}]` };
+}
 function employeeLabel(e: HrEmployee) {
   const nick = (Array.isArray(e.nicknames) && e.nicknames.length > 0 ? String(e.nicknames[0] ?? "") : "").trim();
 
@@ -121,6 +207,21 @@ export default function HrOrgChartPage() {
 
   const [employees, setEmployees] = useState<HrEmployee[]>([]);
   const [nodes, setNodes] = useState<OrgNodeRow[]>([]);
+
+
+  // Manage job levels modal
+  const [showManageJobLevels, setShowManageJobLevels] = useState(false);
+  const [jobLevels, setJobLevels] = useState<HrJobLevelRow[]>([]);
+  const [jobLevelForms, setJobLevelForms] = useState<Record<string, JobLevelFormRow>>({});
+  const [jobLevelsLoading, setJobLevelsLoading] = useState(false);
+  const [jobLevelsError, setJobLevelsError] = useState<string | null>(null);
+
+  const [newJobLevelName, setNewJobLevelName] = useState("");
+  const [newJobLevelResponsibilities, setNewJobLevelResponsibilities] = useState("");
+  const [newJobLevelTpvMin, setNewJobLevelTpvMin] = useState("");
+  const [newJobLevelTpvMax, setNewJobLevelTpvMax] = useState("");
+  const [newJobLevelNtMin, setNewJobLevelNtMin] = useState("");
+  const [newJobLevelNtMax, setNewJobLevelNtMax] = useState("");
 
   // Picker modal
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -252,6 +353,159 @@ export default function HrOrgChartPage() {
       setStatus("");
     } catch (e: any) {
       setStatus("Load error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+
+  async function loadJobLevels() {
+    setJobLevelsLoading(true);
+    setJobLevelsError(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("hr_job_levels")
+        .select("id,name,responsibilities,tpv,nt")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+
+      const rows = (data ?? []) as HrJobLevelRow[];
+      setJobLevels(rows);
+
+      const forms: Record<string, JobLevelFormRow> = {};
+      for (const r of rows) {
+        const tpv = parseNumRange(r.tpv);
+        const nt = parseNumRange(r.nt);
+        forms[r.id] = {
+          id: r.id,
+          name: r.name ?? "",
+          responsibilities: r.responsibilities ?? "",
+          tpvMin: tpv.min,
+          tpvMax: tpv.max,
+          ntMin: nt.min,
+          ntMax: nt.max,
+        };
+      }
+      setJobLevelForms(forms);
+    } catch (e: any) {
+      setJobLevelsError(e?.message ?? "Failed to load job levels.");
+    } finally {
+      setJobLevelsLoading(false);
+    }
+  }
+
+  function openManageJobLevels() {
+    setShowManageJobLevels(true);
+    void loadJobLevels();
+  }
+
+  function closeManageJobLevels() {
+    setShowManageJobLevels(false);
+    setJobLevelsError(null);
+  }
+
+  function updateJobLevelForm(id: string, patch: Partial<JobLevelFormRow>) {
+    setJobLevelForms((prev) => ({ ...prev, [id]: { ...(prev[id] ?? { id, name: "", responsibilities: "", tpvMin: "", tpvMax: "", ntMin: "", ntMax: "" }), ...patch } }));
+  }
+
+  async function addJobLevel() {
+    setJobLevelsError(null);
+    const name = newJobLevelName.trim();
+    if (!name) return;
+
+    const tpv = buildNumRange(newJobLevelTpvMin, newJobLevelTpvMax);
+    if (tpv.error) {
+      setJobLevelsError("TPV: " + tpv.error);
+      return;
+    }
+    const nt = buildNumRange(newJobLevelNtMin, newJobLevelNtMax);
+    if (nt.error) {
+      setJobLevelsError("NT: " + nt.error);
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from("hr_job_levels").insert({
+        name,
+        responsibilities: newJobLevelResponsibilities.trim() || null,
+        tpv: tpv.range,
+        nt: nt.range,
+      });
+
+      if (error) throw error;
+
+      setNewJobLevelName("");
+      setNewJobLevelResponsibilities("");
+      setNewJobLevelTpvMin("");
+      setNewJobLevelTpvMax("");
+      setNewJobLevelNtMin("");
+      setNewJobLevelNtMax("");
+
+      await loadJobLevels();
+      // also refresh campus employees so job level names stay current if you’re viewing the org chart
+      if (selectedCampusId) await loadCampusData(selectedCampusId);
+    } catch (e: any) {
+      setJobLevelsError(e?.message ?? "Failed to add job level.");
+    }
+  }
+
+  async function saveJobLevel(id: string) {
+    const form = jobLevelForms[id];
+    if (!form) return;
+
+    setJobLevelsError(null);
+
+    const name = form.name.trim();
+    if (!name) {
+      setJobLevelsError("Job level name is required.");
+      return;
+    }
+
+    const tpv = buildNumRange(form.tpvMin, form.tpvMax);
+    if (tpv.error) {
+      setJobLevelsError("TPV: " + tpv.error);
+      return;
+    }
+    const nt = buildNumRange(form.ntMin, form.ntMax);
+    if (nt.error) {
+      setJobLevelsError("NT: " + nt.error);
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("hr_job_levels")
+        .update({
+          name,
+          responsibilities: form.responsibilities.trim() || null,
+          tpv: tpv.range,
+          nt: nt.range,
+        })
+        .eq("id", id);
+
+      if (error) throw error;
+
+      await loadJobLevels();
+      if (selectedCampusId) await loadCampusData(selectedCampusId);
+    } catch (e: any) {
+      setJobLevelsError(e?.message ?? "Failed to save job level.");
+    }
+  }
+
+  async function deleteJobLevel(id: string) {
+    const ok = confirm("Delete this job level? (If any employees are assigned to it, deletion will fail.)");
+    if (!ok) return;
+
+    setJobLevelsError(null);
+
+    try {
+      const { error } = await supabase.from("hr_job_levels").delete().eq("id", id);
+      if (error) throw error;
+
+      await loadJobLevels();
+      if (selectedCampusId) await loadCampusData(selectedCampusId);
+    } catch (e: any) {
+      setJobLevelsError(e?.message ?? "Failed to delete job level.");
     }
   }
 
@@ -533,6 +787,10 @@ export default function HrOrgChartPage() {
                 >
                   Add top-level employee
                 </button>
+                <button type="button" className="btn" onClick={openManageJobLevels} disabled={jobLevelsLoading}>
+                  Manage Job Levels
+                </button>
+
 
                 <IconButton
                   title="Reload"
@@ -738,7 +996,190 @@ export default function HrOrgChartPage() {
               </div>
             ) : null}
 
-            <style jsx>{`
+            
+            {/* Manage Job Levels modal */}
+            {showManageJobLevels && (
+              <div
+                role="dialog"
+                aria-modal="true"
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(0,0,0,0.35)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 16,
+                  zIndex: 230,
+                }}
+                onClick={closeManageJobLevels}
+              >
+                <div
+                  style={{
+                    width: "min(980px, 100%)",
+                    background: "white",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    boxShadow: "0 20px 50px rgba(0,0,0,0.12)",
+                    overflow: "hidden",
+                    maxHeight: "calc(100vh - 48px)",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="row-between" style={{ padding: 12, borderBottom: "1px solid #e5e7eb" }}>
+                    <div style={{ fontWeight: 900 }}>Manage Job Levels</div>
+                    <button className="btn" onClick={closeManageJobLevels}>
+                      Close
+                    </button>
+                  </div>
+
+                  <div style={{ padding: 14, overflowY: "auto" }}>
+                    {jobLevelsError && (
+                      <div
+                        style={{
+                          marginBottom: 12,
+                          padding: 12,
+                          borderRadius: 12,
+                          border: "1px solid rgba(239,68,68,0.35)",
+                          background: "rgba(239,68,68,0.06)",
+                          color: "#991b1b",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {jobLevelsError}
+                      </div>
+                    )}
+
+                    <div style={{ fontWeight: 900, marginBottom: 10 }}>Add new job level</div>
+
+                    <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+                        <div>
+                          <FieldLabel>Name</FieldLabel>
+                          <TextInput value={newJobLevelName} onChange={(e) => setNewJobLevelName(e.target.value)} placeholder="e.g., Teacher II" />
+                        </div>
+
+                        <div>
+                          <FieldLabel>Responsibilities</FieldLabel>
+                          <TextArea
+                            value={newJobLevelResponsibilities}
+                            onChange={(e) => setNewJobLevelResponsibilities(e.target.value)}
+                            placeholder="Optional responsibilities…"
+                          />
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                          <div>
+                            <FieldLabel>TPV range (min / max)</FieldLabel>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <TextInput value={newJobLevelTpvMin} onChange={(e) => setNewJobLevelTpvMin(e.target.value)} placeholder="min" inputMode="numeric" />
+                              <TextInput value={newJobLevelTpvMax} onChange={(e) => setNewJobLevelTpvMax(e.target.value)} placeholder="max" inputMode="numeric" />
+                            </div>
+                          </div>
+                          <div>
+                            <FieldLabel>NT range (min / max)</FieldLabel>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              <TextInput value={newJobLevelNtMin} onChange={(e) => setNewJobLevelNtMin(e.target.value)} placeholder="min" inputMode="numeric" />
+                              <TextInput value={newJobLevelNtMax} onChange={(e) => setNewJobLevelNtMax(e.target.value)} placeholder="max" inputMode="numeric" />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="row" style={{ gap: 10, justifyContent: "flex-end" }}>
+                          <button className="btn btn-primary" onClick={() => void addJobLevel()} disabled={!newJobLevelName.trim()}>
+                            Add
+                          </button>
+                        </div>
+
+                        <div className="subtle">
+                          Tip: Leave TPV/NT blank if you don’t want a range. If you enter a range, provide both min and max (inclusive).
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ height: 16 }} />
+
+                    <div className="row-between" style={{ gap: 10, marginBottom: 8 }}>
+                      <div style={{ fontWeight: 800 }}>Existing job levels ({jobLevels.length})</div>
+                      <button className="btn" onClick={() => void loadJobLevels()} disabled={jobLevelsLoading}>
+                        {jobLevelsLoading ? "Loading..." : "Refresh"}
+                      </button>
+                    </div>
+
+                    {jobLevelsLoading ? (
+                      <div className="subtle" style={{ padding: 10 }}>
+                        Loading…
+                      </div>
+                    ) : jobLevels.length === 0 ? (
+                      <div className="subtle">No job levels yet.</div>
+                    ) : (
+                      <div style={{ display: "grid", gap: 10 }}>
+                        {jobLevels.map((jl) => {
+                          const f = jobLevelForms[jl.id];
+                          if (!f) return null;
+
+                          return (
+                            <div key={jl.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+                              <div className="row-between" style={{ gap: 10, alignItems: "flex-start" }}>
+                                <div style={{ fontWeight: 900 }}>{jl.name}</div>
+                                <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                                  <button className="btn btn-primary" onClick={() => void saveJobLevel(jl.id)} style={{ padding: "6px 10px" }}>
+                                    Save
+                                  </button>
+                                  <button className="btn" onClick={() => void deleteJobLevel(jl.id)} style={{ padding: "6px 10px" }}>
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div style={{ height: 10 }} />
+
+                              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+                                <div>
+                                  <FieldLabel>Name</FieldLabel>
+                                  <TextInput value={f.name} onChange={(e) => updateJobLevelForm(jl.id, { name: e.target.value })} />
+                                </div>
+
+                                <div>
+                                  <FieldLabel>Responsibilities</FieldLabel>
+                                  <TextArea value={f.responsibilities} onChange={(e) => updateJobLevelForm(jl.id, { responsibilities: e.target.value })} />
+                                </div>
+
+                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                                  <div>
+                                    <FieldLabel>TPV range (min / max)</FieldLabel>
+                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                      <TextInput value={f.tpvMin} onChange={(e) => updateJobLevelForm(jl.id, { tpvMin: e.target.value })} placeholder="min" inputMode="numeric" />
+                                      <TextInput value={f.tpvMax} onChange={(e) => updateJobLevelForm(jl.id, { tpvMax: e.target.value })} placeholder="max" inputMode="numeric" />
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <FieldLabel>NT range (min / max)</FieldLabel>
+                                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                      <TextInput value={f.ntMin} onChange={(e) => updateJobLevelForm(jl.id, { ntMin: e.target.value })} placeholder="min" inputMode="numeric" />
+                                      <TextInput value={f.ntMax} onChange={(e) => updateJobLevelForm(jl.id, { ntMax: e.target.value })} placeholder="max" inputMode="numeric" />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="subtle" style={{ marginTop: 10 }}>
+                                Note: deletion will fail if employees are assigned to this level (foreign key from hr_employees.job_level_id).
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+
+<style jsx>{`
               .orgchart-wrap {
                 min-width: 1100px;
                 overflow-x: auto;
