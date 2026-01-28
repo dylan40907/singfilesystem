@@ -109,7 +109,7 @@ function IconButton({
   );
 }
 
-type PickerMode = "root" | "child";
+type PickerMode = "root" | "child" | "insertAbove";
 
 export default function HrOrgChartPage() {
   const [status, setStatus] = useState("");
@@ -161,6 +161,13 @@ export default function HrOrgChartPage() {
     }
     return m;
   }, [nodes, employeesById]);
+
+  const nodeByEmployeeId = useMemo(() => {
+    const m = new Map<string, OrgNodeRow>();
+    for (const n of nodes) m.set(n.employee_id, n);
+    return m;
+  }, [nodes]);
+
 
   const rootEmployeeIds = useMemo(() => {
     const roots = nodes.filter((n) => !n.parent_employee_id).map((n) => n.employee_id);
@@ -269,21 +276,57 @@ export default function HrOrgChartPage() {
     setPickerOpen(true);
   }
 
+
+  function openInsertAbovePicker(targetEmployeeId: string) {
+    setPickerMode("insertAbove");
+    setPickerParentEmployeeId(targetEmployeeId);
+    setPickerEmployeeId("");
+    setPickerOpen(true);
+  }
+
   async function addPickedEmployee() {
     if (!selectedCampusId) return;
     if (!pickerEmployeeId) return;
 
-    const parentId = pickerMode === "child" ? pickerParentEmployeeId : null;
-
     setStatus("Saving org chart...");
     try {
-      const { error } = await supabase.from("hr_org_chart_nodes").insert({
-        campus_id: selectedCampusId,
-        employee_id: pickerEmployeeId,
-        parent_employee_id: parentId,
-      });
+      if (pickerMode === "insertAbove") {
+        const targetId = pickerParentEmployeeId;
+        if (!targetId) throw new Error("No target employee selected.");
 
-      if (error) throw error;
+        const currentParentId = nodeByEmployeeId.get(targetId)?.parent_employee_id ?? null;
+
+        // 1) Insert the new manager above the target (inherits the target's current parent)
+        const { error: insertErr } = await supabase.from("hr_org_chart_nodes").insert({
+          campus_id: selectedCampusId,
+          employee_id: pickerEmployeeId,
+          parent_employee_id: currentParentId,
+        });
+        if (insertErr) throw insertErr;
+
+        // 2) Re-parent the target under the new manager
+        const { error: updateErr } = await supabase
+          .from("hr_org_chart_nodes")
+          .update({ parent_employee_id: pickerEmployeeId })
+          .eq("campus_id", selectedCampusId)
+          .eq("employee_id", targetId);
+
+        if (updateErr) {
+          // Best-effort rollback
+          await supabase.from("hr_org_chart_nodes").delete().eq("campus_id", selectedCampusId).eq("employee_id", pickerEmployeeId);
+          throw updateErr;
+        }
+      } else {
+        const parentId = pickerMode === "child" ? pickerParentEmployeeId : null;
+
+        const { error } = await supabase.from("hr_org_chart_nodes").insert({
+          campus_id: selectedCampusId,
+          employee_id: pickerEmployeeId,
+          parent_employee_id: parentId,
+        });
+
+        if (error) throw error;
+      }
 
       closePicker();
       await loadCampusData(selectedCampusId);
@@ -343,9 +386,19 @@ export default function HrOrgChartPage() {
     }
   }
 
-  function openPopoverForNode(employeeId: string, clientX: number, clientY: number) {
+  function openPopoverForNode(employeeId: string, anchorEl?: HTMLElement | null, clientX?: number, clientY?: number) {
     setPopoverEmployeeId(employeeId);
-    setPopoverPos({ x: clientX, y: clientY });
+
+    // Prefer the actual click position; fall back to the node's bounding box (keyboard-friendly).
+    if (typeof clientX === "number" && typeof clientY === "number" && (clientX > 0 || clientY > 0)) {
+      setPopoverPos({ x: clientX, y: clientY });
+    } else if (anchorEl) {
+      const r = anchorEl.getBoundingClientRect();
+      setPopoverPos({ x: r.right, y: r.top });
+    } else {
+      setPopoverPos({ x: 0, y: 0 });
+    }
+
     setPopoverOpen(true);
   }
 
@@ -394,19 +447,21 @@ export default function HrOrgChartPage() {
 
     return (
       <li key={employeeId}>
-        <div
-          className="node-card"
+        <button
+          type="button"
+          className="node-btn"
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            openPopoverForNode(employeeId, (e as any).clientX, (e as any).clientY);
+            openPopoverForNode(employeeId, e.currentTarget as any, (e as any).clientX, (e as any).clientY);
           }}
           title="Click for actions"
-          role="button"
-          tabIndex={0}
+          aria-label={`${label} — ${jl}`}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
-              openPopoverForNode(employeeId, (e as any).clientX ?? 0, (e as any).clientY ?? 0);
+              e.preventDefault();
+              e.stopPropagation();
+              openPopoverForNode(employeeId, e.currentTarget as any, undefined, undefined);
             }
           }}
         >
@@ -418,7 +473,7 @@ export default function HrOrgChartPage() {
               {jl}
             </div>
           </div>
-        </div>
+        </button>
 
         {kids.length > 0 ? <ul>{kids.map((k) => renderTree(k))}</ul> : null}
       </li>
@@ -552,6 +607,19 @@ export default function HrOrgChartPage() {
                   style={{ width: "100%", marginBottom: 8 }}
                   onClick={() => {
                     closePopover();
+                    openInsertAbovePicker(popoverEmployeeId);
+                  }}
+                  disabled={!selectedCampusId || availableEmployeesForCampus.length === 0}
+                >
+                  Add manager above
+                </button>
+
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: "100%", marginBottom: 8 }}
+                  onClick={() => {
+                    closePopover();
                     void makeTopLevel(popoverEmployeeId);
                   }}
                   disabled={!selectedCampusId}
@@ -606,7 +674,7 @@ export default function HrOrgChartPage() {
                 >
                   <div className="row-between" style={{ gap: 10 }}>
                     <div className="stack" style={{ gap: 4 }}>
-                      <div style={{ fontWeight: 950, fontSize: 16 }}>{pickerMode === "root" ? "Add top-level employee" : "Add child employee"}</div>
+                      <div style={{ fontWeight: 950, fontSize: 16 }}>{pickerMode === "root" ? "Add top-level employee" : pickerMode === "child" ? "Add child employee" : "Insert manager above"}</div>
                       <div className="subtle">
                         {pickerMode === "child" ? (
                           <>
@@ -615,6 +683,16 @@ export default function HrOrgChartPage() {
                               {(() => {
                                 const p = employeesById.get(pickerParentEmployeeId);
                                 return p ? employeeLabelWithJobLevel(p) : pickerParentEmployeeId;
+                              })()}
+                            </b>
+                          </>
+                        ) : pickerMode === "insertAbove" ? (
+                          <>
+                            Inserting above:{" "}
+                            <b>
+                              {(() => {
+                                const t = employeesById.get(pickerParentEmployeeId);
+                                return t ? employeeLabelWithJobLevel(t) : pickerParentEmployeeId;
                               })()}
                             </b>
                           </>
@@ -663,21 +741,26 @@ export default function HrOrgChartPage() {
             <style jsx>{`
               .orgchart-wrap {
                 min-width: 1100px;
+                overflow-x: auto;
+                padding-bottom: 8px;
               }
 
               /* Classic UL/LI org chart connectors */
               .tree ul {
+                display: flex;
+                justify-content: center;
+                align-items: flex-start;
+                gap: 34px;
                 padding-top: 26px;
                 position: relative;
                 transition: all 0.2s;
               }
 
               .tree li {
-                float: left;
                 text-align: center;
                 list-style-type: none;
                 position: relative;
-                padding: 26px 22px 0 22px; /* more horizontal spacing to prevent overlap */
+                padding: 26px 18px 0 18px; /* horizontal spacing */
                 transition: all 0.2s;
               }
 
@@ -744,37 +827,54 @@ export default function HrOrgChartPage() {
                 clear: both;
               }
 
-              /* Node UI: clean rounded name boxes (no initials) */
-              .node-card {
+              /* Node UI: rounded, clickable rectangles */
+              .node-btn {
+                appearance: none;
+                border: 0;
+                background: transparent;
+                padding: 0;
+                margin: 0;
+                cursor: pointer;
+                user-select: none;
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                user-select: none;
-                cursor: pointer;
+                border-radius: 18px;
+              }
+
+              .node-btn:focus-visible .name-box {
+                outline: 2px solid rgba(236, 72, 153, 0.8); /* pink-ish focus ring */
+                outline-offset: 2px;
               }
 
               .name-box {
                 min-width: 210px; /* forces siblings to spread out */
-                max-width: 260px;
+                max-width: 280px;
                 padding: 12px 14px;
-                border-radius: 16px;
+                border-radius: 18px;
                 border: 1px solid var(--border);
                 background: white;
                 box-shadow: 0 10px 22px rgba(0, 0, 0, 0.06);
                 text-align: left;
+                transition: transform 120ms ease, box-shadow 120ms ease;
               }
 
-              .node-card:hover .name-box {
+              .node-btn:hover .name-box {
+                transform: translateY(-1px);
                 box-shadow: 0 14px 26px rgba(0, 0, 0, 0.1);
               }
 
+              .node-btn:active .name-box {
+                transform: translateY(0px);
+                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.08);
+              }
+
               .name-text {
-                font-weight: 900;
+                font-weight: 950;
                 font-size: 13px;
                 line-height: 1.25;
                 color: #111;
 
-                /* readable, non-overlapping labels */
                 display: -webkit-box;
                 -webkit-line-clamp: 2;
                 -webkit-box-orient: vertical;
