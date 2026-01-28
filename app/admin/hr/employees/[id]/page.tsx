@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import "@fortune-sheet/react/dist/index.css";
@@ -94,11 +94,79 @@ async function readJsonSafely(res: Response) {
   }
 }
 
+async function getFreshAccessToken() {
+  // Always try session first
+  const { data: s1 } = await supabase.auth.getSession();
+  let token = s1.session?.access_token ?? null;
+
+  // If missing or close to expiring, force refresh
+  const expiresAt = s1.session?.expires_at ? Number(s1.session.expires_at) * 1000 : 0;
+  const msLeft = expiresAt ? expiresAt - Date.now() : 0;
+
+  if (!token || msLeft < 60_000) {
+    const { data: s2, error: rErr } = await supabase.auth.refreshSession();
+    if (rErr) throw new Error("Invalid session token");
+    token = s2.session?.access_token ?? null;
+  }
+
+  if (!token) throw new Error("Invalid session token");
+  return token;
+}
+
+async function authedJsonPost(path: string, payload: any) {
+  // Attempt 1
+  let token = await getFreshAccessToken();
+
+  const doReq = async (t: string) => {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+      body: JSON.stringify(payload),
+    });
+    const body = await readJsonSafely(res);
+    return { res, body };
+  };
+
+  let { res, body } = await doReq(token);
+
+  // If backend says token invalid/expired, refresh once and retry
+  if (!res.ok) {
+    const msg =
+      (body as any)?.error ||
+      ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : `Request failed (${res.status})`);
+
+    const looksLikeAuth =
+      res.status === 401 ||
+      res.status === 403 ||
+      /invalid session token/i.test(msg) ||
+      /jwt/i.test(msg) ||
+      /token/i.test(msg);
+
+    if (looksLikeAuth) {
+      const { data: s2, error: rErr } = await supabase.auth.refreshSession();
+      if (rErr || !s2.session?.access_token) throw new Error("Invalid session token");
+
+      ({ res, body } = await doReq(s2.session.access_token));
+    }
+  }
+
+  if (!res.ok) {
+    const msg =
+      (body as any)?.error ||
+      ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : `Request failed (${res.status})`);
+    throw new Error(msg);
+  }
+
+  if ((body as any)?.__nonJson) throw new Error("Server returned non-JSON response.");
+  return body as any;
+}
+
+
 type MeetingType = {
   id: string;
   name: string;
-  sort_order: number;
-  is_active: boolean;
+  // Schema is now just (id, name, created_at). Keep created_at optional so older rows/queries don't break.
+  created_at?: string;
 };
 
 type HrMeeting = {
@@ -116,6 +184,7 @@ type HrMeetingAttendee = {
   id: string;
   meeting_id: string;
   attendee_name: string;
+  attendee_employee_id: string | null;
   created_at: string;
 };
 
@@ -129,7 +198,31 @@ type HrMeetingDocument = {
   created_at: string;
 };
 
+type HrEmployeeDocument = {
+  id: string;
+  employee_id: string;
+  name: string;
+  object_key: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+};
+
 type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "unknown";
+
+type EmployeeLite = {
+  id: string;
+  legal_first_name: string;
+  legal_middle_name: string | null;
+  legal_last_name: string;
+  nicknames: string[];
+  is_active: boolean;
+};
+
+function formatEmployeeName(e: EmployeeLite) {
+  // Prefer legal names (matches hr_employees schema). You can optionally extend to include nicknames.
+  return `${e.legal_first_name} ${e.legal_last_name}`.trim();
+}
 
 function extOf(name: string) {
   const i = name.lastIndexOf(".");
@@ -729,6 +822,8 @@ type HrReview = {
   form_type: ReviewFormType;
   period_year: number;
   period_month: number | null;
+  notes: string;
+  attendance_points_snapshot: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -762,6 +857,20 @@ function formatReviewLabel(r: HrReview) {
   return `Monthly ${monthName(mm)} ${r.period_year}`;
 }
 
+function formatOneDecimal(n: number) {
+  const r = Math.round(n * 10) / 10;
+  const s = r.toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+
+function recommendedIncreasePercent(total: number) {
+  if (total >= 8) return 4;
+  if (total >= 7) return 3;
+  if (total >= 6) return 2;
+  return 0;
+}
+
+
 function reviewMostRecentAt(r: HrReview) {
   const t = r.updated_at || r.created_at;
   const d = new Date(t);
@@ -770,8 +879,11 @@ function reviewMostRecentAt(r: HrReview) {
 
 function EmployeePerformanceReviewsTab({
   employeeId,
+  attendancePoints,
 }: {
   employeeId: string;
+  /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
+  attendancePoints: number | null;
 }) {
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
@@ -788,6 +900,7 @@ function EmployeePerformanceReviewsTab({
 
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
+  const [reviewAverages, setReviewAverages] = useState<Record<string, number>>({});
 
   // Modal state
   const [open, setOpen] = useState(false);
@@ -797,6 +910,7 @@ function EmployeePerformanceReviewsTab({
 
   const [reviewId, setReviewId] = useState<string>("");
   const [values, setValues] = useState<Record<string, number>>({});
+  const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
   const formsByType = useMemo(() => {
@@ -859,11 +973,40 @@ function EmployeePerformanceReviewsTab({
   async function loadEmployeeReviews() {
     const res = await supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, created_at, updated_at")
+      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", employeeId);
 
     if (res.error) throw res.error;
-    setReviews((res.data ?? []) as HrReview[]);
+    const rows = (res.data ?? []) as HrReview[];
+    setReviews(rows);
+
+    // Precompute averages for annual reviews so we can show the "Attendance Score + Average" row in the list.
+    const annualIds = rows.filter((r) => r.form_type === "annual").map((r) => r.id);
+    if (annualIds.length === 0) {
+      setReviewAverages({});
+      return;
+    }
+
+    // hr_review_answers uses the column name `score` (not `value`).
+    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", annualIds);
+    if (ansRes.error) throw ansRes.error;
+
+    const sums: Record<string, { sum: number; count: number }> = {};
+    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
+      const v = typeof row.score === "number" ? row.score : null;
+      if (v === null) continue;
+      const cur = sums[row.review_id] ?? { sum: 0, count: 0 };
+      cur.sum += v;
+      cur.count += 1;
+      sums[row.review_id] = cur;
+    }
+
+    const avgs: Record<string, number> = {};
+    for (const rid of annualIds) {
+      const cur = sums[rid];
+      avgs[rid] = cur && cur.count ? cur.sum / cur.count : 0;
+    }
+    setReviewAverages(avgs);
   }
 
   function openCreate(which: ReviewFormType) {
@@ -872,6 +1015,7 @@ function EmployeePerformanceReviewsTab({
     setMonth(currentMonth);
     setReviewId("");
     setValues({});
+    setReviewNotes("");
     setOpen(true);
   }
 
@@ -881,6 +1025,7 @@ function EmployeePerformanceReviewsTab({
     setMonth(Number(r.period_month ?? currentMonth));
     setReviewId(r.id);
     setValues({});
+    setReviewNotes(r.notes ?? "");
     setOpen(true);
   }
 
@@ -888,6 +1033,7 @@ function EmployeePerformanceReviewsTab({
     setOpen(false);
     setReviewId("");
     setValues({});
+    setReviewNotes("");
   }
 
   async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
@@ -897,12 +1043,13 @@ function EmployeePerformanceReviewsTab({
     if (!qs || qs.length === 0) {
       setReviewId("");
       setValues({});
+      setReviewNotes("");
       return;
     }
 
     const base = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, created_at, updated_at")
+      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -921,6 +1068,7 @@ function EmployeePerformanceReviewsTab({
       for (const q of qs) init[q.id] = def;
       setReviewId("");
       setValues(init);
+      setReviewNotes("");
       return;
     }
 
@@ -943,24 +1091,60 @@ function EmployeePerformanceReviewsTab({
 
     setReviewId(existing.id);
     setValues(init);
+    setReviewNotes(existing.notes ?? "");
   }
 
-  async function ensureReviewRow(empId: string, ft: ReviewFormType, y: number, m: number) {
+  async function ensureReviewRow(
+    empId: string,
+    ft: ReviewFormType,
+    y: number,
+    m: number | null,
+    attendancePointsSnapshot: number | null,
+  ) {
+    // IMPORTANT: don't overwrite a previously-captured snapshot when editing.
+    // If the row exists and snapshot is null, then (and only then) we backfill it.
+    const base = supabase
+      .from("hr_reviews")
+      .select("id, attendance_points_snapshot")
+      .eq("employee_id", empId)
+      .eq("form_type", ft)
+      .eq("period_year", y);
+
+    const existingRes =
+      ft === "annual"
+        ? await base.is("period_month", null).maybeSingle()
+        : await base.eq("period_month", m).maybeSingle();
+
+    if (existingRes.error) throw existingRes.error;
+
+    const existing = (existingRes.data ?? null) as { id: string; attendance_points_snapshot: number | null } | null;
+    if (existing?.id) {
+      if (existing.attendance_points_snapshot == null && attendancePointsSnapshot != null) {
+        const { error: snapErr } = await supabase
+          .from("hr_reviews")
+          .update({ attendance_points_snapshot: attendancePointsSnapshot })
+          .eq("id", existing.id);
+        if (snapErr) throw snapErr;
+      }
+      return String(existing.id);
+    }
+
     const payload: any = {
       employee_id: empId,
       form_type: ft,
       period_year: y,
       period_month: ft === "annual" ? null : m,
+      attendance_points_snapshot: attendancePointsSnapshot,
     };
 
-    const up = await supabase
+    const ins = await supabase
       .from("hr_reviews")
-      .upsert(payload, { onConflict: "employee_id,form_type,period_year,period_month" })
+      .insert(payload)
       .select("id")
       .single();
 
-    if (up.error) throw up.error;
-    return String((up.data as any)?.id ?? "");
+    if (ins.error) throw ins.error;
+    return String((ins.data as any)?.id ?? "");
   }
 
   async function saveReview() {
@@ -985,8 +1169,14 @@ function EmployeePerformanceReviewsTab({
 
     setStatus("Saving review...");
     try {
-      const rid = await ensureReviewRow(employeeId, formType, year, month);
+      const rid = await ensureReviewRow(employeeId, formType, year, month, attendancePoints ?? null);
       setReviewId(rid);
+
+      // Persist freeform notes on the review itself.
+      {
+        const { error: notesErr } = await supabase.from("hr_reviews").update({ notes: reviewNotes }).eq("id", rid);
+        if (notesErr) throw notesErr;
+      }
 
       const max = scaleMax;
       const fallback = formType === "monthly" ? 2 : 3;
@@ -1153,6 +1343,28 @@ function EmployeePerformanceReviewsTab({
               <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
                 <div>
                   <div style={{ fontWeight: 900 }}>{formatReviewLabel(r)}</div>
+
+                  {/* Notes (freeform) */}
+                  {r.notes ? (
+                    <div style={{ marginTop: 4 }}>
+                      {r.notes}
+                    </div>
+                  ) : null}
+
+                  {/* Annual-only: Attendance + average -> recommended increase */}
+                  {r.form_type === "annual" ? (() => {
+                    const avg = round1dp(reviewAverages[r.id] ?? 0);
+                    const att = typeof r.attendance_points_snapshot === "number" ? r.attendance_points_snapshot : null;
+                    if (att === null) return null;
+                    const total = round1dp(att + avg);
+                    const pct = recommendedIncreasePercent(total);
+                    return (
+                      <div className="subtle" style={{ marginTop: 4 }}>
+                        Attendance Score: <b>{att}</b> + Average: <b>{avg.toFixed(1)}</b> = <b>{total.toFixed(1)}</b>: <b>{pct}%</b> Increase
+                      </div>
+                    );
+                  })() : null}
+
                   <div className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
                     Updated: {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
                     {r.created_at ? ` • Created: ${new Date(r.created_at).toLocaleString()}` : ""}
@@ -1331,6 +1543,16 @@ function EmployeePerformanceReviewsTab({
                     </div>
                   </div>
                 ))}
+                <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
+              <textarea
+                className="input"
+                value={reviewNotes}
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setReviewNotes(e.target.value)}
+                placeholder="Additional notes..."
+                style={{ minHeight: 90, resize: "vertical" }}
+              />
+            </div>
 
                 <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
                   <div className="subtle">
@@ -1349,6 +1571,7 @@ function EmployeePerformanceReviewsTab({
                 </div>
               </div>
             )}
+            
           </div>
         </div>
       ) : null}
@@ -1390,9 +1613,9 @@ export default function EmployeeByIdPage() {
   const [newAttendanceNotes, setNewAttendanceNotes] = useState<string>("");
   const [attSaving, setAttSaving] = useState(false);
 
-  // left-nav (now 4 tabs)
-  const [activeTab, setActiveTab] = useState<"general" | "milestones" | "attendance" | "meetings" | "reviews">("general");
-
+  // left-nav (sections)
+  const [activeTab, setActiveTab] =
+  useState<"general" | "milestones" | "attendance" | "meetings" | "reviews" | "documents">("general");
   // form state (mirrors your modal)
   const [legalFirst, setLegalFirst] = useState("");
   const [legalMiddle, setLegalMiddle] = useState("");
@@ -1467,18 +1690,300 @@ export default function EmployeeByIdPage() {
   const [attendeesByMeeting, setAttendeesByMeeting] = useState<Map<string, HrMeetingAttendee[]>>(new Map());
   const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument[]>>(new Map());
 
-  // Attendee add UI state per meeting (free text only)
+  // All employees for attendee picker dropdown
+  const [allEmployees, setAllEmployees] = useState<EmployeeLite[]>([]);
+
+  // Attendee add UI state per meeting
+  // - attendeeTextByMeeting is a search box value
+  // - selectedAttendeeEmployeeIdByMeeting is set only when user picks a row from the dropdown
   const [attendeeTextByMeeting, setAttendeeTextByMeeting] = useState<Record<string, string>>({});
+  const [selectedAttendeeEmployeeIdByMeeting, setSelectedAttendeeEmployeeIdByMeeting] = useState<
+    Record<string, string | null>
+  >({});
+  const [attendeeDropdownOpenByMeeting, setAttendeeDropdownOpenByMeeting] = useState<Record<string, boolean>>({});
   const [addingAttendeeByMeeting, setAddingAttendeeByMeeting] = useState<Record<string, boolean>>({});
 
   // Upload UI state
   const [uploadingMeetingId, setUploadingMeetingId] = useState<string>("");
 
+    /* =========================
+    Employee Documents state (employee-scoped)
+  ========================= */
+
+  const [employeeDocsStatus, setEmployeeDocsStatus] = useState<string>("");
+  const [employeeDocs, setEmployeeDocs] = useState<HrEmployeeDocument[]>([]);
+  const [uploadingEmployeeDocs, setUploadingEmployeeDocs] = useState<boolean>(false);
+
+  // separate preview modal for employee docs (keeps meetings preview untouched)
+  const [empPreviewOpen, setEmpPreviewOpen] = useState(false);
+  const [empPreviewDoc, setEmpPreviewDoc] = useState<HrEmployeeDocument | null>(null);
+  const [empPreviewMode, setEmpPreviewMode] = useState<PreviewMode>("unknown");
+  const [empPreviewSignedUrl, setEmpPreviewSignedUrl] = useState<string>("");
+  const [empPreviewLoading, setEmpPreviewLoading] = useState(false);
+  const [empPreviewCsvRows, setEmpPreviewCsvRows] = useState<string[][]>([]);
+  const [empPreviewCsvError, setEmpPreviewCsvError] = useState<string>("");
+
+  const empOfficeEmbedUrl = useMemo(() => {
+    if (!empPreviewSignedUrl) return "";
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(empPreviewSignedUrl)}`;
+  }, [empPreviewSignedUrl]);
+
+  const empCsvRenderMeta = useMemo(() => {
+    const rows = empPreviewCsvRows ?? [];
+    const rowCount = rows.length;
+    let maxCols = 0;
+    for (const r of rows) maxCols = Math.max(maxCols, r.length);
+    const colsToShow = Math.min(maxCols, 40);
+    const rowsToShow = Math.min(rowCount, 200);
+    return { rowCount, maxCols, colsToShow, rowsToShow };
+  }, [empPreviewCsvRows]);
+
+  const loadEmployeeDocuments = useCallback(async (empId: string) => {
+    if (!empId) {
+      setEmployeeDocs([]);
+      return;
+    }
+    setEmployeeDocsStatus("Loading documents...");
+    try {
+      const res = await supabase
+        .from("hr_employee_documents")
+        .select("id, employee_id, name, object_key, mime_type, size_bytes, created_at")
+        .eq("employee_id", empId)
+        .order("created_at", { ascending: false });
+
+      if (res.error) throw res.error;
+      setEmployeeDocs((res.data ?? []) as HrEmployeeDocument[]);
+      setEmployeeDocsStatus("");
+    } catch (e: any) {
+      setEmployeeDocsStatus("Error loading documents: " + (e?.message ?? "unknown"));
+    }
+  }, []);
+
+  async function presignEmployeeDocUpload(empId: string, file: File, token: string) {
+    const res = await fetch("/api/r2/presign-employee-doc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        employeeId: empId,
+        filename: file.name,
+        contentType: file.type || "application/octet-stream",
+        sizeBytes: file.size,
+      }),
+    });
+
+    const body = await readJsonSafely(res);
+    if (!res.ok) {
+      const msg = (body as any)?.error || ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "presign failed");
+      throw new Error(msg);
+    }
+    if ((body as any)?.__nonJson) throw new Error("Presign returned non-JSON response.");
+    return body as { uploadUrl: string; objectKey: string };
+  }
+
+  async function getSignedEmployeeDocDownloadUrl(documentId: string, mode: "inline" | "attachment" = "attachment") {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) throw new Error("No session token");
+
+    const res = await fetch("/api/r2/download-employee-doc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ documentId, mode }),
+    });
+
+    const body = await readJsonSafely(res);
+    if (!res.ok) {
+      const msg = (body as any)?.error || ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "download failed");
+      throw new Error(msg);
+    }
+    if ((body as any)?.__nonJson) throw new Error("Download returned non-JSON response.");
+    if (!(body as any).url) throw new Error("Download response missing url");
+    return (body as any).url as string;
+  }
+
+  async function handleUploadEmployeeDocs(fileList: FileList | null) {
+    const filesArr = Array.from(fileList ?? []);
+    if (filesArr.length === 0) return;
+    if (!employeeId) return;
+
+    setUploadingEmployeeDocs(true);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("No session token");
+
+      for (let i = 0; i < filesArr.length; i++) {
+        const file = filesArr[i];
+        setEmployeeDocsStatus(`Uploading ${i + 1}/${filesArr.length}: ${file.name}`);
+
+        const { uploadUrl, objectKey } = await presignEmployeeDocUpload(employeeId, file, token);
+
+        const putRes = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+        });
+        if (!putRes.ok) throw new Error(`Upload failed (${putRes.status})`);
+
+        const { data: docRow, error } = await supabase
+          .from("hr_employee_documents")
+          .insert({
+            employee_id: employeeId,
+            name: file.name,
+            object_key: objectKey,
+            mime_type: file.type || "application/octet-stream",
+            size_bytes: file.size,
+          })
+          .select("id, employee_id, name, object_key, mime_type, size_bytes, created_at")
+          .single();
+
+        if (error) throw error;
+
+        setEmployeeDocs((cur) => [docRow as HrEmployeeDocument, ...cur]);
+      }
+
+      setEmployeeDocsStatus("✅ Upload complete.");
+      setTimeout(() => setEmployeeDocsStatus(""), 900);
+    } catch (e: any) {
+      setEmployeeDocsStatus("Upload error: " + (e?.message ?? "unknown"));
+    } finally {
+      setUploadingEmployeeDocs(false);
+    }
+  }
+
+  async function deleteEmployeeDoc(documentId: string) {
+    if (!confirm("Delete this document?")) return;
+
+    setEmployeeDocsStatus("Deleting document...");
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error("No session token");
+
+      const res = await fetch("/api/r2/delete-employee-doc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ documentId }),
+      });
+
+      const body = await readJsonSafely(res);
+      if (!res.ok) {
+        const msg = (body as any)?.error || ((body as any)?.__nonJson ? (body as any).text.slice(0, 300) : "delete failed");
+        throw new Error(msg);
+      }
+
+      setEmployeeDocs((cur) => cur.filter((d) => d.id !== documentId));
+      setEmployeeDocsStatus("✅ Deleted.");
+      setTimeout(() => setEmployeeDocsStatus(""), 900);
+    } catch (e: any) {
+      setEmployeeDocsStatus("Delete document error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  function closeEmpPreview() {
+    setEmpPreviewOpen(false);
+    setEmpPreviewDoc(null);
+    setEmpPreviewMode("unknown");
+    setEmpPreviewSignedUrl("");
+    setEmpPreviewLoading(false);
+    setEmpPreviewCsvRows([]);
+    setEmpPreviewCsvError("");
+  }
+
+  async function openEmpPreview(doc: HrEmployeeDocument) {
+    setEmpPreviewDoc(doc);
+    setEmpPreviewOpen(true);
+    setEmpPreviewLoading(true);
+    setEmpPreviewCsvRows([]);
+    setEmpPreviewCsvError("");
+
+    try {
+      const url = await getSignedEmployeeDocDownloadUrl(doc.id, "inline");
+      setEmpPreviewSignedUrl(url);
+
+      const ext = extOf(doc.name);
+
+      if (isOfficeExt(ext)) {
+        setEmpPreviewMode("office");
+        setEmpPreviewLoading(false);
+        return;
+      }
+      if (isPdfExt(ext)) {
+        setEmpPreviewMode("pdf");
+        setEmpPreviewLoading(false);
+        return;
+      }
+      if (isImageExt(ext)) {
+        setEmpPreviewMode("image");
+        setEmpPreviewLoading(false);
+        return;
+      }
+
+      if (ext === "csv") {
+        setEmpPreviewMode("csv");
+        try {
+          const r = await fetch(url, { method: "GET" });
+          if (!r.ok) throw new Error(`Failed to load CSV (${r.status})`);
+          const text = await r.text();
+          setEmpPreviewCsvRows(parseCsv(text));
+        } catch (e: any) {
+          setEmpPreviewCsvError(e?.message ?? "Failed to load CSV preview.");
+        } finally {
+          setEmpPreviewLoading(false);
+        }
+        return;
+      }
+
+      if (isTextExt(ext)) {
+        setEmpPreviewMode("text");
+        setEmpPreviewLoading(false);
+        return;
+      }
+      if (isVideoExt(ext)) {
+        setEmpPreviewMode("video");
+        setEmpPreviewLoading(false);
+        return;
+      }
+      if (isAudioExt(ext)) {
+        setEmpPreviewMode("audio");
+        setEmpPreviewLoading(false);
+        return;
+      }
+
+      setEmpPreviewMode("unknown");
+      setEmpPreviewLoading(false);
+    } catch (e: any) {
+      setEmployeeDocsStatus("Preview error: " + (e?.message ?? "unknown"));
+      setEmpPreviewMode("unknown");
+      setEmpPreviewLoading(false);
+    }
+  }
+
+  // ESC closes employee preview
+  useEffect(() => {
+    if (!empPreviewOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeEmpPreview();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [empPreviewOpen]);
+
+  // Lazy load employee docs when the user opens Documents tab
+useEffect(() => {
+  if (!employeeId) return;
+  if (activeTab !== "documents") return;
+  void loadEmployeeDocuments(employeeId);
+}, [activeTab, employeeId, loadEmployeeDocuments]);
+
+
   // Manage meeting types
   const [showManageMeetingTypes, setShowManageMeetingTypes] = useState(false);
   const [meetingTypesError, setMeetingTypesError] = useState<string | null>(null);
   const [newMeetingTypeName, setNewMeetingTypeName] = useState("");
-  const [meetingTypeEdits, setMeetingTypeEdits] = useState<Record<string, { name: string; sort_order: string; is_active: boolean }>>({});
+  const [meetingTypeEdits, setMeetingTypeEdits] = useState<Record<string, { name: string }>>({});
   const [savingMeetingTypeIds, setSavingMeetingTypeIds] = useState<Record<string, boolean>>({});
 
   // Preview modal
@@ -1505,19 +2010,31 @@ export default function EmployeeByIdPage() {
     return { rowCount, maxCols, colsToShow, rowsToShow };
   }, [previewCsvRows]);
 
-  const activeMeetingTypes = useMemo(() => {
-    return (meetingTypes ?? []).filter((t) => !!t.is_active);
+  const meetingTypesSorted = useMemo(() => {
+    return [...(meetingTypes ?? [])].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
   }, [meetingTypes]);
+
+  const activeMeetingTypes = meetingTypesSorted;
 
   const reloadMeetingTypes = useCallback(async () => {
     const res = await supabase
       .from("hr_meeting_types")
-      .select("*")
-      .order("sort_order", { ascending: true })
+      .select("id,name,created_at")
       .order("name", { ascending: true });
 
     if (res.error) throw res.error;
     setMeetingTypes((res.data ?? []) as MeetingType[]);
+  }, []);
+
+  const reloadAllEmployees = useCallback(async () => {
+    const res = await supabase
+      .from("hr_employees")
+      .select("id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active")
+      .order("legal_last_name", { ascending: true })
+      .order("legal_first_name", { ascending: true });
+
+    if (res.error) throw res.error;
+    setAllEmployees((res.data ?? []) as EmployeeLite[]);
   }, []);
 
   const loadEmployeeMeetings = useCallback(async (empId: string) => {
@@ -1656,10 +2173,30 @@ export default function EmployeeByIdPage() {
     if (addingAttendeeByMeeting[meetingId]) return;
     setAddingAttendeeByMeeting((cur) => ({ ...cur, [meetingId]: true }));
 
-    const attendeeName = (attendeeTextByMeeting[meetingId] ?? "").trim();
+    const selectedEmployeeId = selectedAttendeeEmployeeIdByMeeting[meetingId] ?? null;
 
-    if (!attendeeName) {
-      setMeetingStatus("Enter an attendee name.");
+    if (!selectedEmployeeId) {
+      setMeetingStatus("Select an employee from the list.");
+      setAddingAttendeeByMeeting((cur) => ({ ...cur, [meetingId]: false }));
+      return;
+    }
+
+    const emp = allEmployees.find((e) => e.id === selectedEmployeeId) ?? null;
+    if (!emp) {
+      setMeetingStatus("Selected employee not found. Try again.");
+      setAddingAttendeeByMeeting((cur) => ({ ...cur, [meetingId]: false }));
+      return;
+    }
+
+    const attendeeName = formatEmployeeName(emp);
+
+    // prevent duplicates
+    const current = attendeesByMeeting.get(meetingId) ?? [];
+    if (current.some((a) => a.attendee_employee_id === selectedEmployeeId)) {
+      setMeetingStatus("That employee is already an attendee.");
+      setAttendeeTextByMeeting((cur) => ({ ...cur, [meetingId]: "" }));
+      setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [meetingId]: null }));
+      setAttendeeDropdownOpenByMeeting((cur) => ({ ...cur, [meetingId]: false }));
       setAddingAttendeeByMeeting((cur) => ({ ...cur, [meetingId]: false }));
       return;
     }
@@ -1668,7 +2205,7 @@ export default function EmployeeByIdPage() {
     try {
       const { data, error } = await supabase
         .from("hr_meeting_attendees")
-        .insert({ meeting_id: meetingId, attendee_name: attendeeName })
+        .insert({ meeting_id: meetingId, attendee_name: attendeeName, attendee_employee_id: selectedEmployeeId })
         .select("*")
         .single();
 
@@ -1686,6 +2223,8 @@ export default function EmployeeByIdPage() {
       });
 
       setAttendeeTextByMeeting((cur) => ({ ...cur, [meetingId]: "" }));
+      setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [meetingId]: null }));
+      setAttendeeDropdownOpenByMeeting((cur) => ({ ...cur, [meetingId]: false }));
 
       setMeetingStatus("✅ Attendee added.");
       setTimeout(() => setMeetingStatus(""), 900);
@@ -1933,71 +2472,43 @@ export default function EmployeeByIdPage() {
   function openManageMeetingTypes() {
     setMeetingTypesError(null);
 
-    const edits: Record<string, { name: string; sort_order: string; is_active: boolean }> = {};
+    const edits: Record<string, { name: string }> = {};
     for (const t of meetingTypes) {
       edits[t.id] = {
         name: t.name ?? "",
-        sort_order: String(t.sort_order ?? 0),
-        is_active: !!t.is_active,
       };
     }
     setMeetingTypeEdits(edits);
     setShowManageMeetingTypes(true);
   }
 
-  async function addMeetingType() {
-    setMeetingTypesError(null);
+  
+async function addMeetingType() {
     const name = newMeetingTypeName.trim();
     if (!name) return;
 
-    try {
-      const maxSort = Math.max(0, ...(meetingTypes ?? []).map((t) => Number(t.sort_order ?? 0) || 0));
-      const nextSort = maxSort + 10;
-
-      const { error } = await supabase.from("hr_meeting_types").insert({
-        name,
-        sort_order: nextSort,
-        is_active: true,
-      });
-
-      if (error) throw error;
-
-      setNewMeetingTypeName("");
-      await reloadMeetingTypes();
-    } catch (e: any) {
-      setMeetingTypesError(e?.message ?? "Failed to add meeting type.");
+    const { error } = await supabase.from("hr_meeting_types").insert({ name });
+    if (error) {
+      console.error("addMeetingType error", error);
+      return;
     }
+    setNewMeetingTypeName("");
+    await reloadMeetingTypes();
   }
 
   async function saveMeetingType(id: string) {
-    setMeetingTypesError(null);
     const draft = meetingTypeEdits[id];
     if (!draft) return;
 
-    const name = (draft.name ?? "").trim();
-    const sortOrderNum = Number(draft.sort_order);
-    const sort_order = Number.isFinite(sortOrderNum) ? sortOrderNum : 0;
+    const name = (draft.name || "").trim();
+    if (!name) return;
 
-    if (!name) {
-      setMeetingTypesError("Meeting type name is required.");
+    const { error } = await supabase.from("hr_meeting_types").update({ name }).eq("id", id);
+    if (error) {
+      console.error("saveMeetingType error", error);
       return;
     }
-
-    setSavingMeetingTypeIds((cur) => ({ ...cur, [id]: true }));
-    try {
-      const { error } = await supabase
-        .from("hr_meeting_types")
-        .update({ name, sort_order, is_active: !!draft.is_active })
-        .eq("id", id);
-
-      if (error) throw error;
-
-      await reloadMeetingTypes();
-    } catch (e: any) {
-      setMeetingTypesError(e?.message ?? "Failed to save meeting type.");
-    } finally {
-      setSavingMeetingTypeIds((cur) => ({ ...cur, [id]: false }));
-    }
+    await reloadMeetingTypes();
   }
 
   async function deleteMeetingType(id: string) {
@@ -2045,12 +2556,13 @@ export default function EmployeeByIdPage() {
     (async () => {
       try {
         await reloadMeetingTypes();
+        await reloadAllEmployees();
       } catch (e: any) {
         setMeetingStatus("Failed to load meeting types: " + (e?.message ?? "unknown"));
       }
       await loadEmployeeMeetings(employeeId);
     })();
-  }, [activeTab, employeeId, reloadMeetingTypes, loadEmployeeMeetings]);
+  }, [activeTab, employeeId, reloadMeetingTypes, reloadAllEmployees, loadEmployeeMeetings]);
 
   /* =========================
      Existing page logic
@@ -2627,6 +3139,22 @@ export default function EmployeeByIdPage() {
           >
             Performance Reviews
           </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setActiveTab("documents")}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              padding: 12,
+              border: "none",
+              borderRadius: 0,
+              background: activeTab === "documents" ? "rgba(0,0,0,0.04)" : "transparent",
+              fontWeight: 900,
+            }}
+          >
+            Documents
+          </button>
         </div>
 
         {/* RIGHT CONTENT */}
@@ -2803,6 +3331,8 @@ export default function EmployeeByIdPage() {
                         </Select>
                       </div>
                     </div>
+
+                    {/* Notes live in the Performance Review modal (not the Benefits section) */}
 
                     <div style={{ height: 12 }} />
 
@@ -3177,7 +3707,10 @@ export default function EmployeeByIdPage() {
                 </div>
               )}
               {activeTab === "reviews" && (
-                <EmployeePerformanceReviewsTab employeeId={employeeId} />
+                  <EmployeePerformanceReviewsTab
+                    employeeId={employeeId}
+                    attendancePoints={employee?.attendance_points ?? null}
+                  />
               )}
               {activeTab === "meetings" && (
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
@@ -3207,7 +3740,7 @@ export default function EmployeeByIdPage() {
                         const docs = docsByMeeting.get(m.id) ?? [];
 
                         const currentType = meetingTypes.find((t) => t.id === m.meeting_type_id) ?? null;
-                        const currentTypeInactive = !!currentType && !currentType.is_active;
+                        const currentTypeInactive = !!currentType;
 
                         return (
                           <div key={m.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
@@ -3344,29 +3877,120 @@ export default function EmployeeByIdPage() {
                                   <div style={{ height: 12 }} />
 
                                   <FieldLabel>Add attendee</FieldLabel>
-                                  <div style={{ display: "grid", gap: 8 }}>
-                                    <TextInput
-                                      placeholder="Attendee name"
-                                      value={attendeeTextByMeeting[m.id] ?? ""}
-                                      onChange={(e) => setAttendeeTextByMeeting((cur) => ({ ...cur, [m.id]: e.target.value }))}
-                                      onKeyDown={(e) => {
-                                        if (e.key === "Enter") {
-                                          e.preventDefault();
-                                          void addAttendee(m.id);
-                                        }
-                                      }}
-                                    />
+
+                                  <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
+                                    <div style={{ position: "relative" }}>
+                                      <TextInput
+                                        placeholder="Search employees..."
+                                        value={attendeeTextByMeeting[m.id] ?? ""}
+                                        onFocus={() => setAttendeeDropdownOpenByMeeting((cur) => ({ ...cur, [m.id]: true }))}
+                                        onBlur={() => {
+                                          // Allow click selection from the dropdown before closing.
+                                          window.setTimeout(() => {
+                                            setAttendeeDropdownOpenByMeeting((cur) => ({ ...cur, [m.id]: false }));
+                                          }, 120);
+                                        }}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+                                          setAttendeeTextByMeeting((cur) => ({ ...cur, [m.id]: v }));
+                                          // typing invalidates the previous selection
+                                          setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [m.id]: null }));
+                                          setMeetingStatus("");
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            void addAttendee(m.id);
+                                          }
+                                        }}
+                                      />
+
+                                      {attendeeDropdownOpenByMeeting[m.id] && (
+                                        <div
+                                          style={{
+                                            position: "absolute",
+                                            left: 0,
+                                            right: 0,
+                                            top: "calc(100% + 6px)",
+                                            background: "white",
+                                            border: "1px solid #e5e7eb",
+                                            borderRadius: 12,
+                                            boxShadow: "0 10px 24px rgba(0,0,0,0.08)",
+                                            maxHeight: 240,
+                                            overflow: "auto",
+                                            zIndex: 50,
+                                          }}
+                                        >
+                                          {(() => {
+                                            const q = (attendeeTextByMeeting[m.id] ?? "").trim().toLowerCase();
+                                            const rows = (allEmployees ?? [])
+                                              .filter((e) => {
+                                                const name = formatEmployeeName(e).toLowerCase();
+                                                const nick = (e.nicknames ?? []).join(" ").toLowerCase();
+                                                return !q || name.includes(q) || nick.includes(q);
+                                              })
+                                              .slice(0, 50);
+
+                                            if (rows.length === 0) {
+                                              return (
+                                                <div className="subtle" style={{ padding: 10 }}>
+                                                  (No matches)
+                                                </div>
+                                              );
+                                            }
+
+                                            return (
+                                              <div style={{ display: "grid" }}>
+                                                {rows.map((e) => {
+                                                  const selected = (selectedAttendeeEmployeeIdByMeeting[m.id] ?? null) === e.id;
+                                                  return (
+                                                    <button
+                                                      key={e.id}
+                                                      type="button"
+                                                      onMouseDown={(ev) => {
+                                                        // Prevent input blur before we can set the selection.
+                                                        ev.preventDefault();
+                                                        const nm = formatEmployeeName(e);
+                                                        setAttendeeTextByMeeting((cur) => ({ ...cur, [m.id]: nm }));
+                                                        setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [m.id]: e.id }));
+                                                        setMeetingStatus("");
+                                                      }}
+                                                      style={{
+                                                        textAlign: "left",
+                                                        padding: "10px 12px",
+                                                        border: "none",
+                                                        background: selected ? "rgba(236, 72, 153, 0.08)" : "transparent",
+                                                        cursor: "pointer",
+                                                      }}
+                                                    >
+                                                      <div style={{ fontWeight: 700 }}>{formatEmployeeName(e)}</div>
+                                                      <div className="subtle" style={{ marginTop: 2 }}>
+                                                        {e.id}
+                                                        {!e.is_active ? " • inactive" : ""}
+                                                      </div>
+                                                    </button>
+                                                  );
+                                                })}
+                                              </div>
+                                            );
+                                          })()}
+                                        </div>
+                                      )}
+                                    </div>
 
                                     <button
                                       type="button"
                                       className="btn btn-primary"
                                       onClick={() => addAttendee(m.id)}
-                                      disabled={!!addingAttendeeByMeeting[m.id]}
+                                      disabled={!!addingAttendeeByMeeting[m.id] || !selectedAttendeeEmployeeIdByMeeting[m.id]}
+                                      title={!selectedAttendeeEmployeeIdByMeeting[m.id] ? "Select an employee from the list" : "Add attendee"}
                                     >
-                                      {addingAttendeeByMeeting[m.id] ? "Adding…" : "Add attendee"}
+                                      {addingAttendeeByMeeting[m.id] ? "Adding…" : "Add"}
                                     </button>
+                                  </div>
 
-                                    <div className="subtle">Attendees are stored as plain text (no linkage).</div>
+                                  <div className="subtle" style={{ marginTop: 8 }}>
+                                    Start typing to filter. Select an employee from the list, then click Add.
                                   </div>
                                 </div>
 
@@ -3491,7 +4115,7 @@ export default function EmployeeByIdPage() {
                         <div className="row-between" style={{ padding: 12, borderBottom: "1px solid #e5e7eb" }}>
                           <div>
                             <div style={{ fontWeight: 950, fontSize: 16 }}>Manage meeting types</div>
-                            <div className="subtle">Add, edit, disable, or delete types (Esc to close).</div>
+                            <div className="subtle">Add, edit, or delete types (Esc to close).</div>
                           </div>
 
                           <button type="button" className="btn" onClick={() => setShowManageMeetingTypes(false)} title="Close (Esc)">
@@ -3531,7 +4155,7 @@ export default function EmployeeByIdPage() {
                           ) : (
                             <div style={{ display: "grid", gap: 10 }}>
                               {meetingTypes.map((t) => {
-                                const d = meetingTypeEdits[t.id] ?? { name: t.name ?? "", sort_order: String(t.sort_order ?? 0), is_active: !!t.is_active };
+                                const d = meetingTypeEdits[t.id] ?? { name: t.name ?? "" };
                                 const saving = !!savingMeetingTypeIds[t.id];
 
                                 return (
@@ -3539,7 +4163,7 @@ export default function EmployeeByIdPage() {
                                     <div
                                       style={{
                                         display: "grid",
-                                        gridTemplateColumns: "1fr 140px 120px auto auto",
+                                        gridTemplateColumns: "1fr auto auto",
                                         gap: 10,
                                         alignItems: "end",
                                       }}
@@ -3557,41 +4181,6 @@ export default function EmployeeByIdPage() {
                                             }))
                                           }
                                         />
-                                      </div>
-
-                                      <div>
-                                        <div className="subtle" style={{ fontWeight: 800, marginBottom: 6 }}>
-                                          Sort order
-                                        </div>
-                                        <TextInput
-                                          inputMode="numeric"
-                                          value={d.sort_order}
-                                          onChange={(e) =>
-                                            setMeetingTypeEdits((cur) => ({
-                                              ...cur,
-                                              [t.id]: { ...d, sort_order: e.target.value },
-                                            }))
-                                          }
-                                        />
-                                      </div>
-
-                                      <div>
-                                        <div className="subtle" style={{ fontWeight: 800, marginBottom: 6 }}>
-                                          Active
-                                        </div>
-                                        <label className="row" style={{ gap: 8, alignItems: "center" }}>
-                                          <input
-                                            type="checkbox"
-                                            checked={!!d.is_active}
-                                            onChange={(e) =>
-                                              setMeetingTypeEdits((cur) => ({
-                                                ...cur,
-                                                [t.id]: { ...d, is_active: e.target.checked },
-                                              }))
-                                            }
-                                          />
-                                          <span style={{ fontWeight: 800 }}>{d.is_active ? "Yes" : "No"}</span>
-                                        </label>
                                       </div>
 
                                       <button type="button" className="btn btn-primary" onClick={() => saveMeetingType(t.id)} disabled={saving}>
@@ -3814,6 +4403,257 @@ export default function EmployeeByIdPage() {
                   ) : null}
                 </div>
               )}
+              {activeTab === "documents" && (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                  <div className="row-between" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ fontWeight: 900 }}>Documents</div>
+                      <div className="subtle" style={{ marginTop: 6 }}>
+                        Employee-scoped documents (W-2, insurance, etc.). Upload/delete already work; preview uses the same modal behavior as Meetings.
+                      </div>
+                    </div>
+
+                    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <label className="btn" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="file"
+                          multiple
+                          style={{ display: "none" }}
+                          onChange={(e) => {
+                            const files = e.currentTarget.files;
+                            void handleUploadEmployeeDocs(files);
+                            // allow re-uploading same file name later
+                            e.currentTarget.value = "";
+                          }}
+                          disabled={uploadingEmployeeDocs}
+                        />
+                        {uploadingEmployeeDocs ? "Uploading..." : "+ Upload documents"}
+                      </label>
+
+                      {employeeDocsStatus ? (
+                        <span className="subtle" style={{ fontWeight: 800 }}>
+                          {employeeDocsStatus}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div style={{ height: 12 }} />
+
+                  {employeeDocs.length === 0 ? (
+                    <div className="subtle">(No documents yet.)</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 10 }}>
+                      {employeeDocs.map((doc) => (
+                        <div
+                          key={doc.id}
+                          style={{
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 14,
+                            padding: 12,
+                            background: "white",
+                          }}
+                        >
+                          <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
+                            <div style={{ minWidth: 260 }}>
+                              <div style={{ fontWeight: 900 }}>{doc.name}</div>
+                              <div className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
+                                {doc.mime_type || "—"} • {(doc.size_bytes ?? 0).toLocaleString()} bytes •{" "}
+                                {doc.created_at ? new Date(doc.created_at).toLocaleString() : "—"}
+                              </div>
+                            </div>
+
+                            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                              {/* IMPORTANT: type="button" prevents accidental form submit */}
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => void openEmpPreview(doc)}
+                                style={{ padding: "6px 10px" }}
+                              >
+                                Preview
+                              </button>
+
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={async () => {
+                                  try {
+                                    const url = await getSignedEmployeeDocDownloadUrl(doc.id, "attachment");
+                                    window.open(url, "_blank", "noopener,noreferrer");
+                                  } catch (e: any) {
+                                    setEmployeeDocsStatus("Download error: " + (e?.message ?? "unknown"));
+                                  }
+                                }}
+                                style={{ padding: "6px 10px" }}
+                              >
+                                Download
+                              </button>
+
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => void deleteEmployeeDoc(doc.id)}
+                                style={{ padding: "6px 10px" }}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {/* =========================
+    EMPLOYEE DOCUMENT PREVIEW MODAL
+========================= */}
+              {empPreviewOpen ? (
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.55)",
+                    zIndex: 300,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 14,
+                  }}
+                  onMouseDown={(e) => {
+                    // click outside closes
+                    if (e.target === e.currentTarget) closeEmpPreview();
+                  }}
+                >
+                  <div
+                    className="card"
+                    style={{
+                      width: "min(1180px, 100%)",
+                      height: "min(860px, 90vh)",
+                      padding: 14,
+                      borderRadius: 16,
+                      display: "grid",
+                      gridTemplateRows: "auto 1fr",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 950, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {empPreviewDoc?.name ?? "Document Preview"}
+                        </div>
+                        <div className="subtle" style={{ marginTop: 2, fontSize: 12 }}>
+                          {empPreviewMode.toUpperCase()} preview
+                        </div>
+                      </div>
+
+                      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={async () => {
+                            if (!empPreviewDoc) return;
+                            try {
+                              const url = await getSignedEmployeeDocDownloadUrl(empPreviewDoc.id, "attachment");
+                              window.open(url, "_blank", "noopener,noreferrer");
+                            } catch (e: any) {
+                              setEmployeeDocsStatus("Download error: " + (e?.message ?? "unknown"));
+                            }
+                          }}
+                          disabled={!empPreviewDoc}
+                          style={{ padding: "6px 10px" }}
+                        >
+                          Download
+                        </button>
+
+                        <button type="button" className="btn" onClick={closeEmpPreview} style={{ padding: "6px 10px" }}>
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 10, borderRadius: 14, overflow: "hidden", border: "1px solid #e5e7eb", background: "#f6f6f6" }}>
+                      {empPreviewLoading ? (
+                        <div style={{ padding: 14, fontWeight: 800 }}>Loading preview…</div>
+                      ) : !empPreviewSignedUrl ? (
+                        <div style={{ padding: 14, fontWeight: 800, color: "#b00020" }}>Missing signed URL.</div>
+                      ) : empPreviewMode === "office" ? (
+                        <iframe
+                          title="Office preview"
+                          src={empOfficeEmbedUrl}
+                          style={{ width: "100%", height: "100%", border: 0, background: "white" }}
+                          allow="clipboard-read; clipboard-write"
+                        />
+                      ) : empPreviewMode === "pdf" ? (
+                        <div style={{ width: "100%", height: "100%" }}>
+                          <PdfCanvasPreview url={empPreviewSignedUrl} />
+                        </div>
+                      ) : empPreviewMode === "image" ? (
+                        <div style={{ width: "100%", height: "100%", overflow: "auto", padding: 12 }}>
+                          <img
+                            src={empPreviewSignedUrl}
+                            alt={empPreviewDoc?.name ?? "image"}
+                            style={{ maxWidth: "100%", height: "auto", display: "block", borderRadius: 12, background: "white" }}
+                          />
+                        </div>
+                      ) : empPreviewMode === "csv" ? (
+                        <div style={{ width: "100%", height: "100%", overflow: "auto", padding: 12 }}>
+                          {empPreviewCsvError ? (
+                            <div style={{ padding: 12, background: "white", color: "#b00020", fontWeight: 800 }}>
+                              CSV preview failed: {empPreviewCsvError}
+                            </div>
+                          ) : (
+                            <div style={{ background: "white", borderRadius: 12, overflow: "hidden", boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.08)" }}>
+                              <div style={{ padding: 10, borderBottom: "1px solid #eee", fontWeight: 900 }}>
+                                Rows: {empCsvRenderMeta.rowCount.toLocaleString()} • Cols: {empCsvRenderMeta.maxCols.toLocaleString()} (showing up to{" "}
+                                {empCsvRenderMeta.colsToShow}×{empCsvRenderMeta.rowsToShow})
+                              </div>
+                              <div style={{ overflow: "auto" }}>
+                                <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                                  <tbody>
+                                    {(empPreviewCsvRows ?? []).slice(0, empCsvRenderMeta.rowsToShow).map((r, ri) => (
+                                      <tr key={ri}>
+                                        {Array.from({ length: empCsvRenderMeta.colsToShow }).map((_, ci) => (
+                                          <td
+                                            key={ci}
+                                            style={{
+                                              border: "1px solid #eee",
+                                              padding: "6px 8px",
+                                              fontSize: 12,
+                                              whiteSpace: "nowrap",
+                                            }}
+                                          >
+                                            {r?.[ci] ?? ""}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : empPreviewMode === "video" ? (
+                        <video src={empPreviewSignedUrl} controls style={{ width: "100%", height: "100%", background: "black" }} />
+                      ) : empPreviewMode === "audio" ? (
+                        <div style={{ padding: 14 }}>
+                          <audio src={empPreviewSignedUrl} controls style={{ width: "100%" }} />
+                        </div>
+                      ) : (
+                        // text + unknown fallback: iframe works fine for txt/md/json/log in most browsers
+                        <iframe title="Document preview" src={empPreviewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+
+
             </>
           )}
         </div>
