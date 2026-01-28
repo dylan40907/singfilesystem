@@ -97,7 +97,6 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/meetings" || pathname.startsWith("/admin/hr/meetings/")) return "meetings";
     if (pathname === "/admin/hr/employees" || pathname.startsWith("/admin/hr/employees/")) return "employees";
     if (pathname === "/admin/hr/org-chart" || pathname.startsWith("/admin/hr/org-chart/")) return "org-chart";
-    if (pathname === "/admin/hr/performance-review" || pathname.startsWith("/admin/hr/performance-review/")) return "performance-review";
     return "employees";
   }, [pathname]);
 
@@ -154,13 +153,11 @@ export default function HrNavbar() {
                     <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
                     <NavLink href="/admin/hr/meetings" label="Meetings" active={activeTab === "meetings"} />
                     <NavLink href="/admin/hr/org-chart" label="Org Chart" active={activeTab === "org-chart"} />
-                    <NavLink href="/admin/hr/performance-review" label="Performance Review" active={activeTab === "performance-review"} />
                     <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
                   </>
                 ) : (
                   <>
                     <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
-                    <NavLink href="/admin/hr/performance-review" label="Performance Review" active={activeTab === "performance-review"} />
                   </>
                 )}
               </div>
@@ -169,7 +166,7 @@ export default function HrNavbar() {
 
           <div className="row" style={{ gap: 10 }}>
             <button className="btn" onClick={() => router.push("/")}>
-              File System
+              Curriculum
             </button>
 
             {sessionEmail ? (

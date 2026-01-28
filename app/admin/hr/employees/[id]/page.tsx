@@ -38,6 +38,15 @@ type AttendanceTypeRow = {
   points_deduct: number;
 };
 
+type PtoScheduleRow = {
+  id: string;
+  employee_id: string;
+  begin_date: string | null;
+  end_date: string | null;
+  hours_per_annum: number | null;
+  created_at?: string | null;
+};
+
 type EmployeeAttendanceRow = {
   id: string;
   employee_id: string;
@@ -69,6 +78,8 @@ type EmployeeRow = {
   campus_id: string | null;
 
   insurance_sheet_doc: any[] | null;
+
+  pto_meta: any;
 
   attendance_points: number;
 
@@ -735,6 +746,8 @@ function normalizeEmployee(raw: any): EmployeeRow {
 
     insurance_sheet_doc: raw.insurance_sheet_doc ?? null,
 
+
+    pto_meta: raw.pto_meta ?? {},
     attendance_points: Number(raw.attendance_points ?? 3),
 
     job_level: asSingle<JobLevelRow>(raw.job_level),
@@ -782,6 +795,7 @@ async function fetchEmployeeData(employeeId: string) {
       job_level_id,
       campus_id,
       insurance_sheet_doc,
+      pto_meta,
       attendance_points,
       created_at,
       updated_at,
@@ -898,9 +912,20 @@ function EmployeePerformanceReviewsTab({
   const [forms, setForms] = useState<HrReviewForm[]>([]);
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
 
+  // ---- Question editor modal (edit annual/monthly question bank)
+  type EditQuestion = { id: string; question_text: string; sort_order: number };
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editFormType, setEditFormType] = useState<ReviewFormType>("annual");
+  const [editQuestions, setEditQuestions] = useState<EditQuestion[]>([]);
+  const editRef = useRef<HTMLDivElement | null>(null);
+
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
   const [reviewAverages, setReviewAverages] = useState<Record<string, number>>({});
+  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number>>({});
+  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number>>({});
+
 
   // Modal state
   const [open, setOpen] = useState(false);
@@ -935,6 +960,151 @@ function EmployeePerformanceReviewsTab({
       monthly: monthly.slice().sort(sortFn),
     };
   }, [questions, formsByType]);
+
+
+  function makeLocalId() {
+    try {
+      // @ts-ignore
+      return (globalThis.crypto?.randomUUID?.() as string) || `${Date.now()}-${Math.random()}`;
+    } catch {
+      return `${Date.now()}-${Math.random()}`;
+    }
+  }
+
+  // ----------------------------
+  // Question editor helpers
+  // ----------------------------
+  function openEditQuestions(which: ReviewFormType) {
+    const form = formsByType.get(which);
+    if (!form) {
+      setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+      return;
+    }
+
+    const list: EditQuestion[] = (which === "annual" ? questionsByType.annual : questionsByType.monthly)
+      .slice()
+      .map((q, idx) => ({
+        id: q.id,
+        question_text: q.question_text ?? "",
+        sort_order: Number.isFinite(Number(q.sort_order)) ? Number(q.sort_order) : idx,
+      }));
+
+    if (list.length === 0) {
+      if (which === "annual") {
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2 });
+      } else {
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2 });
+      }
+    }
+
+    list.forEach((q, i) => (q.sort_order = i));
+    setEditFormType(which);
+    setEditQuestions(list);
+    setEditOpen(true);
+  }
+
+  function closeEditQuestions() {
+    setEditOpen(false);
+    setEditQuestions([]);
+  }
+
+  function addEditQuestionRow() {
+    setEditQuestions((cur) => {
+      const next = cur.slice();
+      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length });
+      return next;
+    });
+  }
+
+  function moveEditQuestion(id: string, dir: -1 | 1) {
+    setEditQuestions((cur) => {
+      const idx = cur.findIndex((q) => q.id === id);
+      if (idx < 0) return cur;
+      const j = idx + dir;
+      if (j < 0 || j >= cur.length) return cur;
+
+      const next = cur.slice();
+      const tmp = next[idx];
+      next[idx] = next[j];
+      next[j] = tmp;
+      next.forEach((q, i) => (q.sort_order = i));
+      return next;
+    });
+  }
+
+  function deleteEditQuestionRow(id: string) {
+    setEditQuestions((cur) => cur.filter((q) => q.id !== id).map((q, i) => ({ ...q, sort_order: i })));
+  }
+
+  async function saveQuestions() {
+    setStatus("Saving questions...");
+    try {
+      const form = formsByType.get(editFormType);
+      if (!form) {
+        setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+        return;
+      }
+
+      const cleaned = editQuestions
+        .map((q, i) => ({ ...q, sort_order: i, question_text: (q.question_text ?? "").trim() }))
+        .filter((q) => q.question_text.length > 0);
+
+      if (cleaned.length === 0) {
+        setStatus("Add at least 1 question.");
+        return;
+      }
+
+      const currentIds = new Set(
+        (editFormType === "annual" ? questionsByType.annual : questionsByType.monthly).map((q) => q.id)
+      );
+      const desiredExistingIds = new Set(cleaned.filter((q) => !q.id.startsWith("new:")).map((q) => q.id));
+      const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
+
+      if (toDelete.length > 0) {
+        const ok = confirm(
+          `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete any saved answers for those questions.`
+        );
+        if (!ok) {
+          setStatus("");
+          return;
+        }
+        const { error: delErr } = await supabase.from("hr_review_questions").delete().in("id", toDelete);
+        if (delErr) throw delErr;
+      }
+
+      const newRows = cleaned.filter((q) => q.id.startsWith("new:"));
+      if (newRows.length > 0) {
+        const insertRows = newRows.map((q) => ({
+          form_id: form.id,
+          question_text: q.question_text,
+          sort_order: q.sort_order,
+          is_active: true,
+        }));
+        const { error } = await supabase.from("hr_review_questions").insert(insertRows);
+        if (error) throw error;
+      }
+
+      const existing = cleaned.filter((q) => !q.id.startsWith("new:"));
+      for (const q of existing) {
+        const { error } = await supabase
+          .from("hr_review_questions")
+          .update({ question_text: q.question_text, sort_order: q.sort_order, is_active: true })
+          .eq("id", q.id);
+        if (error) throw error;
+      }
+
+      closeEditQuestions();
+      await loadMeta();
+      setStatus("✅ Saved.");
+      setTimeout(() => setStatus(""), 900);
+    } catch (e: any) {
+      setStatus("Save error: " + (e?.message ?? "unknown"));
+    }
+  }
 
   const activeQuestions = useMemo(() => {
     return formType === "annual" ? questionsByType.annual : questionsByType.monthly;
@@ -980,33 +1150,49 @@ function EmployeePerformanceReviewsTab({
     const rows = (res.data ?? []) as HrReview[];
     setReviews(rows);
 
-    // Precompute averages for annual reviews so we can show the "Attendance Score + Average" row in the list.
-    const annualIds = rows.filter((r) => r.form_type === "annual").map((r) => r.id);
-    if (annualIds.length === 0) {
+    if (!rows.length) {
       setReviewAverages({});
+      setReviewTotalPoints({});
+      setReviewAnswerCounts({});
       return;
     }
 
-    // hr_review_answers uses the column name `score` (not `value`).
-    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", annualIds);
+    const ids = rows.map((r) => r.id);
+
+    // hr_review_answers uses the column name `score`.
+    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", ids);
     if (ansRes.error) throw ansRes.error;
 
     const sums: Record<string, { sum: number; count: number }> = {};
     for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
+      const rid = String(row.review_id);
       const v = typeof row.score === "number" ? row.score : null;
       if (v === null) continue;
-      const cur = sums[row.review_id] ?? { sum: 0, count: 0 };
+      const cur = sums[rid] ?? { sum: 0, count: 0 };
       cur.sum += v;
       cur.count += 1;
-      sums[row.review_id] = cur;
+      sums[rid] = cur;
     }
 
-    const avgs: Record<string, number> = {};
-    for (const rid of annualIds) {
-      const cur = sums[rid];
-      avgs[rid] = cur && cur.count ? cur.sum / cur.count : 0;
+    const avgsAnnual: Record<string, number> = {};
+    const totalsMonthly: Record<string, number> = {};
+    const countsByReview: Record<string, number> = {};
+
+    for (const r of rows) {
+      const cur = sums[r.id];
+      const count = cur?.count ?? 0;
+      countsByReview[r.id] = count;
+
+      if (r.form_type === "annual") {
+        avgsAnnual[r.id] = count ? cur!.sum / count : 0;
+      } else {
+        totalsMonthly[r.id] = cur?.sum ?? 0;
+      }
     }
-    setReviewAverages(avgs);
+
+    setReviewAverages(avgsAnnual);
+    setReviewTotalPoints(totalsMonthly);
+    setReviewAnswerCounts(countsByReview);
   }
 
   function openCreate(which: ReviewFormType) {
@@ -1254,7 +1440,7 @@ function EmployeePerformanceReviewsTab({
 
   // When modal open + selection changes, load existing or seed defaults
   useEffect(() => {
-    if (!open) return;
+    if (!open && !editOpen) return;
     if (!employeeId) return;
 
     let cancelled = false;
@@ -1279,11 +1465,20 @@ function EmployeePerformanceReviewsTab({
     if (!open) return;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeModal();
+      if (e.key === "Escape") {
+        if (editOpen) closeEditQuestions();
+        else if (open) closeModal();
+      }
     };
     const onDown = (e: MouseEvent) => {
-      const el = modalRef.current;
-      if (el && !el.contains(e.target as any)) closeModal();
+      if (open) {
+        const el = modalRef.current;
+        if (el && !el.contains(e.target as any)) closeModal();
+      }
+      if (editOpen) {
+        const el2 = editRef.current;
+        if (el2 && !el2.contains(e.target as any)) closeEditQuestions();
+      }
     };
 
     window.addEventListener("keydown", onKey);
@@ -1293,7 +1488,7 @@ function EmployeePerformanceReviewsTab({
       window.removeEventListener("mousedown", onDown);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, editOpen]);
 
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
@@ -1311,6 +1506,13 @@ function EmployeePerformanceReviewsTab({
           </button>
           <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
             + Create monthly evaluation
+          </button>
+
+          <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
+            Edit annual questions
+          </button>
+          <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
+            Edit monthly questions
           </button>
 
           {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
@@ -1364,6 +1566,18 @@ function EmployeePerformanceReviewsTab({
                       </div>
                     );
                   })() : null}
+
+{/* Monthly-only: show Total Score as sum of 1–3 answers */}
+{r.form_type === "monthly" ? (() => {
+  const count = Number(reviewAnswerCounts[r.id] ?? 0) || 0;
+  const total = Number(reviewTotalPoints[r.id] ?? 0) || 0;
+  if (!count) return null;
+  return (
+    <div className="subtle" style={{ marginTop: 4 }}>
+      Total Score: <b>{total}</b> <span className="subtle">({count} questions)</span>
+    </div>
+  );
+})() : null}
 
                   <div className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
                     Updated: {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
@@ -1575,6 +1789,139 @@ function EmployeePerformanceReviewsTab({
           </div>
         </div>
       ) : null}
+
+      {/* ===========================
+          EDIT QUESTIONS MODAL
+         =========================== */}
+      {editOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 230,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 14,
+          }}
+        >
+          <div
+            ref={editRef}
+            style={{
+              width: "min(860px, 100%)",
+              background: "white",
+              borderRadius: 16,
+              border: "1px solid #e5e7eb",
+              padding: 16,
+              maxHeight: "min(720px, 90vh)",
+              overflow: "auto",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+            }}
+          >
+            <div className="row-between" style={{ gap: 10 }}>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>
+                  Edit {editFormType === "annual" ? "Annual" : "Monthly"} questions
+                </div>
+                <div className="subtle">
+                  {editFormType === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
+                </div>
+              </div>
+              <button className="btn" type="button" onClick={closeEditQuestions} title="Close">
+                ✕
+              </button>
+            </div>
+
+            <div style={{ height: 12 }} />
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {editQuestions.map((q, idx) => (
+                <div
+                  key={q.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 10,
+                    alignItems: "start",
+                    padding: "10px 10px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 14,
+                    background: "white",
+                  }}
+                >
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 900 }}>#{idx + 1}</div>
+                    </div>
+
+                    <input
+                      className="input"
+                      value={q.question_text}
+                      placeholder="Question text"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, question_text: v } : x)));
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <button className="btn" type="button" title="Move up" disabled={idx === 0} onClick={() => moveEditQuestion(q.id, -1)}>
+                        ↑
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        title="Move down"
+                        disabled={idx === editQuestions.length - 1}
+                        onClick={() => moveEditQuestion(q.id, 1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      onClick={() => {
+                        const isExisting = !q.id.startsWith("new:");
+                        if (isExisting) {
+                          const ok = confirm("Delete this question? This will also delete saved answers for it.");
+                          if (!ok) return;
+                        }
+                        deleteEditQuestionRow(q.id);
+                      }}
+                      title="Delete question"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 6 }}>
+                <button className="btn" type="button" onClick={addEditQuestionRow}>
+                  + Add question
+                </button>
+
+                <div className="row" style={{ gap: 10 }}>
+                  <button className="btn" type="button" onClick={closeEditQuestions}>
+                    Cancel
+                  </button>
+                  <button className="btn btn-primary" type="button" onClick={() => void saveQuestions()}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
     </div>
   );
 }
@@ -1598,6 +1945,19 @@ export default function EmployeeByIdPage() {
   // lookup data for selects
   const [jobLevels, setJobLevels] = useState<JobLevelRow[]>([]);
   const [campuses, setCampuses] = useState<CampusRow[]>([]);
+
+
+
+// Manage Campuses / Event Types (popups)
+const [showManageCampuses, setShowManageCampuses] = useState(false);
+const [campusBusy, setCampusBusy] = useState(false);
+const [newCampusName, setNewCampusName] = useState("");
+const [campusEdits, setCampusEdits] = useState<Record<string, string>>({});
+
+const [showManageEventTypes, setShowManageEventTypes] = useState(false);
+const [eventTypeBusy, setEventTypeBusy] = useState(false);
+const [newEventTypeName, setNewEventTypeName] = useState("");
+const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({});
 
   // Milestones lookup
   const [eventTypes, setEventTypes] = useState<EventTypeRow[]>([]);
@@ -1665,6 +2025,18 @@ export default function EmployeeByIdPage() {
   const [insuranceWorkbookKey, setInsuranceWorkbookKey] = useState<string>("init");
   const [insuranceSheetDirty, setInsuranceSheetDirty] = useState(false);
   const insuranceWorkbookRef = useRef<any>(null);
+
+
+
+// PTO schedule history (only relevant when PTO = Yes)
+  const [ptoSchedules, setPtoSchedules] = useState<PtoScheduleRow[]>([]);
+  const [ptoSchedulesLoading, setPtoSchedulesLoading] = useState(false);
+  const [ptoScheduleStatus, setPtoScheduleStatus] = useState<string>("");
+
+  const [newPtoBegin, setNewPtoBegin] = useState<string>("");
+  const [newPtoEnd, setNewPtoEnd] = useState<string>("");
+  const [newPtoHours, setNewPtoHours] = useState<string>("");
+  const [ptoSavingId, setPtoSavingId] = useState<string | null>(null);
 
   // Milestones state
   const [empEvents, setEmpEvents] = useState<EmployeeEventRow[]>([]);
@@ -2549,6 +2921,27 @@ async function addMeetingType() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [showManageMeetingTypes]);
 
+
+
+  // ESC closes manage campuses modal
+  useEffect(() => {
+    if (!showManageCampuses) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowManageCampuses(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showManageCampuses]);
+
+  // ESC closes manage event types modal
+  useEffect(() => {
+    if (!showManageEventTypes) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowManageEventTypes(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showManageEventTypes]);
   // When switching to Meetings tab, lazy-load meetings + meeting types
   useEffect(() => {
     if (!employeeId) return;
@@ -2583,6 +2976,7 @@ async function addMeetingType() {
   const handleInsuranceSheetOp = useCallback((_ops: any[]) => {
     requestAnimationFrame(() => setInsuranceSheetDirty(true));
   }, []);
+
 
   const addNickname = useCallback(() => {
     const raw = nicknamesInput.trim();
@@ -2704,7 +3098,10 @@ async function addMeetingType() {
 
   const loadAttendanceTypes = useCallback(async () => {
     try {
-      const { data, error } = await supabase.from("hr_attendance_types").select("id,name,points_deduct").order("name", { ascending: true });
+      const { data, error } = await supabase
+        .from("hr_attendance_types")
+        .select("id,name,points_deduct")
+        .order("name", { ascending: true });
       if (error) throw error;
       setAttendanceTypes((data ?? []) as AttendanceTypeRow[]);
     } catch (e: any) {
@@ -2712,6 +3109,120 @@ async function addMeetingType() {
       setAttendanceTypes([]);
     }
   }, []);
+
+  const reloadCampuses = useCallback(async () => {
+    const { data, error } = await supabase.from("hr_campuses").select("id,name").order("name", { ascending: true });
+    if (error) throw error;
+    setCampuses((data ?? []) as CampusRow[]);
+    return (data ?? []) as CampusRow[];
+  }, []);
+
+  const reloadEventTypes = useCallback(async () => {
+    const { data, error } = await supabase.from("hr_event_types").select("id,name").order("name", { ascending: true });
+    if (error) throw error;
+    setEventTypes((data ?? []) as EventTypeRow[]);
+    return (data ?? []) as EventTypeRow[];
+  }, []);
+
+  async function addCampus() {
+    const name = newCampusName.trim();
+    if (!name) return;
+    setCampusBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_campuses").insert({ name });
+      if (error) throw error;
+      setNewCampusName("");
+      await reloadCampuses();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to add campus.");
+    } finally {
+      setCampusBusy(false);
+    }
+  }
+
+  async function saveCampusName(id: string) {
+    const name = (campusEdits[id] ?? "").trim();
+    if (!name) return;
+    setCampusBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_campuses").update({ name }).eq("id", id);
+      if (error) throw error;
+      await reloadCampuses();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to update campus.");
+    } finally {
+      setCampusBusy(false);
+    }
+  }
+
+  async function deleteCampus(id: string) {
+    const ok = confirm("Delete this campus? (Employees linked to it will be set to no campus.)");
+    if (!ok) return;
+    setCampusBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_campuses").delete().eq("id", id);
+      if (error) throw error;
+      await reloadCampuses();
+      setCampusId((cur) => (cur === id ? "" : cur));
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to delete campus.");
+    } finally {
+      setCampusBusy(false);
+    }
+  }
+
+  async function addEventType() {
+    const name = newEventTypeName.trim();
+    if (!name) return;
+    setEventTypeBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_event_types").insert({ name });
+      if (error) throw error;
+      setNewEventTypeName("");
+      await reloadEventTypes();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to add event type.");
+    } finally {
+      setEventTypeBusy(false);
+    }
+  }
+
+  async function saveEventTypeName(id: string) {
+    const name = (eventTypeEdits[id] ?? "").trim();
+    if (!name) return;
+    setEventTypeBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_event_types").update({ name }).eq("id", id);
+      if (error) throw error;
+      await reloadEventTypes();
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to update event type.");
+    } finally {
+      setEventTypeBusy(false);
+    }
+  }
+
+  async function deleteEventType(id: string) {
+    const ok = confirm("Delete this event type? (Existing employee events will lose the label.)");
+    if (!ok) return;
+    setEventTypeBusy(true);
+    setError(null);
+    try {
+      const { error } = await supabase.from("hr_event_types").delete().eq("id", id);
+      if (error) throw error;
+      await reloadEventTypes();
+      setNewEventTypeId((cur) => (cur === id ? "" : cur));
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to delete event type.");
+    } finally {
+      setEventTypeBusy(false);
+    }
+  }
 
   async function addAttendanceRecord() {
     if (!employeeId) return;
@@ -2856,7 +3367,68 @@ async function addMeetingType() {
     if (employeeId) await loadEmployeeMilestones(employeeId);
   }
 
-  // bootstrap: load selects + employee + milestones + attendance
+  async function loadPtoSchedules(employeeId: string) {
+    setPtoSchedulesLoading(true);
+    setPtoScheduleStatus("");
+    try {
+      const { data, error } = await supabase
+        .from("hr_pto_schedules")
+        .select("id,employee_id,begin_date,end_date,hours_per_annum,created_at")
+        .eq("employee_id", employeeId)
+        .order("begin_date", { ascending: false });
+
+      if (error) throw error;
+      setPtoSchedules((data || []) as any);
+    } catch (e: any) {
+      setPtoScheduleStatus(e?.message ?? "Failed to load PTO schedules");
+    } finally {
+      setPtoSchedulesLoading(false);
+    }
+  }
+
+  async function savePtoSchedule(employeeId: string) {
+    try {
+      const begin_date = newPtoBegin ? newPtoBegin : null;
+      const end_date = newPtoEnd ? newPtoEnd : null;
+      const hours_per_annum = newPtoHours ? Number(newPtoHours) : null;
+
+      setPtoSavingId("new");
+
+      const { error } = await supabase.from("hr_pto_schedules").insert({
+        employee_id: employeeId,
+        begin_date,
+        end_date,
+        hours_per_annum,
+      });
+      if (error) throw error;
+
+      setNewPtoBegin("");
+      setNewPtoEnd("");
+      setNewPtoHours("");
+      await loadPtoSchedules(employeeId);
+      setPtoScheduleStatus("Saved.");
+      setTimeout(() => setPtoScheduleStatus(""), 1200);
+    } catch (e: any) {
+      setPtoScheduleStatus(e?.message ?? "Failed to save PTO schedule");
+    } finally {
+      setPtoSavingId(null);
+    }
+  }
+
+  async function deletePtoSchedule(employeeId: string, scheduleId: string) {
+    try {
+      const ok = confirm("Delete this PTO schedule entry?");
+      if (!ok) return;
+      const { error } = await supabase.from("hr_pto_schedules").delete().eq("id", scheduleId).eq("employee_id", employeeId);
+      if (error) throw error;
+      await loadPtoSchedules(employeeId);
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to delete PTO schedule");
+    }
+  }
+
+
+// bootstrap: load selects + employee + milestones + attendance
   useEffect(() => {
     (async () => {
       if (!employeeId) return;
@@ -2917,6 +3489,15 @@ async function addMeetingType() {
         setInsuranceWorkbookKey(`ins:${emp.id}:${Date.now()}`);
         setInsuranceSheetDirty(false);
 
+
+        
+
+        if ((emp as any)?.has_pto) {
+          await loadPtoSchedules(employeeId);
+        } else {
+          setPtoSchedules([]);
+        }
+
         // milestones
         await loadEmployeeMilestones(employeeId);
 
@@ -2948,7 +3529,6 @@ async function addMeetingType() {
       const safeRate = Number.isFinite(parsedRate) ? parsedRate : 0;
 
       const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc) : null;
-
       const payload: any = {
         legal_first_name: legalFirst.trim(),
         legal_middle_name: legalMiddle.trim() || null,
@@ -2965,7 +3545,7 @@ async function addMeetingType() {
         job_level_id: jobLevelId || null,
         campus_id: campusId || null,
         insurance_sheet_doc: insuranceDoc,
-      };
+};
 
       const { error } = await supabase.from("hr_employees").update(payload).eq("id", employeeId);
       if (error) throw error;
@@ -3236,17 +3816,35 @@ async function addMeetingType() {
                         </Select>
                       </div>
 
-                      <div>
-                        <FieldLabel>Campus</FieldLabel>
-                        <Select value={campusId} onChange={(e) => setCampusId(e.target.value)}>
-                          <option value="">— Select —</option>
-                          {campuses.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                        </Select>
-                      </div>
+<div className="row" style={{ gap: 10, alignItems: "flex-end" }}>
+  <div style={{ flex: 1 }}>
+    <FieldLabel>Campus</FieldLabel>
+    <Select value={campusId} onChange={(e) => setCampusId(e.target.value)}>
+      <option value="">— Select —</option>
+      {campuses.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.name}
+        </option>
+      ))}
+    </Select>
+  </div>
+
+  <button
+    type="button"
+    className="btn"
+    onClick={() => {
+      // seed edit map
+      const seed: Record<string, string> = {};
+      campuses.forEach((c) => (seed[c.id] = c.name));
+      setCampusEdits(seed);
+      setShowManageCampuses(true);
+    }}
+    title="Manage campuses"
+    style={{ padding: "6px 10px" }}
+  >
+    +
+  </button>
+</div>
 
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                         <div>
@@ -3325,12 +3923,123 @@ async function addMeetingType() {
 
                       <div>
                         <FieldLabel>PTO</FieldLabel>
-                        <Select value={hasPto ? "yes" : "no"} onChange={(e) => setHasPto(e.target.value === "yes")}>
+                        <Select
+                          value={hasPto ? "yes" : "no"}
+                          onChange={(e) => {
+                            const next = e.target.value === "yes";
+                            setHasPto(next);
+                            if (!employeeId) return;
+                            if (next) {
+                              void loadPtoSchedules(employeeId);
+                            } else {
+                              setPtoSchedules([]);
+                            }
+                          }}
+                        >
                           <option value="no">No</option>
                           <option value="yes">Yes</option>
                         </Select>
                       </div>
                     </div>
+
+{hasPto ? (
+                      <>
+                        <div style={{ height: 14 }} />
+                        <div style={{ fontWeight: 900, fontSize: 18 }}>PTO schedule history</div>
+                        <div className="subtle" style={{ marginTop: 2 }}>
+                          Track how many PTO hours per annum the employee accrues over time.
+                        </div>
+
+                        <div style={{ height: 10 }} />
+
+                        <div
+                          style={{
+                            border: "1px solid #e5e7eb",
+                            borderRadius: 14,
+                            padding: 12,
+                            display: "grid",
+                            gap: 10,
+                          }}
+                        >
+                          <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "end" }}>
+                            <div style={{ minWidth: 180 }}>
+                              <FieldLabel>Begin date</FieldLabel>
+                              <TextInput type="date" value={newPtoBegin} onChange={(e) => setNewPtoBegin(e.target.value)} />
+                            </div>
+
+                            <div style={{ minWidth: 180 }}>
+                              <FieldLabel>End date (optional)</FieldLabel>
+                              <TextInput type="date" value={newPtoEnd} onChange={(e) => setNewPtoEnd(e.target.value)} />
+                            </div>
+
+                            <div style={{ minWidth: 160 }}>
+                              <FieldLabel>Hours / annum</FieldLabel>
+                              <TextInput
+                                inputMode="numeric"
+                                value={newPtoHours}
+                                onChange={(e) => setNewPtoHours(e.target.value)}
+                                placeholder="e.g., 40"
+                              />
+                            </div>
+
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => void savePtoSchedule(employeeId)}
+                              disabled={ptoSavingId === "new" || ptoSchedulesLoading}
+                            >
+                              {ptoSavingId === "new" ? "Saving…" : "Add entry"}
+                            </button>
+
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              onClick={() => void loadPtoSchedules(employeeId)}
+                              disabled={ptoSchedulesLoading}
+                            >
+                              Refresh
+                            </button>
+
+                            {ptoScheduleStatus ? <span className="subtle">{ptoScheduleStatus}</span> : null}
+                          </div>
+
+                          {ptoSchedulesLoading ? (
+                            <div className="subtle">Loading PTO schedule…</div>
+                          ) : ptoSchedules.length === 0 ? (
+                            <div className="subtle">(No PTO schedule entries yet.)</div>
+                          ) : (
+                            <div style={{ overflowX: "auto" }}>
+                              <table className="table">
+                                <thead>
+                                  <tr>
+                                    <th style={{ minWidth: 130 }}>Begin</th>
+                                    <th style={{ minWidth: 130 }}>End</th>
+                                    <th style={{ minWidth: 130 }}>Hours / annum</th>
+                                    <th style={{ minWidth: 120 }} />
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {ptoSchedules.map((s) => (
+                                    <tr key={s.id}>
+                                      <td>{s.begin_date || "—"}</td>
+                                      <td>{s.end_date || "—"}</td>
+                                      <td>{s.hours_per_annum ?? "—"}</td>
+                                      <td style={{ textAlign: "right" }}>
+                                        <button type="button" className="btn-ghost" onClick={() => void deletePtoSchedule(employeeId, s.id)}>
+                                          Delete
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    ) : null}
+
+
 
                     {/* Notes live in the Performance Review modal (not the Benefits section) */}
 
@@ -3439,17 +4148,34 @@ async function addMeetingType() {
                     <div style={{ fontWeight: 800, marginBottom: 10 }}>Add milestone/event</div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, alignItems: "end" }}>
-                      <div>
-                        <FieldLabel>Event type</FieldLabel>
-                        <Select value={newEventTypeId} onChange={(e) => setNewEventTypeId(e.target.value)}>
-                          <option value="">— Select —</option>
-                          {eventTypes.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </Select>
-                      </div>
+<div className="row" style={{ gap: 10, alignItems: "flex-end" }}>
+  <div style={{ flex: 1 }}>
+    <FieldLabel>Event type</FieldLabel>
+    <Select value={newEventTypeId} onChange={(e) => setNewEventTypeId(e.target.value)}>
+      <option value="">— Select —</option>
+      {eventTypes.map((t) => (
+        <option key={t.id} value={t.id}>
+          {t.name}
+        </option>
+      ))}
+    </Select>
+  </div>
+
+  <button
+    type="button"
+    className="btn"
+    onClick={() => {
+      const seed: Record<string, string> = {};
+      eventTypes.forEach((t) => (seed[t.id] = t.name));
+      setEventTypeEdits(seed);
+      setShowManageEventTypes(true);
+    }}
+    title="Manage event types"
+    style={{ padding: "6px 10px" }}
+  >
+    +
+  </button>
+</div>
 
                       <div>
                         <FieldLabel>Event date</FieldLabel>
@@ -4404,107 +5130,115 @@ async function addMeetingType() {
                 </div>
               )}
               {activeTab === "documents" && (
-                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
-                  <div className="row-between" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    <div>
-                      <div style={{ fontWeight: 900 }}>Documents</div>
-                      <div className="subtle" style={{ marginTop: 6 }}>
-                        Employee-scoped documents (W-2, insurance, etc.). Upload/delete already work; preview uses the same modal behavior as Meetings.
-                      </div>
-                    </div>
+                            <>
+                              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                                <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+                                  <div style={{ fontWeight: 800, fontSize: 26 }}>Documents</div>
+                                  <div className="subtle">Stored in R2 under hr/employees/</div>
+                                </div>
 
-                    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <label className="btn" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                        <input
-                          type="file"
-                          multiple
-                          style={{ display: "none" }}
-                          onChange={(e) => {
-                            const files = e.currentTarget.files;
-                            void handleUploadEmployeeDocs(files);
-                            // allow re-uploading same file name later
-                            e.currentTarget.value = "";
-                          }}
-                          disabled={uploadingEmployeeDocs}
-                        />
-                        {uploadingEmployeeDocs ? "Uploading..." : "+ Upload documents"}
-                      </label>
+                                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                                  <label className="doc-upload">
+                                    <input
+                                      type="file"
+                                      multiple
+                                      onChange={(e) => void handleUploadEmployeeDocs(e.target.files)}
+                                      disabled={uploadingEmployeeDocs}
+                                    />
+                                    <div className="subtle">Upload one or more files.</div>
+                                  </label>
+                                </div>
 
-                      {employeeDocsStatus ? (
-                        <span className="subtle" style={{ fontWeight: 800 }}>
-                          {employeeDocsStatus}
-                        </span>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div style={{ height: 12 }} />
-
-                  {employeeDocs.length === 0 ? (
-                    <div className="subtle">(No documents yet.)</div>
-                  ) : (
-                    <div style={{ display: "grid", gap: 10 }}>
-                      {employeeDocs.map((doc) => (
-                        <div
-                          key={doc.id}
-                          style={{
-                            border: "1px solid #e5e7eb",
-                            borderRadius: 14,
-                            padding: 12,
-                            background: "white",
-                          }}
-                        >
-                          <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
-                            <div style={{ minWidth: 260 }}>
-                              <div style={{ fontWeight: 900 }}>{doc.name}</div>
-                              <div className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
-                                {doc.mime_type || "—"} • {(doc.size_bytes ?? 0).toLocaleString()} bytes •{" "}
-                                {doc.created_at ? new Date(doc.created_at).toLocaleString() : "—"}
+                                {employeeDocsStatus ? (
+                                  <span className="subtle" style={{ fontWeight: 800 }}>
+                                    {employeeDocsStatus}
+                                  </span>
+                                ) : null}
                               </div>
-                            </div>
 
-                            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                              {/* IMPORTANT: type="button" prevents accidental form submit */}
-                              <button
-                                type="button"
-                                className="btn"
-                                onClick={() => void openEmpPreview(doc)}
-                                style={{ padding: "6px 10px" }}
-                              >
-                                Preview
-                              </button>
+                              <div style={{ height: 12 }} />
 
-                              <button
-                                type="button"
-                                className="btn"
-                                onClick={async () => {
-                                  try {
-                                    const url = await getSignedEmployeeDocDownloadUrl(doc.id, "attachment");
-                                    window.open(url, "_blank", "noopener,noreferrer");
-                                  } catch (e: any) {
-                                    setEmployeeDocsStatus("Download error: " + (e?.message ?? "unknown"));
-                                  }
-                                }}
-                                style={{ padding: "6px 10px" }}
-                              >
-                                Download
-                              </button>
+                              {uploadingEmployeeDocs ? (
+                                <div className="subtle">Loading documents…</div>
+                              ) : employeeDocs.length === 0 ? (
+                                <div className="subtle">(No documents yet.)</div>
+                              ) : (
+                                <div style={{ display: "grid", gap: 10 }}>
+                                  {employeeDocs.map((doc) => (
+                                    <div
+                                      key={doc.id}
+                                      className="row-between"
+                                      style={{
+                                        border: "1px solid #e5e7eb",
+                                        borderRadius: 18,
+                                        padding: 12,
+                                        gap: 12,
+                                        alignItems: "center",
+                                      }}
+                                    >
+                                      <div className="row" style={{ gap: 12, alignItems: "center" }}>
+                                        <div
+                                          style={{
+                                            width: 36,
+                                            height: 36,
+                                            borderRadius: 12,
+                                            background: "#f3f4f6",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "center",
+                                            fontSize: 18,
+                                          }}
+                                        >
+                                          <span aria-hidden>📄</span>
+                                        </div>
+                                        <div>
+                                          <div style={{ fontWeight: 900, fontSize: 22, lineHeight: 1.1 }}>{doc.name}</div>
+                                          <div className="subtle">
+                                            {doc.mime_type || "—"} • {Math.round((doc.size_bytes ?? 0) / 1024)} KB
+                                          </div>
+                                        </div>
+                                      </div>
 
-                              <button
-                                type="button"
-                                className="btn"
-                                onClick={() => void deleteEmployeeDoc(doc.id)}
-                                style={{ padding: "6px 10px" }}
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                                      <div className="row" style={{ gap: 10 }}>
+                                        <IconButton title="Preview" onClick={() => void openEmpPreview(doc)}>
+                                          👁️
+                                        </IconButton>
+
+                                        <IconButton
+                                          title="Download"
+                                          onClick={() => {
+                                            void (async () => {
+                                              try {
+                                                const url = await getSignedEmployeeDocDownloadUrl(doc.id, "attachment");
+                                                window.open(url, "_blank", "noopener,noreferrer");
+                                              } catch (e: any) {
+                                                setEmployeeDocsStatus("Download error: " + (e?.message ?? "unknown"));
+                                              }
+                                            })();
+                                          }}
+                                        >
+                                          ⬇️
+                                        </IconButton>
+
+                                        <IconButton
+                                          title="Delete"
+                                          onClick={() => {
+                                            void (async () => {
+                                              const ok = confirm(`Delete "${doc.name}"? This cannot be undone.`);
+                                              if (!ok) return;
+                                              await deleteEmployeeDoc(doc.id);
+                                            })();
+                                          }}
+                                        >
+                                          🗑️
+                                        </IconButton>
+                                      </div>
+
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </>
               )}
               {/* =========================
     EMPLOYEE DOCUMENT PREVIEW MODAL
@@ -4653,6 +5387,207 @@ async function addMeetingType() {
               ) : null}
 
 
+
+            
+{/* =========================
+    MANAGE CAMPUSES MODAL
+========================= */}
+{showManageCampuses ? (
+  <div
+    role="dialog"
+    aria-modal="true"
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.55)",
+      zIndex: 250,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 14,
+    }}
+    onMouseDown={(e) => {
+      if (e.target === e.currentTarget) setShowManageCampuses(false);
+    }}
+  >
+    <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
+      <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Campuses</div>
+          <div className="subtle" style={{ marginTop: 2 }}>
+            Add, rename, or remove campuses.
+          </div>
+        </div>
+        <button className="btn" type="button" onClick={() => setShowManageCampuses(false)}>
+          ✕
+        </button>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ maxHeight: 360, overflow: "auto" }}>
+          {campuses.length === 0 ? (
+            <div style={{ padding: 12 }} className="subtle">
+              No campuses yet.
+            </div>
+          ) : (
+            campuses.map((c) => (
+              <div
+                key={c.id}
+                className="row-between"
+                style={{
+                  padding: 10,
+                  borderTop: "1px solid #f3f4f6",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <TextInput
+                    value={campusEdits[c.id] ?? c.name}
+                    onChange={(e) => setCampusEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                  />
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <button className="btn" type="button" disabled={campusBusy} onClick={() => void saveCampusName(c.id)}>
+                    Save
+                  </button>
+                  <button className="btn" type="button" disabled={campusBusy} onClick={() => void deleteCampus(c.id)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Add campus</div>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <TextInput
+            value={newCampusName}
+            onChange={(e) => setNewCampusName(e.target.value)}
+            placeholder="Campus name"
+            style={{ flex: 1, minWidth: 240 }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addCampus();
+              }
+            }}
+          />
+          <button className="btn btn-primary" type="button" disabled={campusBusy} onClick={() => void addCampus()}>
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+) : null}
+
+{/* =========================
+    MANAGE EVENT TYPES MODAL
+========================= */}
+{showManageEventTypes ? (
+  <div
+    role="dialog"
+    aria-modal="true"
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.55)",
+      zIndex: 250,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 14,
+    }}
+    onMouseDown={(e) => {
+      if (e.target === e.currentTarget) setShowManageEventTypes(false);
+    }}
+  >
+    <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
+      <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Event Types</div>
+          <div className="subtle" style={{ marginTop: 2 }}>
+            Add, rename, or remove event types.
+          </div>
+        </div>
+        <button className="btn" type="button" onClick={() => setShowManageEventTypes(false)}>
+          ✕
+        </button>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ maxHeight: 360, overflow: "auto" }}>
+          {eventTypes.length === 0 ? (
+            <div style={{ padding: 12 }} className="subtle">
+              No event types yet.
+            </div>
+          ) : (
+            eventTypes.map((t) => (
+              <div
+                key={t.id}
+                className="row-between"
+                style={{
+                  padding: 10,
+                  borderTop: "1px solid #f3f4f6",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <TextInput
+                    value={eventTypeEdits[t.id] ?? t.name}
+                    onChange={(e) => setEventTypeEdits((m) => ({ ...m, [t.id]: e.target.value }))}
+                  />
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void saveEventTypeName(t.id)}>
+                    Save
+                  </button>
+                  <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void deleteEventType(t.id)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Add event type</div>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <TextInput
+            value={newEventTypeName}
+            onChange={(e) => setNewEventTypeName(e.target.value)}
+            placeholder="Event type name"
+            style={{ flex: 1, minWidth: 240 }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void addEventType();
+              }
+            }}
+          />
+          <button className="btn btn-primary" type="button" disabled={eventTypeBusy} onClick={() => void addEventType()}>
+            Add
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+) : null}
 
             </>
           )}
