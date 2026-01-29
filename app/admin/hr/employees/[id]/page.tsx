@@ -5385,210 +5385,204 @@ async function addMeetingType() {
                   </div>
                 </div>
               ) : null}
+              {/* =========================
+                  MANAGE CAMPUSES MODAL
+              ========================= */}
+              {showManageCampuses ? (
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.55)",
+                    zIndex: 250,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 14,
+                  }}
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) setShowManageCampuses(false);
+                  }}
+                >
+                  <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
+                    <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Campuses</div>
+                        <div className="subtle" style={{ marginTop: 2 }}>
+                          Add, rename, or remove campuses.
+                        </div>
+                      </div>
+                      <button className="btn" type="button" onClick={() => setShowManageCampuses(false)}>
+                        ✕
+                      </button>
+                    </div>
 
+                    <div style={{ height: 12 }} />
 
+                    <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+                      <div style={{ maxHeight: 360, overflow: "auto" }}>
+                        {campuses.length === 0 ? (
+                          <div style={{ padding: 12 }} className="subtle">
+                            No campuses yet.
+                          </div>
+                        ) : (
+                          campuses.map((c) => (
+                            <div
+                              key={c.id}
+                              className="row-between"
+                              style={{
+                                padding: 10,
+                                borderTop: "1px solid #f3f4f6",
+                                alignItems: "center",
+                                gap: 10,
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 220 }}>
+                                <TextInput
+                                  value={campusEdits[c.id] ?? c.name}
+                                  onChange={(e) => setCampusEdits((m) => ({ ...m, [c.id]: e.target.value }))}
+                                />
+                              </div>
+                              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                                <button className="btn" type="button" disabled={campusBusy} onClick={() => void saveCampusName(c.id)}>
+                                  Save
+                                </button>
+                                <button className="btn" type="button" disabled={campusBusy} onClick={() => void deleteCampus(c.id)}>
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
 
-            
-{/* =========================
-    MANAGE CAMPUSES MODAL
-========================= */}
-{showManageCampuses ? (
-  <div
-    role="dialog"
-    aria-modal="true"
-    style={{
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.55)",
-      zIndex: 250,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 14,
-    }}
-    onMouseDown={(e) => {
-      if (e.target === e.currentTarget) setShowManageCampuses(false);
-    }}
-  >
-    <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
-      <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
-        <div>
-          <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Campuses</div>
-          <div className="subtle" style={{ marginTop: 2 }}>
-            Add, rename, or remove campuses.
-          </div>
-        </div>
-        <button className="btn" type="button" onClick={() => setShowManageCampuses(false)}>
-          ✕
-        </button>
-      </div>
+                    <div style={{ height: 12 }} />
 
-      <div style={{ height: 12 }} />
-
-      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ maxHeight: 360, overflow: "auto" }}>
-          {campuses.length === 0 ? (
-            <div style={{ padding: 12 }} className="subtle">
-              No campuses yet.
-            </div>
-          ) : (
-            campuses.map((c) => (
-              <div
-                key={c.id}
-                className="row-between"
-                style={{
-                  padding: 10,
-                  borderTop: "1px solid #f3f4f6",
-                  alignItems: "center",
-                  gap: 10,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <TextInput
-                    value={campusEdits[c.id] ?? c.name}
-                    onChange={(e) => setCampusEdits((m) => ({ ...m, [c.id]: e.target.value }))}
-                  />
+                    <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>Add campus</div>
+                      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                        <TextInput
+                          value={newCampusName}
+                          onChange={(e) => setNewCampusName(e.target.value)}
+                          placeholder="Campus name"
+                          style={{ flex: 1, minWidth: 240 }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void addCampus();
+                            }
+                          }}
+                        />
+                        <button className="btn btn-primary" type="button" disabled={campusBusy} onClick={() => void addCampus()}>
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                  <button className="btn" type="button" disabled={campusBusy} onClick={() => void saveCampusName(c.id)}>
-                    Save
-                  </button>
-                  <button className="btn" type="button" disabled={campusBusy} onClick={() => void deleteCampus(c.id)}>
-                    Delete
-                  </button>
+              ) : null}
+              {/* =========================
+                  MANAGE EVENT TYPES MODAL
+              ========================= */}
+              {showManageEventTypes ? (
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.55)",
+                    zIndex: 250,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 14,
+                  }}
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) setShowManageEventTypes(false);
+                  }}
+                >
+                  <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
+                    <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Event Types</div>
+                        <div className="subtle" style={{ marginTop: 2 }}>
+                          Add, rename, or remove event types.
+                        </div>
+                      </div>
+                      <button className="btn" type="button" onClick={() => setShowManageEventTypes(false)}>
+                        ✕
+                      </button>
+                    </div>
+
+                    <div style={{ height: 12 }} />
+
+                    <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
+                      <div style={{ maxHeight: 360, overflow: "auto" }}>
+                        {eventTypes.length === 0 ? (
+                          <div style={{ padding: 12 }} className="subtle">
+                            No event types yet.
+                          </div>
+                        ) : (
+                          eventTypes.map((t) => (
+                            <div
+                              key={t.id}
+                              className="row-between"
+                              style={{
+                                padding: 10,
+                                borderTop: "1px solid #f3f4f6",
+                                alignItems: "center",
+                                gap: 10,
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 220 }}>
+                                <TextInput
+                                  value={eventTypeEdits[t.id] ?? t.name}
+                                  onChange={(e) => setEventTypeEdits((m) => ({ ...m, [t.id]: e.target.value }))}
+                                />
+                              </div>
+                              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                                <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void saveEventTypeName(t.id)}>
+                                  Save
+                                </button>
+                                <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void deleteEventType(t.id)}>
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ height: 12 }} />
+
+                    <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>Add event type</div>
+                      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                        <TextInput
+                          value={newEventTypeName}
+                          onChange={(e) => setNewEventTypeName(e.target.value)}
+                          placeholder="Event type name"
+                          style={{ flex: 1, minWidth: 240 }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void addEventType();
+                            }
+                          }}
+                        />
+                        <button className="btn btn-primary" type="button" disabled={eventTypeBusy} onClick={() => void addEventType()}>
+                          Add
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>Add campus</div>
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <TextInput
-            value={newCampusName}
-            onChange={(e) => setNewCampusName(e.target.value)}
-            placeholder="Campus name"
-            style={{ flex: 1, minWidth: 240 }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void addCampus();
-              }
-            }}
-          />
-          <button className="btn btn-primary" type="button" disabled={campusBusy} onClick={() => void addCampus()}>
-            Add
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-) : null}
-
-{/* =========================
-    MANAGE EVENT TYPES MODAL
-========================= */}
-{showManageEventTypes ? (
-  <div
-    role="dialog"
-    aria-modal="true"
-    style={{
-      position: "fixed",
-      inset: 0,
-      background: "rgba(0,0,0,0.55)",
-      zIndex: 250,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 14,
-    }}
-    onMouseDown={(e) => {
-      if (e.target === e.currentTarget) setShowManageEventTypes(false);
-    }}
-  >
-    <div className="card" style={{ width: "min(900px, 100%)", padding: 16, borderRadius: 16 }}>
-      <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
-        <div>
-          <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Event Types</div>
-          <div className="subtle" style={{ marginTop: 2 }}>
-            Add, rename, or remove event types.
-          </div>
-        </div>
-        <button className="btn" type="button" onClick={() => setShowManageEventTypes(false)}>
-          ✕
-        </button>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div style={{ border: "1px solid #e5e7eb", borderRadius: 14, overflow: "hidden" }}>
-        <div style={{ maxHeight: 360, overflow: "auto" }}>
-          {eventTypes.length === 0 ? (
-            <div style={{ padding: 12 }} className="subtle">
-              No event types yet.
-            </div>
-          ) : (
-            eventTypes.map((t) => (
-              <div
-                key={t.id}
-                className="row-between"
-                style={{
-                  padding: 10,
-                  borderTop: "1px solid #f3f4f6",
-                  alignItems: "center",
-                  gap: 10,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <TextInput
-                    value={eventTypeEdits[t.id] ?? t.name}
-                    onChange={(e) => setEventTypeEdits((m) => ({ ...m, [t.id]: e.target.value }))}
-                  />
-                </div>
-                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                  <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void saveEventTypeName(t.id)}>
-                    Save
-                  </button>
-                  <button className="btn" type="button" disabled={eventTypeBusy} onClick={() => void deleteEventType(t.id)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div style={{ height: 12 }} />
-
-      <div style={{ border: "1px dashed #e5e7eb", borderRadius: 14, padding: 12 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>Add event type</div>
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <TextInput
-            value={newEventTypeName}
-            onChange={(e) => setNewEventTypeName(e.target.value)}
-            placeholder="Event type name"
-            style={{ flex: 1, minWidth: 240 }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void addEventType();
-              }
-            }}
-          />
-          <button className="btn btn-primary" type="button" disabled={eventTypeBusy} onClick={() => void addEventType()}>
-            Add
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-) : null}
-
+              ) : null}
             </>
           )}
         </div>
