@@ -23,6 +23,7 @@ type UserProfileRow = {
   email: string | null;
   role: UserRole;
   is_active: boolean;
+  username: string | null;
 };
 
 type EmployeeRow = {
@@ -381,7 +382,7 @@ export default function HrPage() {
 
         const profRes = await supabase
           .from("user_profiles")
-          .select("id,full_name,email,role,is_active")
+          .select("id,full_name,email,role,is_active,username")
           .eq("id", userId)
           .single();
 
@@ -469,35 +470,86 @@ export default function HrPage() {
     setMeetingStatus("Loading meetings...");
     try {
       // Load meetings via attendee table so we capture any meeting where supervisor is an attendee.
+      const nameHints: string[] = [];
+      const profName = (profile?.full_name ?? "").trim();
+      if (profName) nameHints.push(profName);
+      const uname = (profile as any)?.username ? String((profile as any).username) : "";
+      if (uname) nameHints.push(uname);
+      const legalName =
+        [employee?.legal_first_name, employee?.legal_last_name].filter(Boolean).join(" ").trim();
+      if (legalName) nameHints.push(legalName);
+      for (const nn of (employee?.nicknames ?? [])) {
+        const n = String(nn ?? "").trim();
+        if (!n) continue;
+        // "Nickname Lastname" and just nickname
+        const last = (employee?.legal_last_name ?? "").trim();
+        nameHints.push(last ? `${n} ${last}` : n);
+        nameHints.push(n);
+      }
+
+      // Primary match is attendee_employee_id. We also include a fallback match on attendee_name
+      // for older rows where attendee_employee_id was left null.
+      const orParts: string[] = [`attendee_employee_id.eq.${attendeeEmpId}`];
+      for (const raw of nameHints) {
+        const safe = raw.replace(/[,%]/g, " ").replace(/\s+/g, " ").trim();
+        if (!safe) continue;
+        orParts.push(`attendee_name.ilike.%${safe}%`);
+      }
+
       const ares = await supabase
         .from("hr_meeting_attendees")
-        .select(
-          `
-            meeting_id,
-            meeting:hr_meetings(
-              id,
-              employee_id,
-              meeting_type_id,
-              meeting_at,
-              notes,
-              created_at,
-              updated_at,
-              type:hr_meeting_types(id,name),
-              employee:hr_employees(id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active)
-            )
-          `
-        )
-        .eq("attendee_employee_id", attendeeEmpId)
+        .select("meeting_id, created_at, attendee_name, attendee_employee_id")
+        .or(orParts.join(","))
         .order("created_at", { ascending: false });
 
       if (ares.error) throw ares.error;
 
-      const joined = (ares.data ?? []) as any[];
-      const list = joined
-        .map((row) => {
-          const m = asSingle<any>(row.meeting);
+      const attendeeRows = (ares.data ?? []) as any[];
+      const meetingIds = Array.from(
+        new Set(
+          attendeeRows
+            .map((r) => String(r.meeting_id ?? "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      if (meetingIds.length === 0) {
+        setMeetings([]);
+        setAttendeesByMeeting(new Map());
+        setDocsByMeeting(new Map());
+        setMeetingStatus("No meetings found for you yet.");
+        return;
+      }
+
+      // Now load the meeting objects (this can be RLS-blocked even if attendee rows are visible).
+      const mres = await supabase
+        .from("hr_meetings")
+        .select(
+          `
+            id,
+            employee_id,
+            meeting_type_id,
+            meeting_at,
+            notes,
+            created_at,
+            updated_at,
+            type:hr_meeting_types(id,name),
+            owner:hr_employees!hr_meetings_employee_id_fkey(
+              id,
+              legal_first_name,
+              legal_middle_name,
+              legal_last_name
+            )
+          `
+        )
+        .in("id", meetingIds);
+
+      if (mres.error) throw mres.error;
+
+      const list = ((mres.data ?? []) as any[])
+        .map((m) => {
           if (!m?.id) return null;
-          const owner = asSingle<any>(m.employee) as MeetingOwnerLite | null;
+          const owner = asSingle<MeetingOwnerLite>(m.owner);
           const type = asSingle<any>(m.type) as HrMeetingType | null;
           const mm: HrMeeting & { owner: MeetingOwnerLite | null } = {
             id: m.id,
@@ -514,19 +566,21 @@ export default function HrPage() {
         })
         .filter(Boolean) as (HrMeeting & { owner: MeetingOwnerLite | null })[];
 
-      // De-dupe meetings (in case of multiple attendee rows, though unique index should prevent)
-      const seen = new Set<string>();
-      const unique = list.filter((m) => {
-        if (seen.has(m.id)) return false;
-        seen.add(m.id);
-        return true;
-      });
+      if (list.length === 0) {
+        setMeetings([]);
+        setAttendeesByMeeting(new Map());
+        setDocsByMeeting(new Map());
+        setMeetingStatus(
+          "You have attendee entries, but meetings couldn't be loaded (likely RLS). Ask an admin to allow supervisors to SELECT hr_meetings where they are an attendee."
+        );
+        return;
+      }
 
-      unique.sort((a, b) => new Date(b.meeting_at).getTime() - new Date(a.meeting_at).getTime());
+      list.sort((a, b) => new Date(b.meeting_at).getTime() - new Date(a.meeting_at).getTime());
 
-      setMeetings(unique);
+      setMeetings(list);
 
-      const ids = unique.map((m) => m.id);
+      const ids = list.map((m) => m.id);
       if (ids.length === 0) {
         setAttendeesByMeeting(new Map());
         setDocsByMeeting(new Map());
@@ -567,7 +621,7 @@ export default function HrPage() {
     } catch (e: any) {
       setMeetingStatus("Error loading meetings: " + (e?.message ?? "unknown"));
     }
-  }, []);
+  }, [employee, profile]);
 
   async function updateMeeting(meetingId: string, patch: Partial<Pick<HrMeeting, "meeting_type_id" | "meeting_at" | "notes">>) {
     setMeetingStatus("Saving...");

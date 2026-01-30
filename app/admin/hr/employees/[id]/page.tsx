@@ -1502,10 +1502,10 @@ function EmployeePerformanceReviewsTab({
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
-            + Create annual evaluation
+            + Create Annual Evaluation
           </button>
           <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
-            + Create monthly evaluation
+            + Create Monthly Scorecard
           </button>
 
           <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>

@@ -686,6 +686,13 @@ export default function Home() {
 
   // Navigation
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
+  // Search (global: ignores hierarchy)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchFolders, setSearchFolders] = useState<Folder[]>([]);
+  const [searchFiles, setSearchFiles] = useState<FileRow[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string>("");
+
 
   // UI
   const [newFolderName, setNewFolderName] = useState("");
@@ -754,14 +761,18 @@ export default function Home() {
   const isAdminOrSupervisor = isAdmin || isSupervisor;
   const isTeacherAccount = !!sessionEmail && !isAdminOrSupervisor;
 
-  // Capability matrix (per your requirements)
-  const canShareResources = isAdminOrSupervisor; // admin + supervisor
-  const canCreateFolders = isAdmin; // admin only
-  const canUploadFiles = isAdmin; // admin only
-  const canDownloadFiles = isAdmin; // admin only
-  const canEditItems = isAdmin; // admin only
-  const canDeleteItems = isAdmin; // admin only
-  const canRevokePermissions = isAdmin; // admin only (supervisor can share but not revoke)
+  // Capability matrix
+  // - Teachers: preview only for items they can access (via RLS/permissions)
+  // - Supervisors: full access (same as admin)
+  // - Admins: full access
+  const canShareResources = isAdminOrSupervisor;
+  const canCreateFolders = isAdminOrSupervisor;
+  const canUploadFiles = isAdminOrSupervisor;
+  const canDownloadFiles = isAdminOrSupervisor;
+  const canEditItems = isAdminOrSupervisor;
+  const canDeleteItems = isAdminOrSupervisor;
+  const canRevokePermissions = isAdminOrSupervisor;
+
 
   const teacherById = useMemo(() => {
     const map = new Map<string, TeacherProfile>();
@@ -879,6 +890,41 @@ export default function Home() {
       setFiles(f);
     } catch (e: any) {
       setStatus("Error loading files: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function runSearch(raw: string) {
+    const q = raw.trim();
+    if (!q) {
+      setSearchFolders([]);
+      setSearchFiles([]);
+      setSearchError("");
+      setSearchLoading(false);
+      return;
+    }
+
+    setSearchLoading(true);
+    setSearchError("");
+
+    try {
+      const like = `%${q}%`;
+
+      const [foldersRes, filesRes] = await Promise.all([
+        supabase.from("folders").select("*").ilike("name", like).order("name", { ascending: true }),
+        supabase.from("files").select("*").ilike("name", like).order("name", { ascending: true }),
+      ]);
+
+      if (foldersRes.error) throw foldersRes.error;
+      if (filesRes.error) throw filesRes.error;
+
+      setSearchFolders((foldersRes.data ?? []) as Folder[]);
+      setSearchFiles((filesRes.data ?? []) as FileRow[]);
+    } catch (e: any) {
+      setSearchError(e?.message ?? "Search error");
+      setSearchFolders([]);
+      setSearchFiles([]);
+    } finally {
+      setSearchLoading(false);
     }
   }
 
@@ -1981,6 +2027,26 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolderId, isAdminOrSupervisor, shareModalOpen]);
 
+  // Debounced global search (folders + files)
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchFolders([]);
+      setSearchFiles([]);
+      setSearchError("");
+      setSearchLoading(false);
+      return;
+    }
+
+    const t = setTimeout(() => {
+      void runSearch(q);
+    }, 250);
+
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, myProfile?.id, isAdminOrSupervisor]);
+
+
   const folderById = useMemo(() => {
     const map = new Map<string, Folder>();
     for (const f of folders) map.set(f.id, f);
@@ -2013,7 +2079,12 @@ export default function Home() {
         : folderById.get(currentFolderId)!.name
       : "Folder";
 
-  const itemsEmpty = childFolders.length === 0 && files.length === 0;
+  const searchActive = searchQuery.trim().length > 0;
+
+  const displayedFolders = searchActive ? searchFolders : childFolders;
+  const displayedFiles = searchActive ? searchFiles : files;
+
+  const itemsEmpty = displayedFolders.length === 0 && displayedFiles.length === 0;
 
   const folderMoveOptions = useMemo(() => {
     return folders.slice().sort((a, b) => a.name.localeCompare(b.name));
@@ -2430,22 +2501,50 @@ export default function Home() {
 
             <div className="stack" style={{ gap: 10 }}>
               <div className="row-between">
-                <div>
+                <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 950, fontSize: 16 }}>Items</div>
+
+                  <div style={{ minWidth: 260, flex: 1 }}>
+                    <input
+                      className="input"
+                      placeholder="Search folders & files…"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setSearchQuery("");
+                      }}
+                    />
+                  </div>
+
+                  {searchQuery.trim() ? (
+                    <button className="btn" type="button" onClick={() => setSearchQuery("")} style={{ padding: "6px 10px" }}>
+                      Clear
+                    </button>
+                  ) : null}
                 </div>
 
-                {currentFolderId && canShareResources ? (
+                {currentFolderId && canShareResources && !searchActive ? (
                   <button className="btn" onClick={() => openShareModalForFolder(currentFolderId, `Share folder: ${currentFolderName}`)}>
                     Share this folder
                   </button>
                 ) : null}
               </div>
 
+              {searchActive ? (
+                <div className="subtle" style={{ marginTop: -2 }}>
+                  {searchLoading
+                    ? "Searching…"
+                    : searchError
+                    ? `Search error: ${searchError}`
+                    : `${(searchFolders?.length ?? 0) + (searchFiles?.length ?? 0)} result(s)`}
+                </div>
+              ) : null}
+
               {itemsEmpty ? (
-                <div className="subtle">(No folders or files here)</div>
+                <div className="subtle">{searchActive ? "(No matching folders or files.)" : "(No folders or files here)"}</div>
               ) : (
                 <div className="stack" style={{ gap: 8 }}>
-                  {childFolders.map((folder) => (
+                  {displayedFolders.map((folder) => (
                     <div
                       key={folder.id}
                       className="row-between"
@@ -2458,15 +2557,18 @@ export default function Home() {
                     >
                       <button
                         className="link"
-                        onClick={() => setCurrentFolderId(folder.id)}
+                        onClick={() => {
+                          if (searchActive) setSearchQuery("");
+                          setCurrentFolderId(folder.id);
+                        }}
                         style={{ fontWeight: 850, textAlign: "left" }}
                         title="Open folder"
                       >
                         📁 {folder.name}
                       </button>
 
-                      {/* Admin: full actions; Supervisor: share only; Teacher: no folder actions */}
-                      {isAdmin ? (
+                      {/* Admin/Supervisor: full actions; Teacher: no folder actions */}
+                      {isAdminOrSupervisor ? (
                         <div className="row" style={{ gap: 8 }}>
                           <IconButton title="Rename / move folder" onClick={() => openEditModalForFolder(folder)}>
                             ⚙️
@@ -2484,17 +2586,11 @@ export default function Home() {
                             🗑️
                           </IconButton>
                         </div>
-                      ) : isSupervisor ? (
-                        <div className="row" style={{ gap: 8 }}>
-                          <IconButton title="Share folder" onClick={() => openShareModalForFolder(folder.id, `Share folder: ${folder.name}`)}>
-                            🔗
-                          </IconButton>
-                        </div>
                       ) : null}
                     </div>
                   ))}
 
-                  {files.map((f) => {
+                  {displayedFiles.map((f) => {
                     const isLink = isLinkRow(f);
                     const linkUrl = isLink ? linkUrlFromRow(f) : "";
                     const mt = (f as any).mime_type ?? "";
@@ -2537,7 +2633,7 @@ export default function Home() {
                           </div>
                         </div>
 
-                        {/* Teacher: open/preview only. Supervisor: open/preview + share. Admin: open/preview + edit + download + share + delete */}
+                        {/* Teacher: open/preview only. Admin/Supervisor: full actions */}
                         {isTeacherAccount ? (
                           <div className="row" style={{ gap: 8 }}>
                             {isLink ? (
@@ -2549,27 +2645,6 @@ export default function Home() {
                                 👁️
                               </IconButton>
                             )}
-                          </div>
-                        ) : isSupervisor ? (
-                          <div className="row" style={{ gap: 8 }}>
-                            {isLink ? (
-                              linkUrl ? (
-                                <a href={linkUrl} target="_blank" rel="noopener noreferrer" title="Open link" style={{ textDecoration: "none" }}>
-                                  <IconButton title="Open link">↗️</IconButton>
-                                </a>
-                              ) : (
-                                <IconButton title="Link missing URL" disabled>
-                                  ↗️
-                                </IconButton>
-                              )
-                            ) : (
-                              <IconButton title="Preview" onClick={() => openPreview(f)}>
-                                👁️
-                              </IconButton>
-                            )}
-                            <IconButton title="Share file" onClick={() => openShareModalForFile(f)}>
-                              🔗
-                            </IconButton>
                           </div>
                         ) : (
                           <div className="row" style={{ gap: 8 }}>
@@ -2602,7 +2677,7 @@ export default function Home() {
                               🗑️
                             </IconButton>
                           </div>
-                        )}
+	                        )}
                       </div>
                     );
                   })}
