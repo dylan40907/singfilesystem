@@ -4453,10 +4453,6 @@ async function addMeetingType() {
                     </div>
                   </div>
 
-                  <div className="subtle" style={{ marginTop: 6 }}>
-                    Meetings are stored per employee. Documents are stored in R2 under <code>meetings/</code> (not visible in the main file system).
-                  </div>
-
                   <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
                     {meetings.length === 0 ? (
                       <div className="subtle">(No meetings yet.)</div>

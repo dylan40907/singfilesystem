@@ -392,11 +392,6 @@ export default function HrSettingsPage() {
           </div>
         )}
       </div>
-
-      {/* Legacy note */}
-      <div className="subtle" style={{ marginTop: 12 }}>
-        Note: <code>hr_settings.admin_email</code> is now legacy and no longer used for sending.
-      </div>
     </div>
   );
 }

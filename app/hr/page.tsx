@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import "@fortune-sheet/react/dist/index.css";
@@ -73,7 +73,7 @@ type HrMeetingDocument = {
   id: string;
   meeting_id: string;
   name: string;
-  mime: string | null;
+  mime_type: string | null;
   size_bytes: number | null;
   object_key: string;
   created_at: string;
@@ -86,6 +86,7 @@ type EmployeeLite = {
   legal_last_name: string;
   nicknames: string[];
   is_active: boolean;
+  attendance_points?: number | null;
 };
 
 type MeetingOwnerLite = Pick<EmployeeLite, "id" | "legal_first_name" | "legal_middle_name" | "legal_last_name" | "nicknames" | "is_active">;
@@ -319,7 +320,10 @@ export default function HrPage() {
 
   const isSupervisor = profile?.role === "supervisor";
 
-  const [activeTab, setActiveTab] = useState<"attendance" | "reviews" | "meetings">("attendance");
+  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews";
+  const [activeTab, setActiveTab] = useState<HrTab>("attendance");
+
+
 
   // Attendance
   const [attendanceRows, setAttendanceRows] = useState<EmployeeAttendanceRow[]>([]);
@@ -327,7 +331,7 @@ export default function HrPage() {
 
   // Reviews: keep as simple placeholder (existing system can be swapped in later)
   // If you already have a dedicated reviews tab component, you can drop it in here.
-  const [reviewsNote] = useState("Performance reviews are available in this portal. (UI omitted here.)");
+  const [reviewsNote] = useState("Performance reviews are available in this portal.");
 
   // Meetings (supervisor-only): meetings where current employee is an attendee
   const [meetingTypes, setMeetingTypes] = useState<HrMeetingType[]>([]);
@@ -335,9 +339,30 @@ export default function HrPage() {
 
   const [allEmployees, setAllEmployees] = useState<EmployeeLite[]>([]);
 
+  // Supervisor "Employee Reviews" picker state (separate from the meeting attendee picker)
+  const [reviewEmployeeId, setReviewEmployeeId] = useState<string>("");
+  const [reviewEmployeeDropdownOpen, setReviewEmployeeDropdownOpen] = useState<boolean>(false);
+  const [reviewEmployeeSearch, setReviewEmployeeSearch] = useState<string>("");
+
+  const reviewEmployee = useMemo(() => {
+    if (!reviewEmployeeId) return null;
+    return allEmployees.find((e) => e.id === reviewEmployeeId) ?? null;
+  }, [allEmployees, reviewEmployeeId]);
+
+  const reviewEmployeeFiltered = useMemo(() => {
+    const q = reviewEmployeeSearch.trim().toLowerCase();
+    if (!q) return allEmployees;
+    return allEmployees.filter((e) => {
+      const name = formatEmployeeName(e).toLowerCase();
+      const nick = (e.nicknames || []).join(" ").toLowerCase();
+      return name.includes(q) || nick.includes(q);
+    });
+  }, [allEmployees, reviewEmployeeSearch]);
+
   const [meetings, setMeetings] = useState<(HrMeeting & { owner: MeetingOwnerLite | null })[]>([]);
   const [attendeesByMeeting, setAttendeesByMeeting] = useState<Map<string, HrMeetingAttendee[]>>(new Map());
-  const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument[]>>(new Map());
+    const [attendeeSearchByMeeting, setAttendeeSearchByMeeting] = useState<Record<string, string>>({});
+const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument[]>>(new Map());
 
   const [meetingStatus, setMeetingStatus] = useState<string>("");
 
@@ -549,7 +574,7 @@ export default function HrPage() {
       const list = ((mres.data ?? []) as any[])
         .map((m) => {
           if (!m?.id) return null;
-          const owner = asSingle<MeetingOwnerLite>(m.owner);
+          const owner = asSingle<any>(m.owner) as MeetingOwnerLite | null;
           const type = asSingle<any>(m.type) as HrMeetingType | null;
           const mm: HrMeeting & { owner: MeetingOwnerLite | null } = {
             id: m.id,
@@ -788,7 +813,7 @@ export default function HrPage() {
           .insert({
             meeting_id: meetingId,
             name: file.name,
-            mime: file.type || "application/octet-stream",
+            mime_type: file.type || "application/octet-stream",
             size_bytes: file.size,
             object_key: presigned.objectKey,
           })
@@ -1012,6 +1037,12 @@ export default function HrPage() {
                 Meetings
               </TabButton>
             ) : null}
+            {isSupervisor ? (
+              <TabButton active={activeTab === "employeeReviews"} onClick={() => setActiveTab("employeeReviews")}>
+                Employee Reviews
+              </TabButton>
+            ) : null}
+
 
             {!isSupervisor ? (
               <div className="subtle" style={{ marginTop: 6, fontSize: 12 }}>
@@ -1076,8 +1107,108 @@ export default function HrPage() {
                 <div className="subtle" style={{ marginTop: 6 }}>
                   {reviewsNote}
                 </div>
-                <div className="subtle" style={{ marginTop: 10, fontSize: 12 }}>
-                  If you want the full review editor UI here (including question editors), we can copy the existing admin page component into this portal, but keep it read-only.
+              </div>
+            ) : null}
+
+            {activeTab === "employeeReviews" && isSupervisor ? (
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                <div style={{ fontWeight: 950, fontSize: 18 }}>Employee Reviews</div>
+                <div className="subtle" style={{ marginTop: 6 }}>
+                  Select an employee to view and edit their monthly scorecards and annual evaluations.
+                </div>
+
+                <div style={{ marginTop: 14, maxWidth: 520 }}>
+                  <div style={{ fontWeight: 850, marginBottom: 6 }}>Employee</div>
+
+                  <div style={{ position: "relative" }}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => setReviewEmployeeDropdownOpen((v: boolean) => !v)}
+                      style={{ width: "100%", justifyContent: "space-between" }}
+                    >
+                      <span>{reviewEmployee ? formatEmployeeName(reviewEmployee) : "Select…"}</span>
+                      <span className="subtle">▾</span>
+                    </button>
+
+                    {reviewEmployeeDropdownOpen ? (
+                      <div
+                        style={{
+                          position: "absolute",
+                          zIndex: 60,
+                          top: "calc(100% + 6px)",
+                          left: 0,
+                          right: 0,
+                          background: "white",
+                          border: "1px solid #e5e7eb",
+                          borderRadius: 12,
+                          boxShadow: "0 12px 32px rgba(0,0,0,0.10)",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
+                          <input
+                            value={reviewEmployeeSearch}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setReviewEmployeeSearch(e.target.value)}
+                            placeholder="Search employees…"
+                            style={{ width: "100%", padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 10 }}
+                          />
+                        </div>
+
+                        <div style={{ maxHeight: 260, overflow: "auto" }}>
+                          {reviewEmployeeFiltered.length === 0 ? (
+                            <div className="subtle" style={{ padding: 12 }}>
+                              No results
+                            </div>
+                          ) : (
+                            reviewEmployeeFiltered.map((e: EmployeeLite) => {
+                              const isSelected = e.id === reviewEmployeeId;
+                              return (
+                                <button
+                                  key={e.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setReviewEmployeeId(e.id);
+                                    setReviewEmployeeDropdownOpen(false);
+                                    setReviewEmployeeSearch("");
+                                  }}
+                                  style={{
+                                    width: "100%",
+                                    textAlign: "left",
+                                    padding: "10px 12px",
+                                    background: isSelected ? "#fdf2f8" : "white",
+                                    border: "none",
+                                    borderBottom: "1px solid #f1f5f9",
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 850 }}>{formatEmployeeName(e)}</div>
+                                  {e.nicknames?.length ? (
+                                    <div className="subtle" style={{ fontSize: 12, marginTop: 2 }}>
+                                      {e.nicknames.join(", ")}
+                                    </div>
+                                  ) : null}
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 16 }}>
+                  {reviewEmployeeId ? (
+                    <EmployeePerformanceReviewsTab
+                      employeeId={reviewEmployeeId}
+                      attendancePoints={reviewEmployee?.attendance_points ?? 3}
+                    />
+                  ) : (
+                    <div className="subtle" style={{ marginTop: 8 }}>
+                      Choose an employee above to load their reviews.
+                    </div>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -1178,22 +1309,115 @@ export default function HrPage() {
                                 Add/remove attendees. (Meeting owner does not have to be an attendee.)
                               </div>
 
-                              <div style={{ marginTop: 10 }} className="row" >
-                                <div style={{ minWidth: 280 }}>
+                              <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap", alignItems: "end" }}>
+                                <div style={{ minWidth: 280, flex: 1 }}>
                                   <FieldLabel>Add employee</FieldLabel>
-                                  <Select
-                                    value={selectedAttendeeEmployeeIdByMeeting[m.id] ?? ""}
-                                    onChange={(e) =>
-                                      setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [m.id]: e.target.value || null }))
-                                    }
-                                  >
-                                    <option value="">Select…</option>
-                                    {allEmployees.map((e) => (
-                                      <option key={e.id} value={e.id}>
-                                        {formatEmployeeName(e)}{e.is_active ? "" : " (inactive)"}
-                                      </option>
-                                    ))}
-                                  </Select>
+                                  <div style={{ position: "relative" }}>
+                                    <button
+                                      type="button"
+                                      className="btn-ghost"
+                                      onClick={() =>
+                                        setAttendeeDropdownOpenByMeeting((cur) => ({
+                                          ...cur,
+                                          [m.id]: !(cur[m.id] ?? false),
+                                        }))
+                                      }
+                                      style={{
+                                        width: "100%",
+                                        justifyContent: "space-between",
+                                        border: "1px solid #e5e7eb",
+                                        borderRadius: 12,
+                                        padding: "10px 12px",
+                                        background: "white",
+                                        textAlign: "left",
+                                      }}
+                                    >
+                                      <span style={{ opacity: selectedAttendeeEmployeeIdByMeeting[m.id] ? 1 : 0.6 }}>
+                                        {(() => {
+                                          const selectedId = selectedAttendeeEmployeeIdByMeeting[m.id];
+                                          const selected = selectedId ? allEmployees.find((e) => e.id === selectedId) : null;
+                                          return selected ? formatEmployeeName(selected) : "Select…";
+                                        })()}
+                                      </span>
+                                      <span style={{ opacity: 0.6 }}>▾</span>
+                                    </button>
+
+                                    {attendeeDropdownOpenByMeeting[m.id] ? (
+                                      <div
+                                        style={{
+                                          position: "absolute",
+                                          zIndex: 40,
+                                          top: "calc(100% + 6px)",
+                                          left: 0,
+                                          right: 0,
+                                          border: "1px solid #e5e7eb",
+                                          borderRadius: 12,
+                                          background: "white",
+                                          boxShadow: "0 10px 25px rgba(0,0,0,0.08)",
+                                          overflow: "hidden",
+                                        }}
+                                      >
+                                        <div style={{ padding: 10, borderBottom: "1px solid #f1f5f9" }}>
+                                          <TextInput
+                                            value={attendeeSearchByMeeting[m.id] ?? ""}
+                                            onChange={(e) =>
+                                              setAttendeeSearchByMeeting((cur: Record<string, string>) => ({
+                                                ...cur,
+                                                [m.id]: e.target.value,
+                                              }))
+                                            }
+                                            placeholder="Search employee…"
+                                            autoFocus
+                                          />
+                                        </div>
+
+                                        <div style={{ maxHeight: 260, overflowY: "auto" }}>
+                                          {(() => {
+                                            const q = (attendeeSearchByMeeting[m.id] ?? "").trim().toLowerCase();
+                                            const existing = new Set(
+                                              (attendeesByMeeting.get(m.id) ?? [])
+                                                .map((a) => a.attendee_employee_id)
+                                                .filter((x): x is string => typeof x === "string" && x.length > 0)
+                                            );
+                                            const options = allEmployees
+                                              .filter((e) => !existing.has(e.id))
+                                              .filter((e) => {
+                                                if (!q) return true;
+                                                const name = formatEmployeeName(e).toLowerCase();
+                                                return name.includes(q);
+})
+                                              .slice(0, 60);
+
+                                            if (options.length === 0) {
+                                              return <div className="subtle" style={{ padding: 10 }}>(No matches.)</div>;
+                                            }
+
+                                            return options.map((e) => (
+                                              <button
+                                                key={e.id}
+                                                type="button"
+                                                onClick={() => {
+                                                  setSelectedAttendeeEmployeeIdByMeeting((cur) => ({ ...cur, [m.id]: e.id }));
+                                                  setAttendeeDropdownOpenByMeeting((cur) => ({ ...cur, [m.id]: false }));
+                                                  setAttendeeSearchByMeeting((cur: Record<string, string>) => ({ ...cur, [m.id]: "" }));
+                                                }}
+                                                className="btn-ghost"
+                                                style={{
+                                                  display: "flex",
+                                                  width: "100%",
+                                                  justifyContent: "space-between",
+                                                  padding: "10px 12px",
+                                                  borderRadius: 0,
+                                                }}
+                                              >
+                                                <span style={{ fontWeight: 800 }}>{formatEmployeeName(e)}</span>
+</button>
+                                            ));
+                                          })()}
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
                                 </div>
 
                                 <button
@@ -1201,7 +1425,6 @@ export default function HrPage() {
                                   className="btn btn-primary"
                                   onClick={() => void addAttendee(m.id)}
                                   disabled={!!addingAttendeeByMeeting[m.id]}
-                                  style={{ marginTop: 22 }}
                                 >
                                   {addingAttendeeByMeeting[m.id] ? "Adding…" : "Add attendee"}
                                 </button>
@@ -1379,3 +1602,1123 @@ export default function HrPage() {
     </main>
   );
 }
+
+
+// --- Performance Reviews UI (copied from employee [id] page) ---
+type ReviewFormType = "monthly" | "annual";
+
+type HrReviewForm = {
+  id: string;
+  form_type: ReviewFormType;
+  title: string;
+  scale_max: number;
+  is_active: boolean;
+};
+
+type ReviewQuestion = {
+  id: string;
+  form_id: string;
+  question_text: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type HrReview = {
+  id: string;
+  employee_id: string;
+  form_type: ReviewFormType;
+  period_year: number;
+  period_month: number | null;
+  notes: string;
+  attendance_points_snapshot: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type HrReviewAnswer = {
+  review_id: string;
+  question_id: string;
+  score: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function clampScore(n: any, scaleMax: number) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return null;
+  return Math.max(1, Math.min(scaleMax, Math.trunc(v)));
+}
+
+function round1dp(n: number) {
+  return Math.round(n * 10) / 10;
+}
+
+function monthName(m: number) {
+  const names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return names[m - 1] ?? `M${m}`;
+}
+
+function formatReviewLabel(r: HrReview) {
+  if (r.form_type === "annual") return `Annual ${r.period_year}`;
+  const mm = r.period_month ?? 1;
+  return `Monthly ${monthName(mm)} ${r.period_year}`;
+}
+
+function formatOneDecimal(n: number) {
+  const r = Math.round(n * 10) / 10;
+  const s = r.toFixed(1);
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+
+function recommendedIncreasePercent(total: number) {
+  if (total >= 8) return 4;
+  if (total >= 7) return 3;
+  if (total >= 6) return 2;
+  return 0;
+}
+
+
+function reviewMostRecentAt(r: HrReview) {
+  const t = r.updated_at || r.created_at;
+  const d = new Date(t);
+  return Number.isFinite(d.getTime()) ? d.getTime() : 0;
+}
+
+function EmployeePerformanceReviewsTab({
+  employeeId,
+  attendancePoints,
+}: {
+  employeeId: string;
+  /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
+  attendancePoints: number | null;
+}) {
+  const now = useMemo(() => new Date(), []);
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth() + 1;
+
+  const [status, setStatus] = useState<string>("");
+
+  // Toggle display type (default monthly)
+  const [showAnnual, setShowAnnual] = useState<boolean>(false);
+
+  // Forms + questions (read-only here)
+  const [forms, setForms] = useState<HrReviewForm[]>([]);
+  const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
+
+  // ---- Question editor modal (edit annual/monthly question bank)
+  type EditQuestion = { id: string; question_text: string; sort_order: number };
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [editFormType, setEditFormType] = useState<ReviewFormType>("annual");
+  const [editQuestions, setEditQuestions] = useState<EditQuestion[]>([]);
+  const editRef = useRef<HTMLDivElement | null>(null);
+
+  // Existing reviews for this employee
+  const [reviews, setReviews] = useState<HrReview[]>([]);
+  const [reviewAverages, setReviewAverages] = useState<Record<string, number>>({});
+  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number>>({});
+  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number>>({});
+
+
+  // Modal state
+  const [open, setOpen] = useState(false);
+  const [formType, setFormType] = useState<ReviewFormType>("monthly");
+  const [year, setYear] = useState<number>(currentYear);
+  const [month, setMonth] = useState<number>(currentMonth);
+
+  const [reviewId, setReviewId] = useState<string>("");
+  const [values, setValues] = useState<Record<string, number>>({});
+  const [reviewNotes, setReviewNotes] = useState<string>("");
+  const modalRef = useRef<HTMLDivElement | null>(null);
+
+  const formsByType = useMemo(() => {
+    const m = new Map<ReviewFormType, HrReviewForm>();
+    for (const f of forms) m.set(f.form_type, f);
+    return m;
+  }, [forms]);
+
+  const questionsByType = useMemo(() => {
+    const annualId = formsByType.get("annual")?.id ?? "";
+    const monthlyId = formsByType.get("monthly")?.id ?? "";
+
+    const annual = (questions ?? []).filter((q) => q.form_id === annualId && q.is_active !== false);
+    const monthly = (questions ?? []).filter((q) => q.form_id === monthlyId && q.is_active !== false);
+
+    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) =>
+      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+      (a.question_text ?? "").localeCompare(b.question_text ?? "");
+
+    return {
+      annual: annual.slice().sort(sortFn),
+      monthly: monthly.slice().sort(sortFn),
+    };
+  }, [questions, formsByType]);
+
+
+  function makeLocalId() {
+    try {
+      // @ts-ignore
+      return (globalThis.crypto?.randomUUID?.() as string) || `${Date.now()}-${Math.random()}`;
+    } catch {
+      return `${Date.now()}-${Math.random()}`;
+    }
+  }
+
+  // ----------------------------
+  // Question editor helpers
+  // ----------------------------
+  function openEditQuestions(which: ReviewFormType) {
+    const form = formsByType.get(which);
+    if (!form) {
+      setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+      return;
+    }
+
+    const list: EditQuestion[] = (which === "annual" ? questionsByType.annual : questionsByType.monthly)
+      .slice()
+      .map((q, idx) => ({
+        id: q.id,
+        question_text: q.question_text ?? "",
+        sort_order: Number.isFinite(Number(q.sort_order)) ? Number(q.sort_order) : idx,
+      }));
+
+    if (list.length === 0) {
+      if (which === "annual") {
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2 });
+      } else {
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2 });
+      }
+    }
+
+    list.forEach((q, i) => (q.sort_order = i));
+    setEditFormType(which);
+    setEditQuestions(list);
+    setEditOpen(true);
+  }
+
+  function closeEditQuestions() {
+    setEditOpen(false);
+    setEditQuestions([]);
+  }
+
+  function addEditQuestionRow() {
+    setEditQuestions((cur) => {
+      const next = cur.slice();
+      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length });
+      return next;
+    });
+  }
+
+  function moveEditQuestion(id: string, dir: -1 | 1) {
+    setEditQuestions((cur) => {
+      const idx = cur.findIndex((q) => q.id === id);
+      if (idx < 0) return cur;
+      const j = idx + dir;
+      if (j < 0 || j >= cur.length) return cur;
+
+      const next = cur.slice();
+      const tmp = next[idx];
+      next[idx] = next[j];
+      next[j] = tmp;
+      next.forEach((q, i) => (q.sort_order = i));
+      return next;
+    });
+  }
+
+  function deleteEditQuestionRow(id: string) {
+    setEditQuestions((cur) => cur.filter((q) => q.id !== id).map((q, i) => ({ ...q, sort_order: i })));
+  }
+
+  async function saveQuestions() {
+    setStatus("Saving questions...");
+    try {
+      const form = formsByType.get(editFormType);
+      if (!form) {
+        setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+        return;
+      }
+
+      const cleaned = editQuestions
+        .map((q, i) => ({ ...q, sort_order: i, question_text: (q.question_text ?? "").trim() }))
+        .filter((q) => q.question_text.length > 0);
+
+      if (cleaned.length === 0) {
+        setStatus("Add at least 1 question.");
+        return;
+      }
+
+      const currentIds = new Set(
+        (editFormType === "annual" ? questionsByType.annual : questionsByType.monthly).map((q) => q.id)
+      );
+      const desiredExistingIds = new Set(cleaned.filter((q) => !q.id.startsWith("new:")).map((q) => q.id));
+      const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
+
+      if (toDelete.length > 0) {
+        const ok = confirm(
+          `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete any saved answers for those questions.`
+        );
+        if (!ok) {
+          setStatus("");
+          return;
+        }
+        const { error: delErr } = await supabase.from("hr_review_questions").delete().in("id", toDelete);
+        if (delErr) throw delErr;
+      }
+
+      const newRows = cleaned.filter((q) => q.id.startsWith("new:"));
+      if (newRows.length > 0) {
+        const insertRows = newRows.map((q) => ({
+          form_id: form.id,
+          question_text: q.question_text,
+          sort_order: q.sort_order,
+          is_active: true,
+        }));
+        const { error } = await supabase.from("hr_review_questions").insert(insertRows);
+        if (error) throw error;
+      }
+
+      const existing = cleaned.filter((q) => !q.id.startsWith("new:"));
+      for (const q of existing) {
+        const { error } = await supabase
+          .from("hr_review_questions")
+          .update({ question_text: q.question_text, sort_order: q.sort_order, is_active: true })
+          .eq("id", q.id);
+        if (error) throw error;
+      }
+
+      closeEditQuestions();
+      await loadMeta();
+      setStatus("✅ Saved.");
+      setTimeout(() => setStatus(""), 900);
+    } catch (e: any) {
+      setStatus("Save error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  const activeQuestions = useMemo(() => {
+    return formType === "annual" ? questionsByType.annual : questionsByType.monthly;
+  }, [formType, questionsByType]);
+
+  const scaleMax = useMemo(() => {
+    return formsByType.get(formType)?.scale_max ?? (formType === "monthly" ? 3 : 5);
+  }, [formsByType, formType]);
+
+  const filteredReviews = useMemo(() => {
+    const ft: ReviewFormType = showAnnual ? "annual" : "monthly";
+    return (reviews ?? [])
+      .filter((r) => r.form_type === ft)
+      .slice()
+      .sort((a, b) => reviewMostRecentAt(b) - reviewMostRecentAt(a));
+  }, [reviews, showAnnual]);
+
+  async function loadMeta() {
+    const [formRes, qRes] = await Promise.all([
+      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").eq("is_active", true),
+      supabase
+        .from("hr_review_questions")
+        .select("id, form_id, question_text, sort_order, is_active, created_at, updated_at")
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true }),
+    ]);
+
+    if (formRes.error) throw formRes.error;
+    if (qRes.error) throw qRes.error;
+
+    setForms((formRes.data ?? []) as HrReviewForm[]);
+    setQuestions((qRes.data ?? []) as ReviewQuestion[]);
+  }
+
+  async function loadEmployeeReviews() {
+    const res = await supabase
+      .from("hr_reviews")
+      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
+      .eq("employee_id", employeeId);
+
+    if (res.error) throw res.error;
+    const rows = (res.data ?? []) as HrReview[];
+    setReviews(rows);
+
+    if (!rows.length) {
+      setReviewAverages({});
+      setReviewTotalPoints({});
+      setReviewAnswerCounts({});
+      return;
+    }
+
+    const ids = rows.map((r) => r.id);
+
+    // hr_review_answers uses the column name `score`.
+    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", ids);
+    if (ansRes.error) throw ansRes.error;
+
+    const sums: Record<string, { sum: number; count: number }> = {};
+    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
+      const rid = String(row.review_id);
+      const v = typeof row.score === "number" ? row.score : null;
+      if (v === null) continue;
+      const cur = sums[rid] ?? { sum: 0, count: 0 };
+      cur.sum += v;
+      cur.count += 1;
+      sums[rid] = cur;
+    }
+
+    const avgsAnnual: Record<string, number> = {};
+    const totalsMonthly: Record<string, number> = {};
+    const countsByReview: Record<string, number> = {};
+
+    for (const r of rows) {
+      const cur = sums[r.id];
+      const count = cur?.count ?? 0;
+      countsByReview[r.id] = count;
+
+      if (r.form_type === "annual") {
+        avgsAnnual[r.id] = count ? cur!.sum / count : 0;
+      } else {
+        totalsMonthly[r.id] = cur?.sum ?? 0;
+      }
+    }
+
+    setReviewAverages(avgsAnnual);
+    setReviewTotalPoints(totalsMonthly);
+    setReviewAnswerCounts(countsByReview);
+  }
+
+  function openCreate(which: ReviewFormType) {
+    setFormType(which);
+    setYear(currentYear);
+    setMonth(currentMonth);
+    setReviewId("");
+    setValues({});
+    setReviewNotes("");
+    setOpen(true);
+  }
+
+  function openEdit(r: HrReview) {
+    setFormType(r.form_type);
+    setYear(Number(r.period_year ?? currentYear));
+    setMonth(Number(r.period_month ?? currentMonth));
+    setReviewId(r.id);
+    setValues({});
+    setReviewNotes(r.notes ?? "");
+    setOpen(true);
+  }
+
+  function closeModal() {
+    setOpen(false);
+    setReviewId("");
+    setValues({});
+    setReviewNotes("");
+  }
+
+  async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
+    const qs = ft === "annual" ? questionsByType.annual : questionsByType.monthly;
+    const max = formsByType.get(ft)?.scale_max ?? (ft === "monthly" ? 3 : 5);
+
+    if (!qs || qs.length === 0) {
+      setReviewId("");
+      setValues({});
+      setReviewNotes("");
+      return;
+    }
+
+    const base = supabase
+      .from("hr_reviews")
+      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
+      .eq("employee_id", empId)
+      .eq("form_type", ft)
+      .eq("period_year", y);
+
+    const revRes = ft === "annual"
+      ? await base.is("period_month", null).maybeSingle()
+      : await base.eq("period_month", m).maybeSingle();
+
+    if (revRes.error) throw revRes.error;
+
+    const existing = (revRes.data ?? null) as HrReview | null;
+
+    if (!existing?.id) {
+      const init: Record<string, number> = {};
+      const def = ft === "monthly" ? 2 : 3;
+      for (const q of qs) init[q.id] = def;
+      setReviewId("");
+      setValues(init);
+      setReviewNotes("");
+      return;
+    }
+
+    const ansRes = await supabase
+      .from("hr_review_answers")
+      .select("review_id, question_id, score, created_at, updated_at")
+      .eq("review_id", existing.id);
+
+    if (ansRes.error) throw ansRes.error;
+
+    const byQ = new Map<string, number>();
+    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score);
+
+    const init: Record<string, number> = {};
+    const def = ft === "monthly" ? 2 : 3;
+    for (const q of qs) {
+      const v = byQ.get(q.id);
+      init[q.id] = typeof v === "number" && Number.isFinite(v) ? (clampScore(v, max) ?? def) : def;
+    }
+
+    setReviewId(existing.id);
+    setValues(init);
+    setReviewNotes(existing.notes ?? "");
+  }
+
+  async function ensureReviewRow(
+    empId: string,
+    ft: ReviewFormType,
+    y: number,
+    m: number | null,
+    attendancePointsSnapshot: number | null,
+  ) {
+    // IMPORTANT: don't overwrite a previously-captured snapshot when editing.
+    // If the row exists and snapshot is null, then (and only then) we backfill it.
+    const base = supabase
+      .from("hr_reviews")
+      .select("id, attendance_points_snapshot")
+      .eq("employee_id", empId)
+      .eq("form_type", ft)
+      .eq("period_year", y);
+
+    const existingRes =
+      ft === "annual"
+        ? await base.is("period_month", null).maybeSingle()
+        : await base.eq("period_month", m).maybeSingle();
+
+    if (existingRes.error) throw existingRes.error;
+
+    const existing = (existingRes.data ?? null) as { id: string; attendance_points_snapshot: number | null } | null;
+    if (existing?.id) {
+      if (existing.attendance_points_snapshot == null && attendancePointsSnapshot != null) {
+        const { error: snapErr } = await supabase
+          .from("hr_reviews")
+          .update({ attendance_points_snapshot: attendancePointsSnapshot })
+          .eq("id", existing.id);
+        if (snapErr) throw snapErr;
+      }
+      return String(existing.id);
+    }
+
+    const payload: any = {
+      employee_id: empId,
+      form_type: ft,
+      period_year: y,
+      period_month: ft === "annual" ? null : m,
+      attendance_points_snapshot: attendancePointsSnapshot,
+    };
+
+    const ins = await supabase
+      .from("hr_reviews")
+      .insert(payload)
+      .select("id")
+      .single();
+
+    if (ins.error) throw ins.error;
+    return String((ins.data as any)?.id ?? "");
+  }
+
+  async function saveReview() {
+    if (!employeeId) return;
+
+    const qs = activeQuestions;
+    if (!qs || qs.length === 0) {
+      setStatus("No questions for this review type yet.");
+      return;
+    }
+
+    if (!Number.isFinite(Number(year)) || year < 2000 || year > 2100) {
+      setStatus("Invalid year.");
+      return;
+    }
+    if (formType === "monthly") {
+      if (!Number.isFinite(Number(month)) || month < 1 || month > 12) {
+        setStatus("Invalid month.");
+        return;
+      }
+    }
+
+    setStatus("Saving review...");
+    try {
+      const rid = await ensureReviewRow(employeeId, formType, year, month, attendancePoints ?? null);
+      setReviewId(rid);
+
+      // Persist freeform notes on the review itself.
+      {
+        const { error: notesErr } = await supabase.from("hr_reviews").update({ notes: reviewNotes }).eq("id", rid);
+        if (notesErr) throw notesErr;
+      }
+
+      const max = scaleMax;
+      const fallback = formType === "monthly" ? 2 : 3;
+
+      const rows = qs.map((q) => ({
+        review_id: rid,
+        question_id: q.id,
+        score: clampScore(values[q.id], max) ?? fallback,
+      }));
+
+      const { error } = await supabase
+        .from("hr_review_answers")
+        .upsert(rows, { onConflict: "review_id,question_id" });
+
+      if (error) throw error;
+
+      await loadEmployeeReviews();
+      setStatus("✅ Saved.");
+      setTimeout(() => setStatus(""), 900);
+      closeModal();
+    } catch (e: any) {
+      setStatus("Save error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function deleteReview(r: HrReview) {
+    const ok = confirm("Delete this evaluation and all its answers?");
+    if (!ok) return;
+
+    setStatus("Deleting...");
+    try {
+      const { error } = await supabase.from("hr_reviews").delete().eq("id", r.id);
+      if (error) throw error;
+
+      await loadEmployeeReviews();
+      setStatus("✅ Deleted.");
+      setTimeout(() => setStatus(""), 900);
+    } catch (e: any) {
+      setStatus("Delete error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  const computedAvg = useMemo(() => {
+    const qs = activeQuestions;
+    if (!qs || qs.length === 0) return null;
+
+    const max = scaleMax;
+    const valsArr = qs
+      .map((q) => clampScore(values[q.id], max))
+      .filter((v): v is number => typeof v === "number");
+
+    if (valsArr.length === 0) return null;
+    return round1dp(valsArr.reduce((s, x) => s + x, 0) / valsArr.length);
+  }, [activeQuestions, values, scaleMax]);
+
+  // Boot
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!employeeId) return;
+      try {
+        setStatus("Loading review data...");
+        await loadMeta();
+        await loadEmployeeReviews();
+        if (!cancelled) setStatus("");
+      } catch (e: any) {
+        if (!cancelled) setStatus("Load error: " + (e?.message ?? "unknown"));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeId]);
+
+  // When modal open + selection changes, load existing or seed defaults
+  useEffect(() => {
+    if (!open && !editOpen) return;
+    if (!employeeId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setStatus("Loading evaluation...");
+        await loadReviewForSelection(employeeId, formType, year, month);
+        if (!cancelled) setStatus("");
+      } catch (e: any) {
+        if (!cancelled) setStatus("Load evaluation error: " + (e?.message ?? "unknown"));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, employeeId, formType, year, month, questionsByType, formsByType]);
+
+  // ESC + outside click to close modal
+  useEffect(() => {
+    if (!open) return;
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (editOpen) closeEditQuestions();
+        else if (open) closeModal();
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      if (open) {
+        const el = modalRef.current;
+        if (el && !el.contains(e.target as any)) closeModal();
+      }
+      if (editOpen) {
+        const el2 = editRef.current;
+        if (el2 && !el2.contains(e.target as any)) closeEditQuestions();
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, editOpen]);
+
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+      <div className="row-between" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontWeight: 900, marginBottom: 6 }}>Performance Reviews</div>
+          <div className="subtle">
+            Monthly uses <b>1–3</b>. Annual uses <b>1–5</b>.
+          </div>
+        </div>
+
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
+            + Create Annual Evaluation
+          </button>
+          <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
+            + Create Monthly Scorecard
+          </button>
+
+          <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
+            Edit annual questions
+          </button>
+          <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
+            Edit monthly questions
+          </button>
+
+          {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
+        </div>
+      </div>
+
+      <div style={{ height: 12 }} />
+
+      <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 800 }}>
+        <input
+          type="checkbox"
+          checked={showAnnual}
+          onChange={(e) => setShowAnnual(e.target.checked)}
+        />
+        Show annual evaluations (unchecked = monthly)
+      </label>
+
+      <div style={{ height: 12 }} />
+
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>
+        {showAnnual ? "Annual evaluations" : "Monthly evaluations"} ({filteredReviews.length})
+      </div>
+
+      {filteredReviews.length === 0 ? (
+        <div className="subtle">(No evaluations yet.)</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {filteredReviews.map((r) => (
+            <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+              <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>{formatReviewLabel(r)}</div>
+
+                  {/* Notes (freeform) */}
+                  {r.notes ? (
+                    <div style={{ marginTop: 4 }}>
+                      {r.notes}
+                    </div>
+                  ) : null}
+
+                  {/* Annual-only: Attendance + average -> recommended increase */}
+                  {r.form_type === "annual" ? (() => {
+                    const avg = round1dp(reviewAverages[r.id] ?? 0);
+                    const att = typeof r.attendance_points_snapshot === "number" ? r.attendance_points_snapshot : null;
+                    if (att === null) return null;
+                    const total = round1dp(att + avg);
+                    const pct = recommendedIncreasePercent(total);
+                    return (
+                      <div className="subtle" style={{ marginTop: 4 }}>
+                        Attendance Score: <b>{att}</b> + Average: <b>{avg.toFixed(1)}</b> = <b>{total.toFixed(1)}</b>: <b>{pct}%</b> Increase
+                      </div>
+                    );
+                  })() : null}
+
+{/* Monthly-only: show Total Score as sum of 1–3 answers */}
+{r.form_type === "monthly" ? (() => {
+  const count = Number(reviewAnswerCounts[r.id] ?? 0) || 0;
+  const total = Number(reviewTotalPoints[r.id] ?? 0) || 0;
+  if (!count) return null;
+  return (
+    <div className="subtle" style={{ marginTop: 4 }}>
+      Total Score: <b>{total}</b> <span className="subtle">({count} questions)</span>
+    </div>
+  );
+})() : null}
+
+                  <div className="subtle" style={{ marginTop: 4, fontSize: 12 }}>
+                    Updated: {r.updated_at ? new Date(r.updated_at).toLocaleString() : "—"}
+                    {r.created_at ? ` • Created: ${new Date(r.created_at).toLocaleString()}` : ""}
+                  </div>
+                </div>
+
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+                    Edit
+                  </button>
+                  <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* =========================
+          EDIT / CREATE MODAL
+         ========================= */}
+      {open ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 260,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 14,
+          }}
+        >
+          <div
+            ref={modalRef}
+            className="card"
+            style={{
+              width: "min(920px, 100%)",
+              padding: 16,
+              borderRadius: 16,
+              maxHeight: "min(820px, 90vh)",
+              overflow: "auto",
+            }}
+          >
+            <div className="row-between" style={{ gap: 10 }}>
+              <div className="stack" style={{ gap: 4 }}>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>
+                  {reviewId ? "Edit evaluation" : "Create evaluation"}
+                </div>
+                <div className="subtle">
+                  Saved review id:{" "}
+                  {reviewId ? <b>{reviewId}</b> : <span>(not created yet — will create on Save)</span>}
+                </div>
+              </div>
+
+              <button className="btn" type="button" onClick={closeModal} title="Close (Esc)">
+                ✕
+              </button>
+            </div>
+
+            <div className="hr" />
+
+            {/* Type + period selection */}
+            <div
+              className="card"
+              style={{
+                padding: 12,
+                borderRadius: 14,
+                border: "1px solid var(--border)",
+                background: "rgba(0,0,0,0.015)",
+                marginBottom: 12,
+              }}
+            >
+              <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+                <div style={{ minWidth: 220 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Type</div>
+                  <select
+                    className="select"
+                    value={formType}
+                    onChange={(e) => {
+                      const ft = e.target.value as ReviewFormType;
+                      setFormType(ft);
+                      setValues({});
+                      setReviewId("");
+                    }}
+                  >
+                    <option value="monthly">Monthly (1–3)</option>
+                    <option value="annual">Annual (1–5)</option>
+                  </select>
+                </div>
+
+                <div style={{ width: 140 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Year</div>
+                  <input
+                    className="input"
+                    type="number"
+                    value={year}
+                    onChange={(e) => setYear(Number(e.target.value))}
+                    min={2000}
+                    max={2100}
+                  />
+                </div>
+
+                {formType === "monthly" ? (
+                  <div style={{ width: 200 }}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Month</div>
+                    <select className="select" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                      {Array.from({ length: 12 }).map((_, i) => {
+                        const m = i + 1;
+                        return (
+                          <option key={m} value={m}>
+                            {monthName(m)}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                ) : null}
+
+                <div className="subtle" style={{ alignSelf: "center", marginLeft: "auto" }}>
+                  {formType === "annual" ? `Editing: Annual ${year}` : `Editing: Monthly ${monthName(month)} ${year}`}
+                </div>
+              </div>
+            </div>
+
+            {activeQuestions.length === 0 ? (
+              <div className="subtle">
+                No questions exist for this review type yet. (Configure them in the main Performance Reviews admin page.)
+              </div>
+            ) : (
+              <div className="stack" style={{ gap: 10 }}>
+                {activeQuestions.map((q) => (
+                  <div
+                    key={q.id}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 14,
+                      padding: 12,
+                      background: "white",
+                    }}
+                  >
+                    <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
+
+                    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <div className="subtle" style={{ minWidth: 140 }}>
+                        Score (1–{scaleMax})
+                      </div>
+
+                      <select
+                        className="select"
+                        value={String(values[q.id] ?? (formType === "monthly" ? 2 : 3))}
+                        onChange={(e) => {
+                          const v = clampScore(e.target.value, scaleMax) ?? (formType === "monthly" ? 2 : 3);
+                          setValues((cur) => ({ ...cur, [q.id]: v }));
+                        }}
+                        style={{ width: 140 }}
+                      >
+                        {Array.from({ length: scaleMax }).map((_, i) => {
+                          const v = i + 1;
+                          return (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          );
+                        })}
+                      </select>
+
+                      <div className="subtle">
+                        {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
+              <textarea
+                className="input"
+                value={reviewNotes}
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setReviewNotes(e.target.value)}
+                placeholder="Additional notes..."
+                style={{ minHeight: 90, resize: "vertical" }}
+              />
+            </div>
+
+                <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
+                  <div className="subtle">
+                    Average (auto): <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>{" "}
+                    <span className="subtle">(normal rounding)</span>
+                  </div>
+
+                  <div className="row" style={{ gap: 10 }}>
+                    <button className="btn" type="button" onClick={closeModal}>
+                      Cancel
+                    </button>
+                    <button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
+                      Save evaluation
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+          </div>
+        </div>
+      ) : null}
+
+      {/* ===========================
+          EDIT QUESTIONS MODAL
+         =========================== */}
+      {editOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 230,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 14,
+          }}
+        >
+          <div
+            ref={editRef}
+            style={{
+              width: "min(860px, 100%)",
+              background: "white",
+              borderRadius: 16,
+              border: "1px solid #e5e7eb",
+              padding: 16,
+              maxHeight: "min(720px, 90vh)",
+              overflow: "auto",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+            }}
+          >
+            <div className="row-between" style={{ gap: 10 }}>
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ fontWeight: 950, fontSize: 16 }}>
+                  Edit {editFormType === "annual" ? "Annual" : "Monthly"} questions
+                </div>
+                <div className="subtle">
+                  {editFormType === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
+                </div>
+              </div>
+              <button className="btn" type="button" onClick={closeEditQuestions} title="Close">
+                ✕
+              </button>
+            </div>
+
+            <div style={{ height: 12 }} />
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {editQuestions.map((q, idx) => (
+                <div
+                  key={q.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 10,
+                    alignItems: "start",
+                    padding: "10px 10px",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 14,
+                    background: "white",
+                  }}
+                >
+                  <div style={{ display: "grid", gap: 8 }}>
+                    <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 900 }}>#{idx + 1}</div>
+                    </div>
+
+                    <input
+                      className="input"
+                      value={q.question_text}
+                      placeholder="Question text"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, question_text: v } : x)));
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <button className="btn" type="button" title="Move up" disabled={idx === 0} onClick={() => moveEditQuestion(q.id, -1)}>
+                        ↑
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        title="Move down"
+                        disabled={idx === editQuestions.length - 1}
+                        onClick={() => moveEditQuestion(q.id, 1)}
+                      >
+                        ↓
+                      </button>
+                    </div>
+
+                    <button
+                      className="btn-ghost"
+                      type="button"
+                      onClick={() => {
+                        const isExisting = !q.id.startsWith("new:");
+                        if (isExisting) {
+                          const ok = confirm("Delete this question? This will also delete saved answers for it.");
+                          if (!ok) return;
+                        }
+                        deleteEditQuestionRow(q.id);
+                      }}
+                      title="Delete question"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 6 }}>
+                <button className="btn" type="button" onClick={addEditQuestionRow}>
+                  + Add question
+                </button>
+
+                <div className="row" style={{ gap: 10 }}>
+                  <button className="btn" type="button" onClick={closeEditQuestions}>
+                    Cancel
+                  </button>
+                  <button className="btn btn-primary" type="button" onClick={() => void saveQuestions()}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+    </div>
+  );
+}
+
+

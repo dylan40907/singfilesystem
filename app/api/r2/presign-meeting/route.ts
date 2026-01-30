@@ -11,7 +11,6 @@ function jsonError(message: string, status = 400) {
 
 function safeFilename(name: string) {
   const base = (name || "file").trim();
-  // replace path-ish and other risky chars
   return base.replaceAll(/[\\/:*?"<>|]+/g, "_").slice(0, 180) || "file";
 }
 
@@ -41,7 +40,7 @@ function getR2Client() {
   });
 }
 
-async function assertAdminFromBearer(token: string) {
+async function assertAdminOrSupervisorFromBearer(token: string) {
   const supabaseAnon = getSupabaseAnonClient();
   const supabaseAdmin = getSupabaseAdminClient();
 
@@ -57,9 +56,13 @@ async function assertAdminFromBearer(token: string) {
     .maybeSingle();
 
   if (profErr || !profile) throw new Error("Profile not found");
-  if (!profile.is_active || profile.role !== "admin") throw new Error("Admin access required");
+  if (!profile.is_active) throw new Error("Account inactive");
 
-  return { userId };
+  if (profile.role !== "admin" && profile.role !== "supervisor") {
+    throw new Error("Admin or supervisor access required");
+  }
+
+  return { userId, role: profile.role as string };
 }
 
 export async function POST(req: Request) {
@@ -68,7 +71,7 @@ export async function POST(req: Request) {
     const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
     if (!token) return jsonError("Missing Bearer token", 401);
 
-    await assertAdminFromBearer(token);
+    await assertAdminOrSupervisorFromBearer(token);
 
     const body = await req.json().catch(() => null);
     const meetingId = (body?.meetingId || "").toString().trim();
@@ -86,14 +89,12 @@ export async function POST(req: Request) {
     const uuid = crypto.randomUUID();
     const key = `meetings/${meetingId}/${uuid}-${safeFilename(filename)}`;
 
-    // 5 minutes
     const uploadUrl = await getSignedUrl(
       r2,
       new PutObjectCommand({
         Bucket: bucket,
         Key: key,
         ContentType: contentType || "application/octet-stream",
-        // You can add Metadata if you want.
       }),
       { expiresIn: 60 * 5 }
     );

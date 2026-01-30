@@ -449,9 +449,6 @@ export default function AttendancePage() {
       <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
         <div>
           <h1 style={{ margin: "8px 0 6px 0" }}>Attendance</h1>
-          <p className="subtle" style={{ marginTop: 0 }}>
-            Employees sorted by attendance score (lowest first). Add records in the popup to deduct points automatically.
-          </p>
         </div>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>

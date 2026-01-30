@@ -100,6 +100,19 @@ function extOf(name: string) {
   return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
 }
 
+// Natural sort helper: keeps alphabetical ordering but treats number runs as numbers
+const _nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function naturalCompare(a: string | null | undefined, b: string | null | undefined) {
+  return _nameCollator.compare((a ?? "").toString(), (b ?? "").toString());
+}
+
+function naturalCompareById(aName: string | null | undefined, aId: string, bName: string | null | undefined, bId: string) {
+  const c = naturalCompare(aName, bName);
+  return c !== 0 ? c : (aId || "").localeCompare(bId || "");
+}
+
+
 function isOfficeExt(ext: string) {
   return ext === "docx" || ext === "pptx" || ext === "xlsx";
 }
@@ -876,7 +889,7 @@ export default function Home() {
     if (fileErr) throw fileErr;
 
     const out = (fileRows ?? []) as FileRow[];
-    out.sort((a: any, b: any) => (a.name ?? "").localeCompare(b.name ?? ""));
+    out.sort((a: any, b: any) => naturalCompare(a.name, b.name));
     return out;
   }
 
@@ -1501,7 +1514,7 @@ export default function Home() {
       map.set(f.parent_id, arr);
     }
     for (const [k, arr] of map.entries()) {
-      arr.sort((a, b) => a.name.localeCompare(b.name));
+      arr.sort((a, b) => naturalCompare(a.name, b.name));
       map.set(k, arr);
     }
     return map;
@@ -2084,10 +2097,22 @@ export default function Home() {
   const displayedFolders = searchActive ? searchFolders : childFolders;
   const displayedFiles = searchActive ? searchFiles : files;
 
+  const displayedFoldersSorted = useMemo(() => {
+    const arr = [...displayedFolders];
+    arr.sort((a, b) => naturalCompareById(a.name, a.id, b.name, b.id));
+    return arr;
+  }, [displayedFolders]);
+
+  const displayedFilesSorted = useMemo(() => {
+    const arr = [...displayedFiles];
+    arr.sort((a, b) => naturalCompareById(a.name, a.id, b.name, b.id));
+    return arr;
+  }, [displayedFiles]);
+
   const itemsEmpty = displayedFolders.length === 0 && displayedFiles.length === 0;
 
   const folderMoveOptions = useMemo(() => {
-    return folders.slice().sort((a, b) => a.name.localeCompare(b.name));
+    return folders.slice().sort((a, b) => naturalCompare(a.name, b.name));
   }, [folders]);
 
   function closeShareModal() {
@@ -2544,7 +2569,7 @@ export default function Home() {
                 <div className="subtle">{searchActive ? "(No matching folders or files.)" : "(No folders or files here)"}</div>
               ) : (
                 <div className="stack" style={{ gap: 8 }}>
-                  {displayedFolders.map((folder) => (
+                  {displayedFoldersSorted.map((folder) => (
                     <div
                       key={folder.id}
                       className="row-between"
@@ -2590,7 +2615,7 @@ export default function Home() {
                     </div>
                   ))}
 
-                  {displayedFiles.map((f) => {
+                  {displayedFilesSorted.map((f) => {
                     const isLink = isLinkRow(f);
                     const linkUrl = isLink ? linkUrlFromRow(f) : "";
                     const mt = (f as any).mime_type ?? "";
