@@ -81,12 +81,15 @@ type HrMeetingDocument = {
 
 type EmployeeLite = {
   id: string;
+  profile_id?: string | null;
   legal_first_name: string;
   legal_middle_name: string | null;
   legal_last_name: string;
   nicknames: string[];
   is_active: boolean;
   attendance_points?: number | null;
+  // Pulled from user_profiles for filtering (e.g., supervisors should only see employees)
+  role?: string | null;
 };
 
 type MeetingOwnerLite = Pick<EmployeeLite, "id" | "legal_first_name" | "legal_middle_name" | "legal_last_name" | "nicknames" | "is_active">;
@@ -319,6 +322,8 @@ export default function HrPage() {
   const [employee, setEmployee] = useState<EmployeeRow | null>(null);
 
   const isSupervisor = profile?.role === "supervisor";
+  const isAdmin = profile?.role === "admin";
+  const canReviewOthers = isSupervisor || isAdmin;
 
   type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
@@ -350,14 +355,25 @@ export default function HrPage() {
   }, [allEmployees, reviewEmployeeId]);
 
   const reviewEmployeeFiltered = useMemo(() => {
-    const q = reviewEmployeeSearch.trim().toLowerCase();
-    if (!q) return allEmployees;
-    return allEmployees.filter((e) => {
+		// Supervisors should only be able to review employee-level accounts (not other supervisors/admins).
+		// Admins can still see everyone.
+		let base = allEmployees;
+		if (isSupervisor && !isAdmin) {
+			base = base.filter((e) => {
+				const r = (e.role ?? "").toLowerCase();
+				// keep rows where role is unknown, but hide obvious admin/supervisor accounts
+				return r !== "admin" && r !== "supervisor";
+			});
+		}
+
+		const q = reviewEmployeeSearch.trim().toLowerCase();
+		if (!q) return base;
+		return base.filter((e) => {
       const name = formatEmployeeName(e).toLowerCase();
       const nick = (e.nicknames || []).join(" ").toLowerCase();
       return name.includes(q) || nick.includes(q);
     });
-  }, [allEmployees, reviewEmployeeSearch]);
+	}, [allEmployees, reviewEmployeeSearch, isSupervisor, isAdmin]);
 
   const [meetings, setMeetings] = useState<(HrMeeting & { owner: MeetingOwnerLite | null })[]>([]);
   const [attendeesByMeeting, setAttendeesByMeeting] = useState<Map<string, HrMeetingAttendee[]>>(new Map());
@@ -475,13 +491,38 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   }, []);
 
   const reloadAllEmployees = useCallback(async () => {
-    const res = await supabase
-      .from("hr_employees")
-      .select("id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active")
-      .order("legal_last_name", { ascending: true })
-      .order("legal_first_name", { ascending: true });
-    if (res.error) throw res.error;
-    setAllEmployees((res.data ?? []) as any as EmployeeLite[]);
+		const res = await supabase
+			.from("hr_employees")
+			.select(
+				"id,profile_id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points"
+			)
+			.order("legal_last_name", { ascending: true })
+			.order("legal_first_name", { ascending: true });
+		if (res.error) throw res.error;
+
+		const base = (res.data ?? []) as any as EmployeeLite[];
+		const profileIds = Array.from(
+			new Set(base.map((e) => (e as any)?.profile_id).filter((x) => typeof x === "string" && x.length > 0))
+		) as string[];
+
+		// Fetch roles so supervisors can't accidentally review other supervisors/admins.
+		let roleByProfileId = new Map<string, string | null>();
+		if (profileIds.length > 0) {
+			const profRes = await supabase
+				.from("user_profiles")
+				.select("id,role")
+				.in("id", profileIds);
+			if (profRes.error) throw profRes.error;
+			for (const p of profRes.data ?? []) {
+				roleByProfileId.set(String((p as any).id), (p as any).role ?? null);
+			}
+		}
+
+		const merged = base.map((e) => ({
+			...e,
+			role: (e as any)?.profile_id ? roleByProfileId.get(String((e as any).profile_id)) ?? null : null,
+		}));
+		setAllEmployees(merged as any as EmployeeLite[]);
   }, []);
 
   const loadAttendeeMeetings = useCallback(async (attendeeEmpId: string) => {
@@ -1032,12 +1073,12 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             <TabButton active={activeTab === "reviews"} onClick={() => setActiveTab("reviews")}>
               Performance Reviews
             </TabButton>
-            {isSupervisor ? (
+			{isSupervisor ? (
               <TabButton active={activeTab === "meetings"} onClick={() => setActiveTab("meetings")}>
                 Meetings
               </TabButton>
             ) : null}
-            {isSupervisor ? (
+			{canReviewOthers ? (
               <TabButton active={activeTab === "employeeReviews"} onClick={() => setActiveTab("employeeReviews")}>
                 Employee Reviews
               </TabButton>
@@ -1119,7 +1160,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
               )
             ) : null}
 
-            {activeTab === "employeeReviews" && isSupervisor ? (
+			{activeTab === "employeeReviews" && canReviewOthers ? (
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                 <div style={{ fontWeight: 950, fontSize: 18 }}>Employee Reviews</div>
                 <div className="subtle" style={{ marginTop: 6 }}>
@@ -1705,13 +1746,16 @@ function EmployeePerformanceReviewsTab({
   attendancePoints,
   includeDrafts = false,
   readOnly = false,
+  mode = "manage",
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
   attendancePoints: number | null;
   includeDrafts?: boolean;
   readOnly?: boolean;
+  mode?: "manage" | "self";
 }) {
+  const isSelf = mode === "self";
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
@@ -1790,6 +1834,7 @@ function EmployeePerformanceReviewsTab({
   // Question editor helpers
   // ----------------------------
   function openEditQuestions(which: ReviewFormType) {
+		if (readOnly) return;
     const form = formsByType.get(which);
     if (!form) {
       setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
@@ -1959,7 +2004,8 @@ function EmployeePerformanceReviewsTab({
     const eid = (targetEmployeeId || employeeId || "").toString();
     if (!eid) return;
 
-    const includeDraftsFlag = includeDrafts;
+    const includeDraftsFlag = isSelf ? false : includeDrafts;
+
 
     let q = supabase
       .from("hr_reviews")
@@ -1992,6 +2038,7 @@ function EmployeePerformanceReviewsTab({
 
 
   function openCreate(which: ReviewFormType) {
+		if (readOnly) return;
     setFormType(which);
     setYear(currentYear);
     setMonth(currentMonth);
@@ -2131,6 +2178,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function saveReview() {
+		if (readOnly) return;
     if (!employeeId) return;
 
     const qs = activeQuestions;
@@ -2186,6 +2234,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function deleteReview(r: HrReview) {
+		if (readOnly) return;
     const ok = confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
@@ -2297,23 +2346,31 @@ function EmployeePerformanceReviewsTab({
           </div>
         </div>
 
-        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
-            + Create Annual Evaluation
-          </button>
-          <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
-            + Create Monthly Scorecard
-          </button>
+	        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+	          {!readOnly ? (
+	            <>
+	              <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
+	                + Create Annual Evaluation
+	              </button>
+	              <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
+	                + Create Monthly Scorecard
+	              </button>
 
-          <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
-            Edit annual questions
-          </button>
-          <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
-            Edit monthly questions
-          </button>
+	              <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
+	                Edit annual questions
+	              </button>
+	              <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
+	                Edit monthly questions
+	              </button>
+	            </>
+	          ) : (
+	            <span className="subtle" style={{ fontWeight: 800 }}>
+	              View-only (published evaluations)
+	            </span>
+	          )}
 
-          {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
-        </div>
+	          {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
+	        </div>
       </div>
 
       <div style={{ height: 12 }} />
@@ -2397,14 +2454,27 @@ function EmployeePerformanceReviewsTab({
                   </div>
                 </div>
 
-                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                  <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
-                    Edit
-                  </button>
-                  <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
-                    Delete
-                  </button>
-                </div>
+	                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+	                  {readOnly ? (
+	                    <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+	                      View
+	                    </button>
+	                  ) : (
+	                    <>
+	                      <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+	                        Edit
+	                      </button>
+	                      <button
+	                        className="btn"
+	                        type="button"
+	                        onClick={() => void deleteReview(r)}
+	                        style={{ padding: "6px 10px" }}
+	                      >
+	                        Delete
+	                      </button>
+	                    </>
+	                  )}
+	                </div>
               </div>
             </div>
           ))}
@@ -2475,6 +2545,7 @@ function EmployeePerformanceReviewsTab({
                   <select
                     className="select"
                     value={formType}
+								disabled={readOnly}
                     onChange={(e) => {
                       const ft = e.target.value as ReviewFormType;
                       setFormType(ft);
@@ -2493,7 +2564,11 @@ function EmployeePerformanceReviewsTab({
                     className="input"
                     type="number"
                     value={year}
-                    onChange={(e) => setYear(Number(e.target.value))}
+								disabled={readOnly}
+								onChange={(e) => {
+									if (readOnly) return;
+									setYear(Number(e.target.value));
+								}}
                     min={2000}
                     max={2100}
                   />
@@ -2502,7 +2577,15 @@ function EmployeePerformanceReviewsTab({
                 {formType === "monthly" ? (
                   <div style={{ width: 200 }}>
                     <div style={{ fontWeight: 900, marginBottom: 6 }}>Month</div>
-                    <select className="select" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+								<select
+									className="select"
+									value={month}
+									disabled={readOnly}
+									onChange={(e) => {
+										if (readOnly) return;
+										setMonth(Number(e.target.value));
+									}}
+								>
                       {Array.from({ length: 12 }).map((_, i) => {
                         const m = i + 1;
                         return (
@@ -2547,7 +2630,9 @@ function EmployeePerformanceReviewsTab({
                       <select
                         className="select"
                         value={String(values[q.id] ?? "")}
+										disabled={readOnly}
                         onChange={(e) => {
+											if (readOnly) return;
                           const raw = e.target.value;
                           const s = clampScore(raw, scaleMax);
                           setValues((cur) => {
@@ -2584,7 +2669,11 @@ function EmployeePerformanceReviewsTab({
               <textarea
                 className="input"
                 value={reviewNotes}
-                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setReviewNotes(e.target.value)}
+								readOnly={readOnly}
+								onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+									if (readOnly) return;
+									setReviewNotes(e.target.value);
+								}}
                 placeholder="Additional notes..."
                 style={{ minHeight: 90, resize: "vertical" }}
               />
@@ -2596,14 +2685,22 @@ function EmployeePerformanceReviewsTab({
                     <span className="subtle">(normal rounding)</span>
                   </div>
 
-                  <div className="row" style={{ gap: 10 }}>
-                    <button className="btn" type="button" onClick={closeModal}>
-                      Cancel
-                    </button>
-                    <button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
-                      Save evaluation
-                    </button>
-                  </div>
+								<div className="row" style={{ gap: 10 }}>
+									{readOnly ? (
+										<button className="btn btn-primary" type="button" onClick={closeModal}>
+											Close
+										</button>
+									) : (
+										<>
+											<button className="btn" type="button" onClick={closeModal}>
+												Cancel
+											</button>
+											<button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
+												Save evaluation
+											</button>
+										</>
+									)}
+								</div>
                 </div>
               </div>
             )}
