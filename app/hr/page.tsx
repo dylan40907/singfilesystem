@@ -1102,12 +1102,21 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             ) : null}
 
             {activeTab === "reviews" ? (
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
-                <div style={{ fontWeight: 950, fontSize: 18 }}>Performance Reviews</div>
-                <div className="subtle" style={{ marginTop: 6 }}>
-                  {reviewsNote}
+              employee?.id ? (
+                <EmployeePerformanceReviewsTab
+                  employeeId={employee.id}
+                  attendancePoints={(employee as any)?.attendance_points ?? null}
+                  includeDrafts={false}
+                  readOnly={true}
+                />
+              ) : (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                  <div style={{ fontWeight: 950, fontSize: 18 }}>Performance Reviews</div>
+                  <div className="subtle" style={{ marginTop: 6 }}>
+                    No employee record is linked to your account.
+                  </div>
                 </div>
-              </div>
+              )
             ) : null}
 
             {activeTab === "employeeReviews" && isSupervisor ? (
@@ -1202,7 +1211,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   {reviewEmployeeId ? (
                     <EmployeePerformanceReviewsTab
                       employeeId={reviewEmployeeId}
-                      attendancePoints={reviewEmployee?.attendance_points ?? 3}
+                      attendancePoints={reviewEmployee?.attendance_points ?? null}
+                      includeDrafts
+                      readOnly={false}
                     />
                   ) : (
                     <div className="subtle" style={{ marginTop: 8 }}>
@@ -1632,6 +1643,7 @@ type HrReview = {
   period_year: number;
   period_month: number | null;
   notes: string;
+  published: boolean;
   attendance_points_snapshot: number | null;
   created_at: string;
   updated_at: string;
@@ -1640,12 +1652,14 @@ type HrReview = {
 type HrReviewAnswer = {
   review_id: string;
   question_id: string;
-  score: number;
+  score: number | null;
   created_at: string;
   updated_at: string;
 };
 
 function clampScore(n: any, scaleMax: number) {
+  // Allow a true "unset" score (stored as NULL in hr_review_answers.score)
+  if (n === "" || n === null || typeof n === "undefined") return null;
   const v = Number(n);
   if (!Number.isFinite(v)) return null;
   return Math.max(1, Math.min(scaleMax, Math.trunc(v)));
@@ -1689,10 +1703,14 @@ function reviewMostRecentAt(r: HrReview) {
 function EmployeePerformanceReviewsTab({
   employeeId,
   attendancePoints,
+  includeDrafts = false,
+  readOnly = false,
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
   attendancePoints: number | null;
+  includeDrafts?: boolean;
+  readOnly?: boolean;
 }) {
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
@@ -1717,9 +1735,9 @@ function EmployeePerformanceReviewsTab({
 
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
-  const [reviewAverages, setReviewAverages] = useState<Record<string, number>>({});
-  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number>>({});
-  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number>>({});
+  const [reviewAverages, setReviewAverages] = useState<Record<string, number | null>>({});
+  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number | null>>({});
+  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number | null>>({});
 
 
   // Modal state
@@ -1729,7 +1747,9 @@ function EmployeePerformanceReviewsTab({
   const [month, setMonth] = useState<number>(currentMonth);
 
   const [reviewId, setReviewId] = useState<string>("");
-  const [values, setValues] = useState<Record<string, number>>({});
+  const [values, setValues] = useState<Record<string, number | null>>({});
+
+  const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
   const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
@@ -1935,60 +1955,41 @@ function EmployeePerformanceReviewsTab({
     setQuestions((qRes.data ?? []) as ReviewQuestion[]);
   }
 
-  async function loadEmployeeReviews() {
-    const res = await supabase
+  async function loadEmployeeReviews(targetEmployeeId?: string, opts?: { includeDrafts?: boolean }) {
+    const eid = (targetEmployeeId || employeeId || "").toString();
+    if (!eid) return;
+
+    const includeDraftsFlag = includeDrafts;
+
+    let q = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
-      .eq("employee_id", employeeId);
+      .select(
+        "id, employee_id, form_type, period_year, period_month, created_at, updated_at, notes, attendance_points_snapshot, published"
+      )
+      .eq("employee_id", eid);
 
-    if (res.error) throw res.error;
-    const rows = (res.data ?? []) as HrReview[];
-    setReviews(rows);
+    // Employees should only see published reviews.
+    // Admins/supervisors (reviewing others) can see drafts and published.
+    if (!includeDraftsFlag) q = q.eq("published", true);
 
-    if (!rows.length) {
-      setReviewAverages({});
-      setReviewTotalPoints({});
-      setReviewAnswerCounts({});
-      return;
+    const { data: rows, error: revErr } = await q
+      .order("period_year", { ascending: false })
+      .order("period_month", { ascending: false, nullsFirst: false })
+      .order("updated_at", { ascending: false });
+
+    if (revErr) throw revErr;
+
+    const list = rows || [];
+    setReviews(list);
+
+    // If the employee only has annual reviews, default the toggle to annual so the list isn't blank.
+    if (!includeDraftsFlag) {
+      const hasMonthly = list.some((r) => r.form_type === "monthly");
+      const hasAnnual = list.some((r) => r.form_type === "annual");
+      if (!hasMonthly && hasAnnual) setShowAnnual(true);
     }
-
-    const ids = rows.map((r) => r.id);
-
-    // hr_review_answers uses the column name `score`.
-    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", ids);
-    if (ansRes.error) throw ansRes.error;
-
-    const sums: Record<string, { sum: number; count: number }> = {};
-    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
-      const rid = String(row.review_id);
-      const v = typeof row.score === "number" ? row.score : null;
-      if (v === null) continue;
-      const cur = sums[rid] ?? { sum: 0, count: 0 };
-      cur.sum += v;
-      cur.count += 1;
-      sums[rid] = cur;
-    }
-
-    const avgsAnnual: Record<string, number> = {};
-    const totalsMonthly: Record<string, number> = {};
-    const countsByReview: Record<string, number> = {};
-
-    for (const r of rows) {
-      const cur = sums[r.id];
-      const count = cur?.count ?? 0;
-      countsByReview[r.id] = count;
-
-      if (r.form_type === "annual") {
-        avgsAnnual[r.id] = count ? cur!.sum / count : 0;
-      } else {
-        totalsMonthly[r.id] = cur?.sum ?? 0;
-      }
-    }
-
-    setReviewAverages(avgsAnnual);
-    setReviewTotalPoints(totalsMonthly);
-    setReviewAnswerCounts(countsByReview);
   }
+
 
   function openCreate(which: ReviewFormType) {
     setFormType(which);
@@ -2030,7 +2031,7 @@ function EmployeePerformanceReviewsTab({
 
     const base = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -2044,11 +2045,10 @@ function EmployeePerformanceReviewsTab({
     const existing = (revRes.data ?? null) as HrReview | null;
 
     if (!existing?.id) {
-      const init: Record<string, number> = {};
-      const def = ft === "monthly" ? 2 : 3;
-      for (const q of qs) init[q.id] = def;
+      // New review: do NOT pre-fill scores. Missing answers show as blank until someone rates them.
+      initialAnsweredIdsRef.current = new Set();
       setReviewId("");
-      setValues(init);
+      setValues({});
       setReviewNotes("");
       return;
     }
@@ -2060,16 +2060,18 @@ function EmployeePerformanceReviewsTab({
 
     if (ansRes.error) throw ansRes.error;
 
-    const byQ = new Map<string, number>();
-    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score);
+    const byQ = new Map<string, number | null>();
+    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score ?? null);
 
+    // Existing review: only populate questions that have an answer row.
     const init: Record<string, number> = {};
-    const def = ft === "monthly" ? 2 : 3;
     for (const q of qs) {
       const v = byQ.get(q.id);
-      init[q.id] = typeof v === "number" && Number.isFinite(v) ? (clampScore(v, max) ?? def) : def;
+      const clamped = clampScore(typeof v === "number" ? v : null, max);
+      if (typeof clamped === "number") init[q.id] = clamped;
     }
 
+    initialAnsweredIdsRef.current = new Set(Object.keys(init));
     setReviewId(existing.id);
     setValues(init);
     setReviewNotes(existing.notes ?? "");
@@ -2086,7 +2088,7 @@ function EmployeePerformanceReviewsTab({
     // If the row exists and snapshot is null, then (and only then) we backfill it.
     const base = supabase
       .from("hr_reviews")
-      .select("id, attendance_points_snapshot")
+      .select("id, attendance_points_snapshot, published")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -2121,7 +2123,7 @@ function EmployeePerformanceReviewsTab({
     const ins = await supabase
       .from("hr_reviews")
       .insert(payload)
-      .select("id")
+      .select("id, published")
       .single();
 
     if (ins.error) throw ins.error;
@@ -2160,19 +2162,19 @@ function EmployeePerformanceReviewsTab({
       }
 
       const max = scaleMax;
-      const fallback = formType === "monthly" ? 2 : 3;
 
-      const rows = qs.map((q) => ({
+      // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
+      const rows: { review_id: string; question_id: string; score: number | null }[] = qs.map((q) => ({
         review_id: rid,
         question_id: q.id,
-        score: clampScore(values[q.id], max) ?? fallback,
+        score: clampScore(values[q.id], max),
       }));
 
-      const { error } = await supabase
-        .from("hr_review_answers")
-        .upsert(rows, { onConflict: "review_id,question_id" });
+      const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
+      if (upsertRes.error) throw upsertRes.error;
 
-      if (error) throw error;
+      // Track which questions have been explicitly scored (non-null).
+      initialAnsweredIdsRef.current = new Set(rows.filter((r) => r.score !== null).map((r) => r.question_id));
 
       await loadEmployeeReviews();
       setStatus("✅ Saved.");
@@ -2339,7 +2341,22 @@ function EmployeePerformanceReviewsTab({
             <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
               <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
                 <div>
-                  <div style={{ fontWeight: 900 }}>{formatReviewLabel(r)}</div>
+                  <div style={{ fontWeight: 900, display: "flex", alignItems: "center", gap: 10 }}>
+                      {formatReviewLabel(r)}
+                      <span
+                        style={{
+                          fontSize: 12,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          border: "1px solid #ddd",
+                          background: r.published ? "#f4fff7" : "#fff7f0",
+                          color: r.published ? "#0a7a2f" : "#a04b00",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {r.published ? "Published" : "Draft"}
+                      </span>
+                    </div>
 
                   {/* Notes (freeform) */}
                   {r.notes ? (
@@ -2529,13 +2546,23 @@ function EmployeePerformanceReviewsTab({
 
                       <select
                         className="select"
-                        value={String(values[q.id] ?? (formType === "monthly" ? 2 : 3))}
+                        value={String(values[q.id] ?? "")}
                         onChange={(e) => {
-                          const v = clampScore(e.target.value, scaleMax) ?? (formType === "monthly" ? 2 : 3);
-                          setValues((cur) => ({ ...cur, [q.id]: v }));
+                          const raw = e.target.value;
+                          const s = clampScore(raw, scaleMax);
+                          setValues((cur) => {
+                            const next = { ...cur } as Record<string, number>;
+                            if (s == null) {
+                              delete (next as any)[q.id];
+                            } else {
+                              (next as any)[q.id] = s;
+                            }
+                            return next;
+                          });
                         }}
                         style={{ width: 140 }}
                       >
+                        <option value="">Undecided</option>
                         {Array.from({ length: scaleMax }).map((_, i) => {
                           const v = i + 1;
                           return (
@@ -2720,5 +2747,3 @@ function EmployeePerformanceReviewsTab({
     </div>
   );
 }
-
-

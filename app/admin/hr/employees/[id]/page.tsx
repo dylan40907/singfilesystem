@@ -837,6 +837,7 @@ type HrReview = {
   period_year: number;
   period_month: number | null;
   notes: string;
+  published: boolean;
   attendance_points_snapshot: number | null;
   created_at: string;
   updated_at: string;
@@ -845,12 +846,14 @@ type HrReview = {
 type HrReviewAnswer = {
   review_id: string;
   question_id: string;
-  score: number;
+  score: number | null;
   created_at: string;
   updated_at: string;
 };
 
 function clampScore(n: any, scaleMax: number) {
+  // Allow a true "unset" score (stored as NULL in hr_review_answers.score)
+  if (n === "" || n === null || typeof n === "undefined") return null;
   const v = Number(n);
   if (!Number.isFinite(v)) return null;
   return Math.max(1, Math.min(scaleMax, Math.trunc(v)));
@@ -922,9 +925,9 @@ function EmployeePerformanceReviewsTab({
 
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
-  const [reviewAverages, setReviewAverages] = useState<Record<string, number>>({});
-  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number>>({});
-  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number>>({});
+  const [reviewAverages, setReviewAverages] = useState<Record<string, number | null>>({});
+  const [reviewTotalPoints, setReviewTotalPoints] = useState<Record<string, number | null>>({});
+  const [reviewAnswerCounts, setReviewAnswerCounts] = useState<Record<string, number | null>>({});
 
 
   // Modal state
@@ -934,7 +937,10 @@ function EmployeePerformanceReviewsTab({
   const [month, setMonth] = useState<number>(currentMonth);
 
   const [reviewId, setReviewId] = useState<string>("");
-  const [values, setValues] = useState<Record<string, number>>({});
+  const [values, setValues] = useState<Record<string, number | null>>({});
+
+  const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
+  const [publishingReviewId, setPublishingReviewId] = useState<string>("");
   const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
@@ -1143,7 +1149,7 @@ function EmployeePerformanceReviewsTab({
   async function loadEmployeeReviews() {
     const res = await supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", employeeId);
 
     if (res.error) throw res.error;
@@ -1235,7 +1241,7 @@ function EmployeePerformanceReviewsTab({
 
     const base = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -1249,11 +1255,10 @@ function EmployeePerformanceReviewsTab({
     const existing = (revRes.data ?? null) as HrReview | null;
 
     if (!existing?.id) {
-      const init: Record<string, number> = {};
-      const def = ft === "monthly" ? 2 : 3;
-      for (const q of qs) init[q.id] = def;
+      // New review: do NOT pre-fill scores. Missing answers show as blank until someone rates them.
+      initialAnsweredIdsRef.current = new Set();
       setReviewId("");
-      setValues(init);
+      setValues({});
       setReviewNotes("");
       return;
     }
@@ -1265,16 +1270,18 @@ function EmployeePerformanceReviewsTab({
 
     if (ansRes.error) throw ansRes.error;
 
-    const byQ = new Map<string, number>();
-    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score);
+    const byQ = new Map<string, number | null>();
+    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score ?? null);
 
+    // Existing review: only populate questions that have an answer row.
     const init: Record<string, number> = {};
-    const def = ft === "monthly" ? 2 : 3;
     for (const q of qs) {
       const v = byQ.get(q.id);
-      init[q.id] = typeof v === "number" && Number.isFinite(v) ? (clampScore(v, max) ?? def) : def;
+      const clamped = clampScore(typeof v === "number" ? v : null, max);
+      if (typeof clamped === "number") init[q.id] = clamped;
     }
 
+    initialAnsweredIdsRef.current = new Set(Object.keys(init));
     setReviewId(existing.id);
     setValues(init);
     setReviewNotes(existing.notes ?? "");
@@ -1291,7 +1298,7 @@ function EmployeePerformanceReviewsTab({
     // If the row exists and snapshot is null, then (and only then) we backfill it.
     const base = supabase
       .from("hr_reviews")
-      .select("id, attendance_points_snapshot")
+      .select("id, attendance_points_snapshot, published")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -1326,7 +1333,7 @@ function EmployeePerformanceReviewsTab({
     const ins = await supabase
       .from("hr_reviews")
       .insert(payload)
-      .select("id")
+      .select("id, published")
       .single();
 
     if (ins.error) throw ins.error;
@@ -1365,19 +1372,19 @@ function EmployeePerformanceReviewsTab({
       }
 
       const max = scaleMax;
-      const fallback = formType === "monthly" ? 2 : 3;
 
-      const rows = qs.map((q) => ({
+      // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
+      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions.map((q) => ({
         review_id: rid,
         question_id: q.id,
-        score: clampScore(values[q.id], max) ?? fallback,
+        score: clampScore(values[q.id], max),
       }));
 
-      const { error } = await supabase
-        .from("hr_review_answers")
-        .upsert(rows, { onConflict: "review_id,question_id" });
+      const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
+      if (upsertRes.error) throw upsertRes.error;
 
-      if (error) throw error;
+      // Track which questions have been explicitly scored (non-null).
+      initialAnsweredIdsRef.current = new Set(rows.filter((r) => r.score !== null).map((r) => r.question_id));
 
       await loadEmployeeReviews();
       setStatus("✅ Saved.");
@@ -1404,6 +1411,24 @@ function EmployeePerformanceReviewsTab({
       setStatus("Delete error: " + (e?.message ?? "unknown"));
     }
   }
+
+  async function publishReview(reviewIdToPublish: string) {
+    if (!reviewIdToPublish) return;
+    setPublishingReviewId(reviewIdToPublish);
+    setStatus("Publishing review...");
+    try {
+      const { error } = await supabase.from("hr_reviews").update({ published: true }).eq("id", reviewIdToPublish);
+      if (error) throw error;
+      await loadEmployeeReviews();
+      setStatus("✅ Review published.");
+      setTimeout(() => setStatus(""), 2500);
+    } catch (e: any) {
+      setStatus(`❌ Publish failed: ${e?.message ?? "unknown error"}`);
+    } finally {
+      setPublishingReviewId("");
+    }
+  }
+
 
   const computedAvg = useMemo(() => {
     const qs = activeQuestions;
@@ -1544,7 +1569,22 @@ function EmployeePerformanceReviewsTab({
             <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
               <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
                 <div>
-                  <div style={{ fontWeight: 900 }}>{formatReviewLabel(r)}</div>
+                  <div style={{ fontWeight: 900, display: "flex", alignItems: "center", gap: 10 }}>
+                      {formatReviewLabel(r)}
+                      <span
+                        style={{
+                          fontSize: 12,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          border: "1px solid #ddd",
+                          background: r.published ? "#f4fff7" : "#fff7f0",
+                          color: r.published ? "#0a7a2f" : "#a04b00",
+                          fontWeight: 800,
+                        }}
+                      >
+                        {r.published ? "Published" : "Draft"}
+                      </span>
+                    </div>
 
                   {/* Notes (freeform) */}
                   {r.notes ? (
@@ -1586,7 +1626,18 @@ function EmployeePerformanceReviewsTab({
                 </div>
 
                 <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                  <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+                  {!r.published && (
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => publishReview(r.id)}
+                        disabled={publishingReviewId === r.id}
+                        style={{ padding: "6px 10px" }}
+                      >
+                        {publishingReviewId === r.id ? "Publishing..." : "Publish"}
+                      </button>
+                    )}
+                    <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
                     Edit
                   </button>
                   <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
@@ -1734,13 +1785,23 @@ function EmployeePerformanceReviewsTab({
 
                       <select
                         className="select"
-                        value={String(values[q.id] ?? (formType === "monthly" ? 2 : 3))}
+                        value={String(values[q.id] ?? "")}
                         onChange={(e) => {
-                          const v = clampScore(e.target.value, scaleMax) ?? (formType === "monthly" ? 2 : 3);
-                          setValues((cur) => ({ ...cur, [q.id]: v }));
+                          const raw = e.target.value;
+                          const s = clampScore(raw, scaleMax);
+                          setValues((cur) => {
+                            const next = { ...cur } as Record<string, number>;
+                            if (s == null) {
+                              delete (next as any)[q.id];
+                            } else {
+                              (next as any)[q.id] = s;
+                            }
+                            return next;
+                          });
                         }}
                         style={{ width: 140 }}
                       >
+                        <option value="">Undecided</option>
                         {Array.from({ length: scaleMax }).map((_, i) => {
                           const v = i + 1;
                           return (
