@@ -95,6 +95,8 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/settings" || pathname.startsWith("/admin/hr/settings/")) return "settings";
     if (pathname === "/admin/hr/attendance" || pathname.startsWith("/admin/hr/attendance/")) return "attendance";
     if (pathname === "/admin/hr/employees" || pathname.startsWith("/admin/hr/employees/")) return "employees";
+    if (pathname === "/admin/hr/employee-meetings" || pathname.startsWith("/admin/hr/employee-meetings/"))
+      return "employee-meetings";
     if (pathname === "/admin/hr/org-chart" || pathname.startsWith("/admin/hr/org-chart/")) return "org-chart";
     return "employees";
   }, [pathname]);
@@ -151,6 +153,11 @@ export default function HrNavbar() {
                     <NavLink href="/admin/hr/employees" label="Employees" active={activeTab === "employees"} />
                     <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
                     <NavLink href="/admin/hr/org-chart" label="Org Chart" active={activeTab === "org-chart"} />
+                    <NavLink
+                      href="/admin/hr/employee-meetings"
+                      label="Employee Meetings"
+                      active={activeTab === "employee-meetings"}
+                    />
                     <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
                   </>
                 ) : (

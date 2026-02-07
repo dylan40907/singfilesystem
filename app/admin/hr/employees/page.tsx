@@ -37,6 +37,32 @@ export default function EmployeesPage() {
   const [error, setError] = useState<string>("");
 
   const [q, setQ] = useState("");
+  type SortKey = "name" | "campus" | "jobLevel" | "active";
+  const defaultDirForKey: Record<SortKey, "asc" | "desc"> = {
+    name: "asc",
+    campus: "asc",
+    jobLevel: "asc",
+    active: "desc",
+  };
+
+  const [sortState, setSortState] = useState<{ key: SortKey; dir: "asc" | "desc" }>(() => ({
+    key: "name",
+    dir: defaultDirForKey.name,
+  }));
+
+  function toggleSort(key: SortKey) {
+    setSortState((prev) => {
+      if (prev.key === key) {
+        return { ...prev, dir: prev.dir === "asc" ? "desc" : "asc" };
+      }
+      return { key, dir: defaultDirForKey[key] };
+    });
+  }
+
+  function sortIndicator(key: SortKey) {
+    if (sortState.key !== key) return "";
+    return sortState.dir === "asc" ? " ▲" : " ▼";
+  }
 
   async function loadEmployees() {
     setError("");
@@ -95,6 +121,30 @@ export default function EmployeesPage() {
       return name.includes(s) || campus.includes(s) || jl.includes(s);
     });
   }, [q, rows]);
+  const displayed = useMemo(() => {
+    const arr = (filtered ?? []).slice();
+
+    const getVal = (e: EmployeeListRow, key: SortKey): string | number => {
+      if (key === "name") return displayName(e).toLowerCase();
+      if (key === "campus") return (e.campus?.name ?? "").toLowerCase();
+      if (key === "jobLevel") return (e.job_level?.name ?? "").toLowerCase();
+      // active
+      return e.is_active ? 1 : 0;
+    };
+
+    arr.sort((a, b) => {
+      const va = getVal(a, sortState.key);
+      const vb = getVal(b, sortState.key);
+
+      let cmp = 0;
+      if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+      else cmp = String(va).localeCompare(String(vb));
+
+      return sortState.dir === "asc" ? cmp : -cmp;
+    });
+
+    return arr;
+  }, [filtered, sortState]);
 
   if (loading) {
     return <div style={{ padding: 20 }}>Loading…</div>;
@@ -139,15 +189,15 @@ export default function EmployeesPage() {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#f9fafb" }}>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Name</th>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Campus</th>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Job level</th>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Active</th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("name")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Name" + sortIndicator("name")}</button></th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("campus")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Campus" + sortIndicator("campus")}</button></th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("jobLevel")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Job level" + sortIndicator("jobLevel")}</button></th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("active")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Active" + sortIndicator("active")}</button></th>
               <th style={{ padding: 10 }} />
             </tr>
           </thead>
           <tbody>
-            {filtered.map((e) => (
+            {displayed.map((e) => (
               <tr key={e.id} style={{ borderTop: "1px solid #f1f5f9" }}>
                 <td style={{ padding: 10, fontWeight: 800 }}>
                   <Link href={employeeHref(e.id)} style={{ textDecoration: "none", color: "inherit" }}>

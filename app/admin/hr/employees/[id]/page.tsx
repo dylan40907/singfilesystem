@@ -62,6 +62,11 @@ type EmployeeRow = {
   legal_first_name: string;
   legal_middle_name: string | null;
   legal_last_name: string;
+
+  // Employment dates (DATE)
+  start_date?: string;
+  end_date?: string | null;
+
   nicknames: string[];
   rate_type: "salary" | "hourly";
   rate: number;
@@ -729,6 +734,8 @@ function normalizeEmployee(raw: any): EmployeeRow {
     legal_first_name: raw.legal_first_name,
     legal_middle_name: raw.legal_middle_name ?? null,
     legal_last_name: raw.legal_last_name,
+    start_date: raw.start_date ?? undefined,
+    end_date: raw.end_date ?? null,
     nicknames: Array.isArray(raw.nicknames) ? raw.nicknames : [],
     rate_type: raw.rate_type === "salary" ? "salary" : "hourly",
     rate: Number(raw.rate ?? 0),
@@ -783,6 +790,8 @@ async function fetchEmployeeData(employeeId: string) {
       legal_first_name,
       legal_middle_name,
       legal_last_name,
+      start_date,
+      end_date,
       nicknames,
       rate_type,
       rate,
@@ -833,6 +842,7 @@ type ReviewQuestion = {
 type HrReview = {
   id: string;
   employee_id: string;
+  form_id: string;
   form_type: ReviewFormType;
   period_year: number;
   period_month: number | null;
@@ -918,10 +928,24 @@ function EmployeePerformanceReviewsTab({
   // ---- Question editor modal (edit annual/monthly question bank)
   type EditQuestion = { id: string; question_text: string; sort_order: number };
 
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageType, setManageType] = useState<ReviewFormType | "">("");
+  const [showArchivedForms, setShowArchivedForms] = useState(false);
+  const [newFormTitle, setNewFormTitle] = useState("");
+  const [creatingForm, setCreatingForm] = useState(false);
+
+  // ---- Question editor modal (edit questions for a specific form)
   const [editOpen, setEditOpen] = useState(false);
-  const [editFormType, setEditFormType] = useState<ReviewFormType>("annual");
+  const [editFormId, setEditFormId] = useState<string>("");
   const [editQuestions, setEditQuestions] = useState<EditQuestion[]>([]);
   const editRef = useRef<HTMLDivElement | null>(null);
+
+  const closeEditQuestions = () => {
+    setEditOpen(false);
+    setEditFormId("");
+    setEditQuestions([]);
+  };
+
 
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
@@ -933,6 +957,7 @@ function EmployeePerformanceReviewsTab({
   // Modal state
   const [open, setOpen] = useState(false);
   const [formType, setFormType] = useState<ReviewFormType>("monthly");
+  const [selectedFormId, setSelectedFormId] = useState<string>("");
   const [year, setYear] = useState<number>(currentYear);
   const [month, setMonth] = useState<number>(currentMonth);
 
@@ -944,28 +969,83 @@ function EmployeePerformanceReviewsTab({
   const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
-  const formsByType = useMemo(() => {
-    const m = new Map<ReviewFormType, HrReviewForm>();
-    for (const f of forms) m.set(f.form_type, f);
+  const formById = useMemo(() => {
+    const m = new Map<string, HrReviewForm>();
+    for (const f of forms) m.set(f.id, f);
     return m;
   }, [forms]);
 
-  const questionsByType = useMemo(() => {
-    const annualId = formsByType.get("annual")?.id ?? "";
-    const monthlyId = formsByType.get("monthly")?.id ?? "";
+  const formsByType = useMemo(() => {
+    const annual = (forms ?? [])
+      .filter((f) => f.form_type === "annual")
+      .slice()
+      .sort((a, b) => {
+        const ai = a.is_active ? 1 : 0;
+        const bi = b.is_active ? 1 : 0;
+        if (ai !== bi) return bi - ai; // active first
+        return String(a.title ?? "").localeCompare(String(b.title ?? ""));
+      });
 
-    const annual = (questions ?? []).filter((q) => q.form_id === annualId && q.is_active !== false);
-    const monthly = (questions ?? []).filter((q) => q.form_id === monthlyId && q.is_active !== false);
+    const monthly = (forms ?? [])
+      .filter((f) => f.form_type === "monthly")
+      .slice()
+      .sort((a, b) => {
+        const ai = a.is_active ? 1 : 0;
+        const bi = b.is_active ? 1 : 0;
+        if (ai !== bi) return bi - ai;
+        return String(a.title ?? "").localeCompare(String(b.title ?? ""));
+      });
 
-    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) =>
-      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
-      (a.question_text ?? "").localeCompare(b.question_text ?? "");
+    return { annual, monthly } as Record<ReviewFormType, HrReviewForm[]>;
+  }, [forms]);
 
+  const activeFormsByType = useMemo(() => {
     return {
-      annual: annual.slice().sort(sortFn),
-      monthly: monthly.slice().sort(sortFn),
+      annual: formsByType.annual.filter((f) => f.is_active !== false),
+      monthly: formsByType.monthly.filter((f) => f.is_active !== false),
+    } as Record<ReviewFormType, HrReviewForm[]>;
+  }, [formsByType]);
+
+  const questionsByFormId = useMemo(() => {
+    const map = new Map<string, ReviewQuestion[]>();
+
+    for (const q of questions ?? []) {
+      if (q.is_active === false) continue;
+      const fid = String(q.form_id ?? "");
+      if (!fid) continue;
+      const list = map.get(fid) ?? [];
+      list.push(q);
+      map.set(fid, list);
+    }
+
+    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) => {
+      const ao = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : 0;
+      const bo = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : 0;
+      if (ao !== bo) return ao - bo;
+      return (a.question_text ?? "").localeCompare(b.question_text ?? "");
     };
-  }, [questions, formsByType]);
+
+    for (const [fid, list] of map.entries()) {
+      map.set(fid, list.slice().sort(sortFn));
+    }
+
+    return map;
+  }, [questions]);
+
+  const getQuestionsForForm = useCallback(
+    (formId: string) => {
+      return questionsByFormId.get(formId) ?? [];
+    },
+    [questionsByFormId],
+  );
+
+  const getDefaultActiveFormId = useCallback(
+    (ft: ReviewFormType) => {
+      const list = activeFormsByType[ft] ?? [];
+      return list[0]?.id ?? "";
+    },
+    [activeFormsByType],
+  );
 
 
   function makeLocalId() {
@@ -980,14 +1060,82 @@ function EmployeePerformanceReviewsTab({
   // ----------------------------
   // Question editor helpers
   // ----------------------------
-  function openEditQuestions(which: ReviewFormType) {
-    const form = formsByType.get(which);
-    if (!form) {
-      setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+  function openManageForms() {
+    setManageOpen(true);
+    setManageType("");
+    setShowArchivedForms(false);
+    setNewFormTitle("");
+    setStatus("");
+  }
+
+  function closeManageForms() {
+    setManageOpen(false);
+    setManageType("");
+    setShowArchivedForms(false);
+    setNewFormTitle("");
+    setStatus("");
+  }
+
+  async function createFormForManage() {
+    if (!manageType) return;
+    const title = (newFormTitle ?? "").trim();
+    if (!title) {
+      setStatus("Please enter a form title.");
       return;
     }
 
-    const list: EditQuestion[] = (which === "annual" ? questionsByType.annual : questionsByType.monthly)
+    setCreatingForm(true);
+    setStatus("Creating form...");
+    try {
+      const scaleMax = manageType === "monthly" ? 3 : 5;
+      const { error } = await supabase.from("hr_review_forms").insert({
+        form_type: manageType,
+        title,
+        scale_max: scaleMax,
+        is_active: true,
+      });
+      if (error) throw error;
+
+      setNewFormTitle("");
+      await loadMeta();
+      setStatus("Form created.");
+    } catch (e: any) {
+      setStatus("Create form error: " + (e?.message ?? "unknown"));
+    } finally {
+      setCreatingForm(false);
+    }
+  }
+
+  async function deleteForm(formId: string) {
+    setStatus("Deleting form...");
+    try {
+      const { error } = await supabase.from("hr_review_forms").delete().eq("id", formId);
+      if (error) throw error;
+
+      await loadMeta();
+      // Close editor if it was open for this form
+      setEditOpen((wasOpen) => {
+        if (wasOpen && editFormId === formId) {
+          setEditFormId("");
+          setEditQuestions([]);
+          return false;
+        }
+        return wasOpen;
+      });
+      setStatus("Form deleted.");
+    } catch (e: any) {
+      setStatus("Delete form error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  function openEditForm(formId: string) {
+    const form = formById.get(formId);
+    if (!form) {
+      setStatus("Missing hr_review_forms row for this form.");
+      return;
+    }
+
+    const list: EditQuestion[] = getQuestionsForForm(formId)
       .slice()
       .map((q, idx) => ({
         id: q.id,
@@ -996,7 +1144,7 @@ function EmployeePerformanceReviewsTab({
       }));
 
     if (list.length === 0) {
-      if (which === "annual") {
+      if (form.form_type === "annual") {
         list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0 });
         list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1 });
         list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2 });
@@ -1008,13 +1156,14 @@ function EmployeePerformanceReviewsTab({
     }
 
     list.forEach((q, i) => (q.sort_order = i));
-    setEditFormType(which);
+    setEditFormId(formId);
     setEditQuestions(list);
     setEditOpen(true);
   }
 
-  function closeEditQuestions() {
+  function closeEditForm() {
     setEditOpen(false);
+    setEditFormId("");
     setEditQuestions([]);
   }
 
@@ -1049,9 +1198,10 @@ function EmployeePerformanceReviewsTab({
   async function saveQuestions() {
     setStatus("Saving questions...");
     try {
-      const form = formsByType.get(editFormType);
-      if (!form) {
-        setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+      const formId = editFormId;
+      const form = formById.get(formId);
+      if (!formId || !form) {
+        setStatus("Missing form selection for editing questions.");
         return;
       }
 
@@ -1064,15 +1214,13 @@ function EmployeePerformanceReviewsTab({
         return;
       }
 
-      const currentIds = new Set(
-        (editFormType === "annual" ? questionsByType.annual : questionsByType.monthly).map((q) => q.id)
-      );
+      const currentIds = new Set(getQuestionsForForm(formId).map((q) => q.id));
       const desiredExistingIds = new Set(cleaned.filter((q) => !q.id.startsWith("new:")).map((q) => q.id));
       const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
       if (toDelete.length > 0) {
         const ok = confirm(
-          `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete any saved answers for those questions.`
+          `Delete ${toDelete.length} question(s) from "${form.title}"? This will also delete any saved answers for those questions.`
         );
         if (!ok) {
           setStatus("");
@@ -1103,7 +1251,7 @@ function EmployeePerformanceReviewsTab({
         if (error) throw error;
       }
 
-      closeEditQuestions();
+      closeEditForm();
       await loadMeta();
       setStatus("✅ Saved.");
       setTimeout(() => setStatus(""), 900);
@@ -1112,12 +1260,17 @@ function EmployeePerformanceReviewsTab({
     }
   }
 
+  const effectiveFormId = useMemo(() => {
+    return selectedFormId || getDefaultActiveFormId(formType);
+  }, [selectedFormId, formType, getDefaultActiveFormId]);
+
   const activeQuestions = useMemo(() => {
-    return formType === "annual" ? questionsByType.annual : questionsByType.monthly;
-  }, [formType, questionsByType]);
+    if (!effectiveFormId) return [];
+    return getQuestionsForForm(effectiveFormId);
+  }, [effectiveFormId, getQuestionsForForm]);
 
   const scaleMax = useMemo(() => {
-    return formsByType.get(formType)?.scale_max ?? (formType === "monthly" ? 3 : 5);
+    return formById.get(effectiveFormId)?.scale_max ?? (formType === "monthly" ? 3 : 5);
   }, [formsByType, formType]);
 
   const filteredReviews = useMemo(() => {
@@ -1130,7 +1283,7 @@ function EmployeePerformanceReviewsTab({
 
   async function loadMeta() {
     const [formRes, qRes] = await Promise.all([
-      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").eq("is_active", true),
+      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").order("form_type", { ascending: true }).order("title", { ascending: true }),
       supabase
         .from("hr_review_questions")
         .select("id, form_id, question_text, sort_order, is_active, created_at, updated_at")
@@ -1149,7 +1302,7 @@ function EmployeePerformanceReviewsTab({
   async function loadEmployeeReviews() {
     const res = await supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", employeeId);
 
     if (res.error) throw res.error;
@@ -1203,6 +1356,7 @@ function EmployeePerformanceReviewsTab({
 
   function openCreate(which: ReviewFormType) {
     setFormType(which);
+    setSelectedFormId(getDefaultActiveFormId(which));
     setYear(currentYear);
     setMonth(currentMonth);
     setReviewId("");
@@ -1213,6 +1367,7 @@ function EmployeePerformanceReviewsTab({
 
   function openEdit(r: HrReview) {
     setFormType(r.form_type);
+    setSelectedFormId(r.form_id ?? "");
     setYear(Number(r.period_year ?? currentYear));
     setMonth(Number(r.period_month ?? currentMonth));
     setReviewId(r.id);
@@ -1229,8 +1384,9 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
-    const qs = ft === "annual" ? questionsByType.annual : questionsByType.monthly;
-    const max = formsByType.get(ft)?.scale_max ?? (ft === "monthly" ? 3 : 5);
+    const formId = selectedFormId || getDefaultActiveFormId(ft);
+    const qs = getQuestionsForForm(formId);
+    const max = formById.get(formId)?.scale_max ?? (ft === "monthly" ? 3 : 5);
 
     if (!qs || qs.length === 0) {
       setReviewId("");
@@ -1241,7 +1397,7 @@ function EmployeePerformanceReviewsTab({
 
     const base = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -1253,6 +1409,13 @@ function EmployeePerformanceReviewsTab({
     if (revRes.error) throw revRes.error;
 
     const existing = (revRes.data ?? null) as HrReview | null;
+
+    if (existing?.form_id) {
+      // Existing review locks the form choice for that period
+      setSelectedFormId(existing.form_id);
+    } else if (!selectedFormId) {
+      setSelectedFormId(formId);
+    }
 
     if (!existing?.id) {
       // New review: do NOT pre-fill scores. Missing answers show as blank until someone rates them.
@@ -1290,6 +1453,7 @@ function EmployeePerformanceReviewsTab({
   async function ensureReviewRow(
     empId: string,
     ft: ReviewFormType,
+    formId: string,
     y: number,
     m: number | null,
     attendancePointsSnapshot: number | null,
@@ -1324,6 +1488,7 @@ function EmployeePerformanceReviewsTab({
 
     const payload: any = {
       employee_id: empId,
+      form_id: formId,
       form_type: ft,
       period_year: y,
       period_month: ft === "annual" ? null : m,
@@ -1362,7 +1527,7 @@ function EmployeePerformanceReviewsTab({
 
     setStatus("Saving review...");
     try {
-      const rid = await ensureReviewRow(employeeId, formType, year, month, attendancePoints ?? null);
+      const rid = await ensureReviewRow(employeeId, formType, effectiveFormId, year, month, attendancePoints ?? null);
       setReviewId(rid);
 
       // Persist freeform notes on the review itself.
@@ -1460,7 +1625,6 @@ function EmployeePerformanceReviewsTab({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId]);
 
   // When modal open + selection changes, load existing or seed defaults
@@ -1482,8 +1646,7 @@ function EmployeePerformanceReviewsTab({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, employeeId, formType, year, month, questionsByType, formsByType]);
+  }, [open, employeeId, formType, year, month, selectedFormId, questionsByFormId, activeFormsByType, formById]);
 
   // ESC + outside click to close modal
   useEffect(() => {
@@ -1491,7 +1654,7 @@ function EmployeePerformanceReviewsTab({
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editOpen) closeEditQuestions();
+        if (editOpen) closeEditForm();
         else if (open) closeModal();
       }
     };
@@ -1502,7 +1665,7 @@ function EmployeePerformanceReviewsTab({
       }
       if (editOpen) {
         const el2 = editRef.current;
-        if (el2 && !el2.contains(e.target as any)) closeEditQuestions();
+        if (el2 && !el2.contains(e.target as any)) closeEditForm();
       }
     };
 
@@ -1512,7 +1675,6 @@ function EmployeePerformanceReviewsTab({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editOpen]);
 
   return (
@@ -1533,11 +1695,8 @@ function EmployeePerformanceReviewsTab({
             + Create Monthly Scorecard
           </button>
 
-          <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
-            Edit annual questions
-          </button>
-          <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
-            Edit monthly questions
+          <button className="btn" type="button" onClick={() => openManageForms()}>
+            Manage Forms
           </button>
 
           {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
@@ -1726,6 +1885,41 @@ function EmployeePerformanceReviewsTab({
                   </select>
                 </div>
 
+                <div style={{ minWidth: 260 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Form</div>
+                  <select
+                    className="select"
+                    value={effectiveFormId}
+                    onChange={(e) => {
+                      const fid = String(e.target.value);
+                      setSelectedFormId(fid);
+                      if (!reviewId) {
+                        initialAnsweredIdsRef.current = new Set();
+                        setValues({});
+                      }
+                    }}
+                    disabled={!!reviewId}
+                  >
+                    {(() => {
+                      const optionForms = (reviewId ? formsByType[formType] : activeFormsByType[formType]) ?? [];
+                      return optionForms.length ? (
+                        optionForms.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.title}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="">No active forms</option>
+                      );
+                    })()}
+                  </select>
+                  {!!reviewId ? (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      Form is locked for existing reviews.
+                    </div>
+                  ) : null}
+                </div>
+
                 <div style={{ width: 140 }}>
                   <div style={{ fontWeight: 900, marginBottom: 6 }}>Year</div>
                   <input
@@ -1852,8 +2046,256 @@ function EmployeePerformanceReviewsTab({
       ) : null}
 
       {/* ===========================
-          EDIT QUESTIONS MODAL
+
+      {/* ===========================
+          MANAGE FORMS MODAL
          =========================== */}
+      {manageOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 60,
+            display: "grid",
+            placeItems: "center",
+            padding: 12,
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeManageForms();
+          }}
+        >
+          <div
+            style={{
+              width: "min(860px, 100%)",
+              background: "#fff",
+              borderRadius: 16,
+              border: "1px solid #e5e7eb",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.25)",
+              padding: 14,
+              display: "grid",
+              gap: 12,
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+          >
+            <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+              <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Review Forms</div>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn" type="button" onClick={closeManageForms}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {!manageType ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div className="subtle">
+                  Choose which form category you want to manage. Annual forms use a 1–5 scale and monthly forms use a 1–3
+                  scale.
+                </div>
+
+                <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" type="button" onClick={() => setManageType("annual")}>
+                    Annual forms
+                  </button>
+                  <button className="btn btn-primary" type="button" onClick={() => setManageType("monthly")}>
+                    Monthly forms
+                  </button>
+                  <button className="btn" type="button" onClick={closeManageForms}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <div style={{ fontWeight: 900 }}>
+                      {manageType === "annual" ? "Annual" : "Monthly"} forms
+                    </div>
+                    <div className="subtle">
+                      Click a form title to edit its questions. Deleting a form will also delete any reviews/answers that used
+                      it.
+                    </div>
+                  </div>
+
+                  <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={showArchivedForms}
+                        onChange={(e) => setShowArchivedForms(e.target.checked)}
+                      />
+                      <span className="subtle">Show archived</span>
+                    </label>
+
+                    <button className="btn" type="button" onClick={() => setManageType("")}>
+                      Back
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 10,
+                    alignItems: "end",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#fafafa",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>New form title</div>
+                    <input
+                      className="input"
+                      value={newFormTitle}
+                      onChange={(e) => setNewFormTitle(e.target.value)}
+                      placeholder={manageType === "annual" ? "e.g., Annual – Teachers" : "e.g., Monthly – Classroom"}
+                    />
+                    <div className="subtle" style={{ marginTop: 6 }}>
+                      {manageType === "annual" ? "Scale: 1–5" : "Scale: 1–3"}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={createFormForManage}
+                    disabled={creatingForm || !(newFormTitle ?? "").trim()}
+                    title={creatingForm ? "Creating..." : "Create form"}
+                  >
+                    + Create
+                  </button>
+                </div>
+
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+                  <div style={{ background: "#f9fafb", padding: 10, fontWeight: 900 }}>Forms</div>
+
+                  <div style={{ display: "grid" }}>
+                    {(formsByType[manageType] ?? [])
+                      .filter((f) => (showArchivedForms ? true : f.is_active !== false))
+                      .map((f) => {
+                        const isArchived = f.is_active === false;
+                        return (
+                          <div
+                            key={f.id}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "1fr auto",
+                              gap: 10,
+                              padding: 10,
+                              borderTop: "1px solid #e5e7eb",
+                              alignItems: "center",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="btn"
+                              style={{
+                                justifyContent: "flex-start",
+                                background: "transparent",
+                                border: "none",
+                                padding: 0,
+                                fontWeight: 800,
+                                textAlign: "left",
+                              }}
+                              onClick={() => openEditForm(f.id)}
+                              title="Edit questions"
+                            >
+                              {f.title}
+                              {isArchived ? (
+                                <span className="subtle" style={{ marginLeft: 8, fontWeight: 700 }}>
+                                  (archived)
+                                </span>
+                              ) : null}
+                            </button>
+
+                            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+                              {!isArchived ? (
+                                <button
+                                  className="btn"
+                                  type="button"
+                                  onClick={async () => {
+                                    setStatus("Archiving form...");
+                                    try {
+                                      const { error } = await supabase
+                                        .from("hr_review_forms")
+                                        .update({ is_active: false })
+                                        .eq("id", f.id);
+                                      if (error) throw error;
+                                      await loadMeta();
+                                      setStatus("Form archived.");
+                                    } catch (e: any) {
+                                      setStatus("Archive error: " + (e?.message ?? "unknown"));
+                                    }
+                                  }}
+                                >
+                                  Archive
+                                </button>
+                              ) : (
+                                <button
+                                  className="btn"
+                                  type="button"
+                                  onClick={async () => {
+                                    setStatus("Un-archiving form...");
+                                    try {
+                                      const { error } = await supabase
+                                        .from("hr_review_forms")
+                                        .update({ is_active: true })
+                                        .eq("id", f.id);
+                                      if (error) throw error;
+                                      await loadMeta();
+                                      setStatus("Form re-activated.");
+                                    } catch (e: any) {
+                                      setStatus("Un-archive error: " + (e?.message ?? "unknown"));
+                                    }
+                                  }}
+                                >
+                                  Restore
+                                </button>
+                              )}
+
+                              <button
+                                className="btn"
+                                type="button"
+                                title="Delete form"
+                                onClick={async () => {
+                                  const ok = confirm(
+                                    'Are you sure you want to delete this form?\n\nDeleting a form will also delete any employee evaluations (reviews) that used it, along with their saved answers.'
+                                  );
+                                  if (!ok) return;
+                                  await deleteForm(f.id);
+                                }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                    {(formsByType[manageType] ?? []).filter((f) => (showArchivedForms ? true : f.is_active !== false))
+                      .length === 0 ? (
+                      <div style={{ padding: 12 }} className="subtle">
+                        No forms found.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {status ? <div className="subtle">{status}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* EDIT QUESTIONS MODAL =========================== */}
       {editOpen ? (
         <div
           role="dialog"
@@ -1885,10 +2327,10 @@ function EmployeePerformanceReviewsTab({
             <div className="row-between" style={{ gap: 10 }}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontWeight: 950, fontSize: 16 }}>
-                  Edit {editFormType === "annual" ? "Annual" : "Monthly"} questions
+                  Edit Questions — {formById.get(editFormId)?.title ?? "Form"}
                 </div>
                 <div className="subtle">
-                  {editFormType === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
+                  {formById.get(editFormId)?.form_type === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
                 </div>
               </div>
               <button className="btn" type="button" onClick={closeEditQuestions} title="Close">
@@ -2041,6 +2483,10 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const [legalFirst, setLegalFirst] = useState("");
   const [legalMiddle, setLegalMiddle] = useState("");
   const [legalLast, setLegalLast] = useState("");
+
+  // Employment dates (YYYY-MM-DD). Empty string for endDate means NULL.
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const [nicknamesInput, setNicknamesInput] = useState("");
   const [nicknames, setNicknames] = useState<string[]>([]);
@@ -2401,7 +2847,6 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empPreviewOpen]);
 
   // Lazy load employee docs when the user opens Documents tab
@@ -2969,7 +3414,6 @@ async function addMeetingType() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewOpen]);
 
   // ESC closes meeting type modal
@@ -3527,6 +3971,9 @@ async function addMeetingType() {
         setLegalFirst(emp.legal_first_name ?? "");
         setLegalMiddle(emp.legal_middle_name ?? "");
         setLegalLast(emp.legal_last_name ?? "");
+        const today = new Date().toISOString().slice(0, 10);
+        setStartDate(emp.start_date ?? today);
+        setEndDate(emp.end_date ?? "");
         setNicknames(Array.isArray(emp.nicknames) ? emp.nicknames : []);
 
         setJobLevelId(emp.job_level_id ?? "");
@@ -3570,7 +4017,6 @@ async function addMeetingType() {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId]);
 
   // If user clicks Attendance tab later, refresh attendance + types (keeps it current)
@@ -3590,10 +4036,15 @@ async function addMeetingType() {
       const safeRate = Number.isFinite(parsedRate) ? parsedRate : 0;
 
       const insuranceDoc = hasInsurance ? normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc) : null;
+      const today = new Date().toISOString().slice(0, 10);
+      const safeStartDate = (startDate ?? "").trim() || today;
+      const safeEndDate = (endDate ?? "").trim() || null;
       const payload: any = {
         legal_first_name: legalFirst.trim(),
         legal_middle_name: legalMiddle.trim() || null,
         legal_last_name: legalLast.trim(),
+        start_date: safeStartDate,
+        end_date: safeEndDate,
         nicknames,
         rate_type: rateType,
         rate: safeRate,
@@ -3827,6 +4278,34 @@ async function addMeetingType() {
                       <div>
                         <FieldLabel>Legal last name</FieldLabel>
                         <TextInput value={legalLast} onChange={(e) => setLegalLast(e.target.value)} />
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+                      <div>
+                        <FieldLabel>Start date</FieldLabel>
+                        <TextInput type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+                      </div>
+                      <div>
+                        <FieldLabel>End date (optional)</FieldLabel>
+                        <div className="row" style={{ gap: 8 }}>
+                          <TextInput
+                            type="date"
+                            value={endDate}
+                            onChange={(e) => setEndDate(e.target.value)}
+                            style={{ flex: 1 }}
+                          />
+                          {endDate ? (
+                            <button
+                              className="btn"
+                              type="button"
+                              onClick={() => setEndDate("")}
+                              title="Clear end date"
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
