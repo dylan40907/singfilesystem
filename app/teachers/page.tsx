@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile, fetchActiveTeachers } from "@/lib/teachers";
 import "@fortune-sheet/react/dist/index.css";
+import SheetPlanEditor from "@/components/SheetPlanEditor";
+import { useDebouncedAutosave } from "@/lib/useDebouncedAutosave";
 
 // TipTap (Rich Text)
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -17,8 +18,6 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import type { CommandProps } from "@tiptap/core";
-
-const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
 type UserFolderPermissionRow = {
   permission_id: string;
@@ -201,7 +200,7 @@ function ToolbarButton({
   disabled,
   onClick,
   children,
-  title,
+  title: editTitle,
 }: {
   active?: boolean;
   disabled?: boolean;
@@ -214,7 +213,7 @@ function ToolbarButton({
       type="button"
       className="btn"
       disabled={disabled}
-      title={title}
+      title={editTitle}
       onClick={(e) => {
         e.preventDefault();
         onClick();
@@ -462,6 +461,8 @@ export default function TeachersPage() {
   // Editable fields (supervisor/admin edits)
   const [editTitle, setEditTitle] = useState("");
   const [editContentHtml, setEditContentHtml] = useState("<p></p>");
+  const textDirtyRef = useRef(false);
+
   const [textDirty, setTextDirty] = useState(false);
 
   const baselineTitleRef = useRef<string>("");
@@ -471,8 +472,69 @@ export default function TeachersPage() {
   const [sheetDoc, setSheetDoc] = useState<any[]>(DEFAULT_SHEET_DOC);
   const [sheetLoadedPlanId, setSheetLoadedPlanId] = useState<string>("");
   const [workbookKey, setWorkbookKey] = useState<string>("init");
-  const workbookRef = useRef<any>(null);
   const [sheetDirty, setSheetDirty] = useState(false);
+  const sheetDirtyRef = useRef(false);
+
+  const canAutosave = !!planDetail && isTeacherAllowed(planDetail.owner_user_id);
+
+  // Silent autosave (no auto-comment). Manual "Save edits" still posts the supervisor edit comment.
+  const sheetAutosave = useDebouncedAutosave({
+    enabled: canAutosave && planDetail?.plan_format === "sheet",
+    delayMs: 2000,
+    saveFn: async () => {
+      if (!planDetail || planDetail.plan_format !== "sheet") return;
+      if (!isTeacherAllowed(planDetail.owner_user_id)) return;
+      if (!sheetDirtyRef.current) return;
+
+      console.log("[autosave:teachers] sheet save start", { planId: planDetail.id, dirty: true });
+
+      const exportedRaw = exportSheetDoc();
+      const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
+
+      const payload: any = {
+        title: editTitle,
+        sheet_doc: deepJsonClone(exported),
+        last_reviewed_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
+      if (error) {
+        console.error("[autosave:teachers] sheet save error", error);
+        throw error;
+      }
+      console.log("[autosave:teachers] sheet save success", { planId: planDetail.id, sheets: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
+      sheetDirtyRef.current = false;
+      setSheetDirty(false);
+
+      setSheetDoc(exported);
+      setSheetDirty(false);
+      baselineTitleRef.current = editTitle;
+    },
+  });
+
+  const textAutosave = useDebouncedAutosave({
+    enabled: canAutosave && planDetail?.plan_format === "text",
+    delayMs: 2000,
+    saveFn: async () => {
+      if (!planDetail || planDetail.plan_format !== "text") return;
+      if (!isTeacherAllowed(planDetail.owner_user_id)) return;
+      if (!textDirtyRef.current) return;
+
+      const payload: any = {
+        title: editTitle,
+        content: editContentHtml,
+        last_reviewed_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
+      if (error) throw error;
+
+      textDirtyRef.current = false;
+      baselineTitleRef.current = editTitle;
+      baselineContentHtmlRef.current = editContentHtml;
+    },
+  });
+
 
   // fullscreen overlays
   const [sheetView, setSheetView] = useState(false);
@@ -882,6 +944,9 @@ export default function TeachersPage() {
   }
 
   async function loadPlanDetails(planId: string) {
+    sheetAutosave.cancel();
+    textAutosave.cancel();
+
     setPlanLoading(true);
     try {
       const { data, error } = await supabase
@@ -991,22 +1056,17 @@ export default function TeachersPage() {
   }
 
   const exportSheetDoc = useCallback((): any[] => {
-    const api = workbookRef.current;
-    let latest: any;
-
     try {
-      if (api?.getAllSheets) latest = api.getAllSheets();
+      const ls = (typeof window !== "undefined" ? (window as any).luckysheet : null);
+      if (ls?.getAllSheets) {
+        const sheets = ls.getAllSheets();
+        return deepJsonClone(sheets);
+      }
     } catch (err) {
-      console.warn("exportSheetDoc: ref.getAllSheets() threw", err);
+      console.warn("exportSheetDoc: luckysheet.getAllSheets() threw", err);
     }
-
-    if (!latest) latest = sheetDoc;
-    return deepJsonClone(latest);
+    return deepJsonClone(sheetDoc);
   }, [sheetDoc]);
-
-  const handleSheetOp = useCallback((_ops: any[]) => {
-    requestAnimationFrame(() => setSheetDirty(true));
-  }, []);
 
   async function autoCommentSupervisorEdit(planId: string, planFormat: "text" | "sheet") {
     try {
@@ -1583,11 +1643,11 @@ export default function TeachersPage() {
                       </button>
 
                       {planDetail?.plan_format === "sheet" ? (
-                        <button className="btn" onClick={() => setSheetView(true)} disabled={planLoading}>
+                        <button className="btn" onClick={() => setSheetView(true)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                           Full screen
                         </button>
                       ) : planDetail?.plan_format === "text" ? (
-                        <button className="btn" onClick={() => setTextView(true)} disabled={planLoading}>
+                        <button className="btn" onClick={() => setTextView(true)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                           Full screen
                         </button>
                       ) : null}
@@ -1622,6 +1682,8 @@ export default function TeachersPage() {
                           onChangeHtml={(html) => {
                             setEditContentHtml(html);
                             setTextDirty(true);
+                            textDirtyRef.current = true;
+                            textAutosave.schedule();
                           }}
                           disabled={false}
                         />
@@ -1642,7 +1704,17 @@ export default function TeachersPage() {
                                 Loading sheet…
                               </div>
                             ) : (
-                              <FortuneWorkbook key={workbookKey} ref={workbookRef as any} data={sheetDoc} onOp={handleSheetOp} />
+                              <SheetPlanEditor
+                                key={workbookKey}
+                                workbookKey={workbookKey}
+                                value={sheetDoc}
+                                height={520}
+                                onChange={(next) => {
+                                  setSheetDoc(next);
+                                  setSheetDirty(true);
+                                  sheetAutosave.schedule();
+                                }}
+                              />
                             )}
                           </div>
                         </div>
@@ -1727,14 +1799,14 @@ export default function TeachersPage() {
                 }}
                 placeholder="Lesson plan title"
                 style={{ minWidth: 280 }}
-                disabled={!isTeacherAllowed(planDetail.owner_user_id)}
+                disabled={!isTeacherAllowed(planDetail.owner_user_id) || sheetAutosave.isSaving || textAutosave.isSaving}
               />
 
               <span className="subtle">{hasSupervisorEdits() ? "Unsaved changes" : "All changes saved"}</span>
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setSheetView(false)}>
+              <button className="btn" onClick={() => setSheetView(false)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled || !isTeacherAllowed(planDetail.owner_user_id)}>
@@ -1760,7 +1832,17 @@ export default function TeachersPage() {
               </div>
             ) : (
               <div style={{ height: "100%", width: "100%" }}>
-                <FortuneWorkbook key={workbookKey + ":fullscreen"} ref={workbookRef as any} data={sheetDoc} onOp={handleSheetOp} />
+                <SheetPlanEditor
+                  key={workbookKey + ":fullscreen"}
+                  workbookKey={workbookKey + ":fullscreen"}
+                  value={sheetDoc}
+                  height={"100%"}
+                  onChange={(next) => {
+                    setSheetDoc(next);
+                    setSheetDirty(true);
+                    sheetAutosave.schedule();
+                  }}
+                />
               </div>
             )}
           </div>
@@ -1802,7 +1884,7 @@ export default function TeachersPage() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setTextView(false)}>
+              <button className="btn" onClick={() => setTextView(false)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled || !isTeacherAllowed(planDetail.owner_user_id)}>

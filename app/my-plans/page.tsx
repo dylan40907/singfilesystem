@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
-import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { submitLessonPlan } from "@/lib/lessonPlans";
 import { fetchLessonPlanComments, LessonPlanComment } from "@/lib/lessonPlanComments";
 import "@fortune-sheet/react/dist/index.css";
+import SheetPlanEditor from "@/components/SheetPlanEditor";
+import { useDebouncedAutosave } from "@/lib/useDebouncedAutosave";
 
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -18,8 +19,6 @@ import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { Placeholder } from "@tiptap/extension-placeholder";
 import type { CommandProps } from "@tiptap/core";
-
-const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
 type UserLabelRow = {
   id: string;
@@ -619,6 +618,8 @@ export default function MyPlansPage() {
 
   const [title, setTitle] = useState("");
   const [contentHtml, setContentHtml] = useState("<p></p>");
+
+
   const [sheetDoc, setSheetDoc] = useState<any[]>(DEFAULT_SHEET_DOC);
 
   const [sheetView, setSheetView] = useState(false);
@@ -631,6 +632,7 @@ export default function MyPlansPage() {
 
   const [sheetLoadedPlanId, setSheetLoadedPlanId] = useState<string>("");
   const [workbookKey, setWorkbookKey] = useState<string>("init");
+  const textDirtyRef = useRef(false);
 
   const [userLabelsById, setUserLabelsById] = useState<Record<string, UserLabelRow>>({});
 
@@ -671,6 +673,36 @@ export default function MyPlansPage() {
   // so edit/delete is owner-only.
   const canEdit = !!selectedPlan && selectedPlan.owner_user_id === myUserId;
   const canDelete = !!selectedPlan && selectedPlan.owner_user_id === myUserId;
+
+  const textAutosave = useDebouncedAutosave({
+    enabled: !!selectedPlan && canEdit && (selectedPlan?.plan_format === "text"),
+    delayMs: 2000,
+    saveFn: async () => {
+      if (!selectedPlan) return;
+      if (!canEdit) return;
+      if (!textDirtyRef.current) return;
+
+      const payload: any = {
+        title,
+        last_edited_by: myUserId,
+        last_edited_at: new Date().toISOString(),
+        content: contentHtml,
+      };
+
+      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", selectedPlan.id);
+      if (error) {
+        console.error("[autosave:my-plans] text save error", error);
+        throw error;
+      }
+      console.log("[autosave:my-plans] text save success", { planId: selectedPlan.id, sheets: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
+      sheetDirtyRef.current = false;
+      setSheetDirty(false);
+
+      textDirtyRef.current = false;
+      await loadMeAndPlans();
+    },
+  });
+
 
   const showCreator = useMemo(() => {
     if (!myUserId) return false;
@@ -753,26 +785,56 @@ export default function MyPlansPage() {
     }
   }
 
-  const workbookRef = useRef<any>(null);
   const [sheetDirty, setSheetDirty] = useState(false);
+  const sheetDirtyRef = useRef(false);
+
+  const sheetAutosave = useDebouncedAutosave({
+    enabled: !!selectedPlan && canEdit && (selectedPlan?.plan_format === "sheet"),
+    delayMs: 2000,
+    saveFn: async () => {
+      if (!selectedPlan) return;
+      if (!canEdit) return;
+      if (!sheetDirtyRef.current) return;
+
+      console.log("[autosave:my-plans] sheet save start", { planId: selectedPlan.id, dirty: true });
+
+      const payload: any = {
+        title,
+        last_edited_by: myUserId,
+        last_edited_at: new Date().toISOString(),
+      };
+
+      const exportedRaw = exportSheetDoc();
+      const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
+      payload.sheet_doc = deepJsonClone(exported);
+
+      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", selectedPlan.id);
+      if (error) throw error;
+
+      setSheetDoc(exported);
+      setSheetDirty(false);
+
+      // Refresh list timestamps quietly
+      await loadMeAndPlans();
+    },
+  });
+
 
   const exportSheetDoc = useCallback((): any[] => {
-    const api = workbookRef.current;
-    let latest: any;
-
+    // Prefer runtime snapshot (avoids stale React state issues)
     try {
-      if (api?.getAllSheets) latest = api.getAllSheets();
+      const ls = (typeof window !== "undefined" ? (window as any).luckysheet : null);
+      if (ls?.getAllSheets) {
+        const sheets = ls.getAllSheets();
+        return deepJsonClone(sheets);
+      }
     } catch (err) {
-      console.warn("exportSheetDoc: ref.getAllSheets() threw", err);
+      console.warn("exportSheetDoc: luckysheet.getAllSheets() threw", err);
     }
 
-    if (!latest) latest = sheetDoc;
-    return deepJsonClone(latest);
+    // Fallback to controlled state (kept fresh via <SheetPlanEditor/>)
+    return deepJsonClone(sheetDoc);
   }, [sheetDoc]);
-
-  const handleSheetOp = useCallback((_ops: any[]) => {
-    requestAnimationFrame(() => setSheetDirty(true));
-  }, []);
 
   async function createNewPlan() {
     setBusy(true);
@@ -819,6 +881,9 @@ export default function MyPlansPage() {
       setStatus("This plan is not editable.");
       return;
     }
+
+    sheetAutosave.cancel();
+    textAutosave.cancel();
 
     setBusy(true);
     setStatus("Saving...");
@@ -1201,24 +1266,33 @@ export default function MyPlansPage() {
                               </span>
                             </div>
 
-                            <button className="btn" onClick={() => setSheetView(true)} disabled={busy}>
+                            <button className="btn" onClick={() => setSheetView(true)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                               Full screen
                             </button>
                           </div>
 
                           <div style={{ height: 520, width: "100%" }}>
                             {sheetLoadedPlanId !== selectedPlanId ? (
-                              <div className="subtle" style={{ padding: 12 }}>
-                                Loading sheet…
-                              </div>
-                            ) : (
-                              <FortuneWorkbook
+              <div className="subtle" style={{ padding: 12 }}>
+                Loading sheet…
+              </div>
+            ) : isSheetView ? (
+              <div className="subtle" style={{ padding: 12 }}>
+                Editing in full screen…
+              </div>
+            ) : (
+              <SheetPlanEditor
                                 key={workbookKey}
-                                ref={workbookRef as any}
-                                data={sheetDoc}
-                                onOp={handleSheetOp}
+                                workbookKey={workbookKey}
+                                value={sheetDoc}
+                                height={520}
+                                onChange={(next) => {
+                                  setSheetDoc(next);
+                                  setSheetDirty(true);
+                                  sheetAutosave.schedule();
+                                }}
                               />
-                            )}
+            )}
                           </div>
                         </div>
                       ) : (
@@ -1250,7 +1324,7 @@ export default function MyPlansPage() {
                           <div className="stack" style={{ gap: 10 }}>
                             <div className="row-between" style={{ alignItems: "center", gap: 10 }}>
                               <div style={{ fontWeight: 900 }}>Text plan</div>
-                              <button className="btn" onClick={() => setTextView(true)} disabled={busy}>
+                              <button className="btn" onClick={() => setTextView(true)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                                 Full screen
                               </button>
                             </div>
@@ -1362,7 +1436,7 @@ export default function MyPlansPage() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setSheetView(false)} disabled={busy}>
+              <button className="btn" onClick={() => setSheetView(false)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn" onClick={savePlan} disabled={!canEdit || busy}>
@@ -1390,11 +1464,16 @@ export default function MyPlansPage() {
               </div>
             ) : (
               <div style={{ height: "100%", width: "100%" }}>
-                <FortuneWorkbook
+                <SheetPlanEditor
                   key={workbookKey + ":fullscreen"}
-                  ref={workbookRef as any}
-                  data={sheetDoc}
-                  onOp={handleSheetOp}
+                  workbookKey={workbookKey + ":fullscreen"}
+                  value={sheetDoc}
+                  height={"100%"}
+                  onChange={(next) => {
+                    setSheetDoc(next);
+                    setSheetDirty(true);
+                    sheetAutosave.schedule();
+                  }}
                 />
               </div>
             )}
@@ -1444,7 +1523,7 @@ export default function MyPlansPage() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setTextView(false)} disabled={busy}>
+              <button className="btn" onClick={() => setTextView(false)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn" onClick={savePlan} disabled={!canEdit || busy}>

@@ -13,36 +13,65 @@ type Props = {
   value: any[];
   onChange: (next: any[]) => void;
   height?: string | number;
+  /** Set true to disable editing UI where supported */
+  readOnly?: boolean;
+  /** Force remount/re-init when switching plans */
+  workbookKey?: string;
+  className?: string;
 };
 
 function deepCloneJson<T>(x: T): T {
   return JSON.parse(JSON.stringify(x));
 }
 
-export default function SheetPlanEditor({ value, onChange, height = 520 }: Props) {
+export default function SheetPlanEditor({
+  value,
+  onChange,
+  height = 520,
+  readOnly = false,
+  workbookKey,
+  className,
+}: Props) {
   const [localDoc, setLocalDoc] = useState<any[]>(value ?? []);
   const latestRef = useRef<any[]>(value ?? []);
-  const warnedNoLuckyRef = useRef(false);
+  const warnedNoApiRef = useRef(false);
+  const workbookRef = useRef<any>(null);
 
-  // keep local+ref synced when parent loads a plan
+  // keep local+ref synced when parent loads a plan (or changes plans)
   useEffect(() => {
     const next = value ?? [];
     setLocalDoc(next);
     latestRef.current = next;
   }, [value]);
 
-  const readWorkbookNow = useCallback(() => {
+  const readWorkbookNow = useCallback((): any[] => {
     if (typeof window === "undefined") return latestRef.current;
 
-    const ls = (window as any).luckysheet;
-    if (ls?.getAllSheets) {
-      const sheets = ls.getAllSheets();
-      return deepCloneJson(sheets);
+    // ✅ Primary: FortuneSheet ref API (works even when window.luckysheet isn't exposed)
+    const api = workbookRef.current;
+    if (api?.getAllSheets) {
+      try {
+        const sheets = api.getAllSheets();
+        return deepCloneJson(sheets);
+      } catch (err) {
+        console.warn("FortuneSheet: workbookRef.getAllSheets() threw. Falling back.", err);
+      }
     }
 
-    if (!warnedNoLuckyRef.current) {
-      warnedNoLuckyRef.current = true;
-      console.warn("FortuneSheet: window.luckysheet.getAllSheets() not available. Falling back to localDoc.");
+    // Secondary: legacy global (some builds expose this)
+    const ls = (window as any).luckysheet;
+    if (ls?.getAllSheets) {
+      try {
+        const sheets = ls.getAllSheets();
+        return deepCloneJson(sheets);
+      } catch (err) {
+        console.warn("FortuneSheet: window.luckysheet.getAllSheets() threw. Falling back.", err);
+      }
+    }
+
+    if (!warnedNoApiRef.current) {
+      warnedNoApiRef.current = true;
+      console.warn("FortuneSheet: getAllSheets() not available (ref/global). Falling back to latest local snapshot.");
     }
     return latestRef.current;
   }, []);
@@ -52,17 +81,20 @@ export default function SheetPlanEditor({ value, onChange, height = 520 }: Props
     queueMicrotask(() => {
       const snap = readWorkbookNow();
       latestRef.current = snap;
-      setLocalDoc(snap);
+      // Do NOT setLocalDoc on every op (can cause flashes/remount-like behavior).
       onChange(snap);
     });
   }, [onChange, readWorkbookNow]);
 
   return (
-    <div style={{ height }}>
+    <div style={{ height }} className={className}>
       <FortuneWorkbook
-        // key helps re-init when switching plans
+        ref={workbookRef}
+        key={workbookKey}
         data={localDoc}
         onOp={handleOp}
+        allowEdit={!readOnly}
+        showToolbar={!readOnly}
       />
     </div>
   );
