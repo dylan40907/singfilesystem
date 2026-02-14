@@ -961,9 +961,15 @@ export default function TeachersPage() {
           "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
         )
         .eq("id", planId)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
+
+      if (!data) {
+        setStatus("Plan not found (or you don't have access)." );
+        setPlanDetail(null);
+        return;
+      }
 
       const merged = data as any as PlanDetailRow;
 
@@ -1130,70 +1136,77 @@ export default function TeachersPage() {
       if (planDetail.plan_format === "text") {
         payload.content = editContentHtml;
       } else {
-        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-
-        let exportedRaw = exportSheetDoc();
-        const api = sheetApiRef.current;
-        if (api?.getAllSheets) {
-          try {
-            exportedRaw = deepJsonClone(api.getAllSheets());
-          } catch (err) {
-            console.warn("[save:teachers] getAllSheets failed; using latest snapshot ref", err);
-          }
-        }
-
+        const exportedRaw = exportSheetDoc();
         const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
         payload.sheet_doc = deepJsonClone(exported);
-
-        setSheetDoc(exported);
-        setSheetDirty(false);
       }
 
-      const { data: savedRow, error } = await supabase
+      const expectedUpdatedAt = planDetail.updated_at;
+
+      const { data: updated, error } = await supabase
         .from("lesson_plans")
         .update(payload)
         .eq("id", planDetail.id)
-        .eq("updated_at", planDetail.updated_at)
-        .select("updated_at, sheet_doc, content, title")
+        .eq("updated_at", expectedUpdatedAt)
+        .select(
+          "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+        )
         .maybeSingle();
 
       if (error) throw error;
-      if (!savedRow) {
-        setStatus("Save conflict detected. Please refresh and try again.");
+
+      if (!updated) {
+        // Conflict: reload latest version so UI doesn't “revert”
+        const { data: latest, error: rErr } = await supabase
+          .from("lesson_plans")
+          .select(
+            "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+          )
+          .eq("id", planDetail.id)
+          .maybeSingle();
+        if (rErr) throw rErr;
+
+        if (latest) {
+          setPlanDetail(latest as any);
+          setEditTitle((latest as any).title ?? "");
+          if ((latest as any).plan_format === "text") {
+            setEditContentHtml(normalizeContentToHtml((latest as any).content ?? ""));
+          } else {
+            const normalized = normalizeSheetDoc((latest as any).sheet_doc, DEFAULT_SHEET_DOC);
+            setSheetDoc(normalized);
+            setSheetDirty(false);
+            setWorkbookKey((k) => k + 1);
+          }
+        }
+
+        setStatus("⚠️ Save conflict detected. Reloaded latest version — please re-apply your last change and save again.");
         return;
       }
 
-      await autoCommentSupervisorEdit(planDetail.id, planDetail.plan_format);
+      const merged = updated as any as PlanDetailRow;
 
+      // Update local state from server version
+      setPlanDetail(merged);
       baselineTitleRef.current = editTitle;
-      if (planDetail.plan_format === "text") baselineContentHtmlRef.current = editContentHtml;
+      if (merged.plan_format === "text") baselineContentHtmlRef.current = editContentHtml;
+
+      if (merged.plan_format === "sheet") {
+        const normalized = normalizeSheetDoc(merged.sheet_doc, DEFAULT_SHEET_DOC);
+        setSheetDoc(normalized);
+        setSheetDirty(false);
+      }
 
       setTextDirty(false);
+
+      await autoCommentSupervisorEdit(merged.id, merged.plan_format);
+
       setStatus("✅ Saved edits.");
 
-      // Update local state without reloading (prevents overwriting workbook state)
-      setPlanDetail((prev: any) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          updated_at: (savedRow as any).updated_at ?? prev.updated_at,
-          title: (savedRow as any).title ?? prev.title,
-          content: (savedRow as any).content ?? prev.content,
-          sheet_doc: (savedRow as any).sheet_doc ?? prev.sheet_doc,
-        };
-      });
-      if (planDetail.plan_format === "sheet" && (savedRow as any).sheet_doc) {
-        setSheetDoc(((savedRow as any).sheet_doc as any[]) ?? DEFAULT_SHEET_DOC);
-      }
-      if (planDetail.plan_format === "text" && typeof (savedRow as any).content === "string") {
-        setEditContentHtml((savedRow as any).content);
-      }
-
       if (selectedTeacherId) await refreshTeacherPlans(selectedTeacherId);
-        refreshComments(planDetail.id);
-      } catch (e: any) {
-        setStatus("Save edits error: " + (e?.message ?? "unknown"));
-      }
+      await refreshComments(merged.id);
+    } catch (e: any) {
+      setStatus("Save edits error: " + (e?.message ?? "unknown"));
+    }
   }
 
   async function approvePlan(planId: string) {

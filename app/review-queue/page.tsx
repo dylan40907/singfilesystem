@@ -572,7 +572,31 @@ export default function ReviewQueuePage() {
 
       if (error) throw error;
       if (!savedRow) {
-        setStatus("Save conflict detected. Please refresh and try again.");
+        // Conflict: reload latest version so UI doesn't “revert”
+        const { data: latest, error: rErr } = await supabase
+          .from("lesson_plans")
+          .select(
+            "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+          )
+          .eq("id", planDetail.id)
+          .maybeSingle();
+        if (rErr) throw rErr;
+
+        if (latest) {
+          setPlanDetail(latest as any);
+          setEditTitle((latest as any).title ?? "");
+          if ((latest as any).plan_format === "text") {
+            setEditContentHtml(normalizeContentToHtml((latest as any).content ?? ""));
+          } else {
+            const normalized = normalizeForFortune((latest as any).sheet_doc, DEFAULT_SHEET_DOC);
+            setSheetDoc(normalized);
+            setSheetDirty(false);
+            setWorkbookKey(`${planDetail.id}:${Date.now()}`);
+            setSheetLoadedPlanId(planDetail.id);
+          }
+        }
+
+        setStatus("⚠️ Save conflict detected. Reloaded latest version — please re-apply your last change and save again.");
         return;
       }
 
@@ -696,7 +720,7 @@ export default function ReviewQueuePage() {
     }
   }
 
-  async function loadPlan(planId: string) {
+  async function loadPlan(planId: string, opts?: { preserveView?: boolean }) {
     sheetAutosave.cancel();
     textAutosave.cancel();
 
@@ -708,9 +732,15 @@ export default function ReviewQueuePage() {
           "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
         )
         .eq("id", planId)
-        .single();
+        .maybeSingle();
 
       if (error) throw error;
+
+      if (!data) {
+        setStatus("Plan not found (or you don't have access).");
+        setPlanDetail(null);
+        return;
+      }
 
       const base = (data as any) as PlanDetailRow;
       const ownerProfile = plans.find((p) => p.id === planId)?.owner_profile ?? null;
@@ -718,9 +748,11 @@ export default function ReviewQueuePage() {
       const merged: PlanDetailRow = { ...base, owner_profile: ownerProfile };
       setPlanDetail(merged);
 
-      // close any fullscreen when switching plans
-      setSheetView(false);
-      setTextView(false);
+      // close any fullscreen when switching plans (unless preserving view)
+      if (!opts?.preserveView) {
+        setSheetView(false);
+        setTextView(false);
+      }
 
       // Seed editable UI state
       const seededTitle = merged.title ?? "";
@@ -901,7 +933,31 @@ export default function ReviewQueuePage() {
 
       if (error) throw error;
       if (!savedRow) {
-        setStatus("Save conflict detected. Please refresh and try again.");
+        // Conflict: reload latest version so UI doesn't “revert”
+        const { data: latest, error: rErr } = await supabase
+          .from("lesson_plans")
+          .select(
+            "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
+          )
+          .eq("id", planDetail.id)
+          .maybeSingle();
+        if (rErr) throw rErr;
+
+        if (latest) {
+          setPlanDetail(latest as any);
+          setEditTitle((latest as any).title ?? "");
+          if ((latest as any).plan_format === "text") {
+            setEditContentHtml(normalizeContentToHtml((latest as any).content ?? ""));
+          } else {
+            const normalized = normalizeForFortune((latest as any).sheet_doc, DEFAULT_SHEET_DOC);
+            setSheetDoc(normalized);
+            setSheetDirty(false);
+            setWorkbookKey(`${planDetail.id}:${Date.now()}`);
+            setSheetLoadedPlanId(planDetail.id);
+          }
+        }
+
+        setStatus("⚠️ Save conflict detected. Reloaded latest version — please re-apply your last change and save again.");
         return;
       }
 
@@ -915,7 +971,7 @@ export default function ReviewQueuePage() {
       setTextDirty(false);
       setStatus("✅ Saved edits.");
       await refreshQueue();
-      await loadPlan(planDetail.id);
+      await loadPlan(planDetail.id, { preserveView: true });
       await refreshComments(planDetail.id);
     } catch (e: any) {
       setStatus("Save edits error: " + (e?.message ?? "unknown"));
