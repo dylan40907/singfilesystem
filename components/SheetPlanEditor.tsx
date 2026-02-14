@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { MutableRefObject } from "react";
 import "@fortune-sheet/react/dist/index.css";
 
 const FortuneWorkbook = dynamic(
@@ -18,6 +19,8 @@ type Props = {
   /** Force remount/re-init when switching plans */
   workbookKey?: string;
   className?: string;
+  /** Optional: access FortuneSheet API (e.g., getAllSheets) from parent */
+  apiRef?: MutableRefObject<any | null>;
 };
 
 function deepCloneJson<T>(x: T): T {
@@ -31,11 +34,19 @@ export default function SheetPlanEditor({
   readOnly = false,
   workbookKey,
   className,
+  apiRef,
 }: Props) {
   const [localDoc, setLocalDoc] = useState<any[]>(value ?? []);
   const latestRef = useRef<any[]>(value ?? []);
   const warnedNoApiRef = useRef(false);
   const workbookRef = useRef<any>(null);
+  // Expose workbook API to parents (for save-time snapshots)
+  useEffect(() => {
+    if (apiRef) {
+      apiRef.current = workbookRef.current;
+    }
+  }, [apiRef, workbookKey]);
+
 
   // keep local+ref synced when parent loads a plan (or changes plans)
   useEffect(() => {
@@ -79,6 +90,7 @@ export default function SheetPlanEditor({
   const handleOp = useCallback(() => {
     // Defer to avoid "setState while rendering ForwardRef"
     queueMicrotask(() => {
+      if (apiRef) apiRef.current = workbookRef.current;
       const snap = readWorkbookNow();
       latestRef.current = snap;
       // Do NOT setLocalDoc on every op (can cause flashes/remount-like behavior).

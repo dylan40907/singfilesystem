@@ -473,6 +473,7 @@ export default function TeachersPage() {
   // sheet state
   const [sheetDoc, setSheetDoc] = useState<any[]>(DEFAULT_SHEET_DOC);
   const latestSheetRef = useRef<any[]>(sheetDoc);
+  const sheetApiRef = useRef<any>(null);
   const [sheetLoadedPlanId, setSheetLoadedPlanId] = useState<string>("");
   const [workbookKey, setWorkbookKey] = useState<string>("init");
   const [sheetDirty, setSheetDirty] = useState(false);
@@ -1129,7 +1130,18 @@ export default function TeachersPage() {
       if (planDetail.plan_format === "text") {
         payload.content = editContentHtml;
       } else {
-        const exportedRaw = exportSheetDoc();
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+        let exportedRaw = exportSheetDoc();
+        const api = sheetApiRef.current;
+        if (api?.getAllSheets) {
+          try {
+            exportedRaw = deepJsonClone(api.getAllSheets());
+          } catch (err) {
+            console.warn("[save:teachers] getAllSheets failed; using latest snapshot ref", err);
+          }
+        }
+
         const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
         payload.sheet_doc = deepJsonClone(exported);
 
@@ -1137,8 +1149,19 @@ export default function TeachersPage() {
         setSheetDirty(false);
       }
 
-      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
+      const { data: savedRow, error } = await supabase
+        .from("lesson_plans")
+        .update(payload)
+        .eq("id", planDetail.id)
+        .eq("updated_at", planDetail.updated_at)
+        .select("updated_at, sheet_doc, content, title")
+        .maybeSingle();
+
       if (error) throw error;
+      if (!savedRow) {
+        setStatus("Save conflict detected. Please refresh and try again.");
+        return;
+      }
 
       await autoCommentSupervisorEdit(planDetail.id, planDetail.plan_format);
 
@@ -1148,12 +1171,29 @@ export default function TeachersPage() {
       setTextDirty(false);
       setStatus("✅ Saved edits.");
 
+      // Update local state without reloading (prevents overwriting workbook state)
+      setPlanDetail((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          updated_at: (savedRow as any).updated_at ?? prev.updated_at,
+          title: (savedRow as any).title ?? prev.title,
+          content: (savedRow as any).content ?? prev.content,
+          sheet_doc: (savedRow as any).sheet_doc ?? prev.sheet_doc,
+        };
+      });
+      if (planDetail.plan_format === "sheet" && (savedRow as any).sheet_doc) {
+        setSheetDoc(((savedRow as any).sheet_doc as any[]) ?? DEFAULT_SHEET_DOC);
+      }
+      if (planDetail.plan_format === "text" && typeof (savedRow as any).content === "string") {
+        setEditContentHtml((savedRow as any).content);
+      }
+
       if (selectedTeacherId) await refreshTeacherPlans(selectedTeacherId);
-      await loadPlanDetails(planDetail.id);
-      await refreshComments(planDetail.id);
-    } catch (e: any) {
-      setStatus("Save edits error: " + (e?.message ?? "unknown"));
-    }
+        refreshComments(planDetail.id);
+      } catch (e: any) {
+        setStatus("Save edits error: " + (e?.message ?? "unknown"));
+      }
   }
 
   async function approvePlan(planId: string) {
@@ -1836,6 +1876,7 @@ export default function TeachersPage() {
                 <SheetPlanEditor
                   key={workbookKey + ":fullscreen"}
                   workbookKey={workbookKey + ":fullscreen"}
+                  apiRef={sheetApiRef}
                   value={sheetDoc}
                   height={"100%"}
                   onChange={(next) => {

@@ -624,6 +624,7 @@ export default function MyPlansPage() {
 
   const [sheetDoc, setSheetDoc] = useState<any[]>(DEFAULT_SHEET_DOC);
   const latestSheetRef = useRef<any[]>(sheetDoc);
+  const sheetApiRef = useRef<any>(null);
 
   const [sheetView, setSheetView] = useState(false);
   const [textView, setTextView] = useState(false);
@@ -892,18 +893,48 @@ export default function MyPlansPage() {
       if (selectedPlan.plan_format === "text") {
         payload.content = contentHtml;
       } else {
-        const exportedRaw = exportSheetDoc();
+        // Flush UI ops before snapshotting workbook (important in production timing)
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+        let exportedRaw = exportSheetDoc();
+        const api = sheetApiRef.current;
+        if (api?.getAllSheets) {
+          try {
+            exportedRaw = deepJsonClone(api.getAllSheets());
+          } catch (err) {
+            console.warn("[save:my-plans] getAllSheets failed; using latest snapshot ref", err);
+          }
+        }
+
         const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
         payload.sheet_doc = deepJsonClone(exported);
         setSheetDoc(exported);
         setSheetDirty(false);
       }
 
-      const { error } = await supabase.from("lesson_plans").update(payload).eq("id", selectedPlan.id);
+      const { data: savedRow, error } = await supabase
+        .from("lesson_plans")
+        .update(payload)
+        .eq("id", selectedPlan.id)
+        .eq("updated_at", selectedPlan.updated_at)
+        .select("updated_at, sheet_doc, content, title")
+        .maybeSingle();
+
       if (error) throw error;
+      if (!savedRow) {
+        setStatus("Save conflict detected. Please refresh and try again.");
+        return;
+      }
+
+      // Update local state without reloading lists (prevents overwriting workbook state)
+      if (selectedPlan.plan_format === "sheet" && savedRow.sheet_doc) {
+        setSheetDoc((savedRow.sheet_doc as any[]) ?? DEFAULT_SHEET_DOC);
+      }
+      if (selectedPlan.plan_format === "text" && typeof savedRow.content === "string") {
+        setContentHtml(savedRow.content);
+      }
 
       setStatus("✅ Saved.");
-      await loadMeAndPlans();
     } catch (e: any) {
       setStatus("Save error: " + (e?.message ?? "unknown"));
     } finally {
@@ -932,7 +963,19 @@ export default function MyPlansPage() {
       if (selectedPlan.plan_format === "text") {
         payload.content = contentHtml;
       } else {
-        const exportedRaw = exportSheetDoc();
+        // Flush UI ops before snapshotting workbook (important in production timing)
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+        let exportedRaw = exportSheetDoc();
+        const api = sheetApiRef.current;
+        if (api?.getAllSheets) {
+          try {
+            exportedRaw = deepJsonClone(api.getAllSheets());
+          } catch (err) {
+            console.warn("[save:my-plans] getAllSheets failed; using latest snapshot ref", err);
+          }
+        }
+
         const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
         payload.sheet_doc = deepJsonClone(exported);
         setSheetDoc(exported);
@@ -1279,6 +1322,7 @@ export default function MyPlansPage() {
               <SheetPlanEditor
                                 key={workbookKey}
                                 workbookKey={workbookKey}
+                                apiRef={sheetApiRef}
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
@@ -1465,6 +1509,7 @@ export default function MyPlansPage() {
                 <SheetPlanEditor
                   key={workbookKey + ":fullscreen"}
                   workbookKey={workbookKey + ":fullscreen"}
+                  apiRef={sheetApiRef}
                   value={sheetDoc}
                   height={"100%"}
                   onChange={(next) => {
