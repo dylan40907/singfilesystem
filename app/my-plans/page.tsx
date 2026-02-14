@@ -623,6 +623,7 @@ export default function MyPlansPage() {
 
 
   const [sheetDoc, setSheetDoc] = useState<any[]>(DEFAULT_SHEET_DOC);
+  const latestSheetRef = useRef<any[]>(sheetDoc);
 
   const [sheetView, setSheetView] = useState(false);
   const [textView, setTextView] = useState(false);
@@ -825,19 +826,9 @@ export default function MyPlansPage() {
 
 
   const exportSheetDoc = useCallback((): any[] => {
-    // Prefer runtime snapshot (avoids stale React state issues)
-    try {
-      const ls = (typeof window !== "undefined" ? (window as any).luckysheet : null);
-      if (ls?.getAllSheets) {
-        const sheets = ls.getAllSheets();
-        return deepJsonClone(sheets);
-      }
-    } catch (err) {
-      console.warn("exportSheetDoc: luckysheet.getAllSheets() threw", err);
-    }
-
-    // Fallback to controlled state (kept fresh via <SheetPlanEditor/>)
-    return deepJsonClone(sheetDoc);
+    // Always export from the latest snapshot emitted by <SheetPlanEditor />.
+    // Do NOT rely on window.luckysheet (not exposed in our build) and avoid reinitializing the workbook on save.
+    return deepJsonClone(latestSheetRef.current ?? sheetDoc);
   }, [sheetDoc]);
 
   async function createNewPlan() {
@@ -1292,6 +1283,8 @@ export default function MyPlansPage() {
                                 height={520}
                                 onChange={(next) => {
                                   setSheetDoc(next);
+                    latestSheetRef.current = next;
+                    sheetDirtyRef.current = true;
                                   setSheetDirty(true);
                                   sheetDirtyRef.current = true;
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
@@ -1476,6 +1469,8 @@ export default function MyPlansPage() {
                   height={"100%"}
                   onChange={(next) => {
                     setSheetDoc(next);
+                    latestSheetRef.current = next;
+                    sheetDirtyRef.current = true;
                     setSheetDirty(true);
                                   sheetDirtyRef.current = true;
                     if (AUTOSAVE_ENABLED) sheetAutosave.schedule();

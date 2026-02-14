@@ -42,7 +42,7 @@ export default function SheetPlanEditor({
     const next = value ?? [];
     setLocalDoc(next);
     latestRef.current = next;
-  }, [value]);
+  }, [workbookKey]);
 
   const readWorkbookNow = useCallback((): any[] => {
     if (typeof window === "undefined") return latestRef.current;
