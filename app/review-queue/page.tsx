@@ -461,6 +461,8 @@ function RichTextEditor({
 // ---------------------------
 
 export default function ReviewQueuePage() {
+  const AUTOSAVE_ENABLED = false; // TEMP: disable autosave (manual save only)
+
   const DEFAULT_SHEET_DOC = [{ name: "Sheet 1", row: 30, column: 20, celldata: [], config: {} }];
 
   const [status, setStatus] = useState("");
@@ -511,7 +513,7 @@ export default function ReviewQueuePage() {
   const canAutosave = !!selectedPlan && isTeacherAllowed(selectedPlan.owner_user_id);
 
   const sheetAutosave = useDebouncedAutosave({
-    enabled: canAutosave && planDetail?.plan_format === "sheet",
+    enabled: AUTOSAVE_ENABLED && (canAutosave && planDetail?.plan_format === "sheet"),
     delayMs: 2000,
     saveFn: async () => {
       if (!planDetail || planDetail.plan_format !== "sheet") return;
@@ -545,7 +547,7 @@ export default function ReviewQueuePage() {
   });
 
   const textAutosave = useDebouncedAutosave({
-    enabled: canAutosave && planDetail?.plan_format === "text",
+    enabled: AUTOSAVE_ENABLED && (canAutosave && planDetail?.plan_format === "text"),
     delayMs: 2000,
     saveFn: async () => {
       if (!planDetail || planDetail.plan_format !== "text") return;
@@ -560,6 +562,12 @@ export default function ReviewQueuePage() {
 
       const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
       if (error) throw error;
+
+      console.log("[autosave:review-queue] text save success", {
+        planId: planDetail.id,
+        htmlLen: typeof editContentHtml === "string" ? editContentHtml.length : 0,
+      });
+
 
       textDirtyRef.current = false;
       baselineTitleRef.current = editTitle;
@@ -1238,7 +1246,8 @@ export default function ReviewQueuePage() {
                                 onChange={(next) => {
                                   setSheetDoc(next);
                                   setSheetDirty(true);
-                                  sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
                               )}
@@ -1376,7 +1385,8 @@ export default function ReviewQueuePage() {
                 onChange={(next) => {
                   setSheetDoc(next);
                   setSheetDirty(true);
-                  sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                 }}
               />
               </div>

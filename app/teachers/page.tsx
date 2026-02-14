@@ -412,6 +412,8 @@ function isValidUsername(username: string) {
 }
 
 export default function TeachersPage() {
+  const AUTOSAVE_ENABLED = false; // TEMP: disable autosave (manual save only)
+
   const DEFAULT_SHEET_DOC = [{ name: "Sheet 1", row: 30, column: 20, celldata: [], config: {} }];
 
   const [status, setStatus] = useState("");
@@ -479,7 +481,7 @@ export default function TeachersPage() {
 
   // Silent autosave (no auto-comment). Manual "Save edits" still posts the supervisor edit comment.
   const sheetAutosave = useDebouncedAutosave({
-    enabled: canAutosave && planDetail?.plan_format === "sheet",
+    enabled: AUTOSAVE_ENABLED && (canAutosave && planDetail?.plan_format === "sheet"),
     delayMs: 2000,
     saveFn: async () => {
       if (!planDetail || planDetail.plan_format !== "sheet") return;
@@ -513,7 +515,7 @@ export default function TeachersPage() {
   });
 
   const textAutosave = useDebouncedAutosave({
-    enabled: canAutosave && planDetail?.plan_format === "text",
+    enabled: AUTOSAVE_ENABLED && (canAutosave && planDetail?.plan_format === "text"),
     delayMs: 2000,
     saveFn: async () => {
       if (!planDetail || planDetail.plan_format !== "text") return;
@@ -528,6 +530,8 @@ export default function TeachersPage() {
 
       const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
       if (error) throw error;
+
+      console.log("[autosave:teachers] sheet save success", { planId: planDetail.id, sheetLen: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
 
       textDirtyRef.current = false;
       baselineTitleRef.current = editTitle;
@@ -1683,7 +1687,7 @@ export default function TeachersPage() {
                             setEditContentHtml(html);
                             setTextDirty(true);
                             textDirtyRef.current = true;
-                            textAutosave.schedule();
+                            if (AUTOSAVE_ENABLED) textAutosave.schedule();
                           }}
                           disabled={false}
                         />
@@ -1712,7 +1716,8 @@ export default function TeachersPage() {
                                 onChange={(next) => {
                                   setSheetDoc(next);
                                   setSheetDirty(true);
-                                  sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
                             )}
@@ -1840,7 +1845,8 @@ export default function TeachersPage() {
                   onChange={(next) => {
                     setSheetDoc(next);
                     setSheetDirty(true);
-                    sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                    if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                   }}
                 />
               </div>

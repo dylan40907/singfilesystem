@@ -599,6 +599,8 @@ function TrashIconButton({
 }
 
 export default function MyPlansPage() {
+  const AUTOSAVE_ENABLED = false; // TEMP: disable autosave (manual save only)
+
   const DEFAULT_SHEET_DOC = [
     {
       name: "Sheet 1",
@@ -675,7 +677,7 @@ export default function MyPlansPage() {
   const canDelete = !!selectedPlan && selectedPlan.owner_user_id === myUserId;
 
   const textAutosave = useDebouncedAutosave({
-    enabled: !!selectedPlan && canEdit && (selectedPlan?.plan_format === "text"),
+    enabled: AUTOSAVE_ENABLED && (!!selectedPlan && canEdit && (selectedPlan?.plan_format === "text")),
     delayMs: 2000,
     saveFn: async () => {
       if (!selectedPlan) return;
@@ -789,7 +791,7 @@ export default function MyPlansPage() {
   const sheetDirtyRef = useRef(false);
 
   const sheetAutosave = useDebouncedAutosave({
-    enabled: !!selectedPlan && canEdit && (selectedPlan?.plan_format === "sheet"),
+    enabled: AUTOSAVE_ENABLED && (!!selectedPlan && canEdit && (selectedPlan?.plan_format === "sheet")),
     delayMs: 2000,
     saveFn: async () => {
       if (!selectedPlan) return;
@@ -810,6 +812,8 @@ export default function MyPlansPage() {
 
       const { error } = await supabase.from("lesson_plans").update(payload).eq("id", selectedPlan.id);
       if (error) throw error;
+
+      console.log("[autosave:my-plans] sheet save success", { planId: selectedPlan.id, sheetLen: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
 
       setSheetDoc(exported);
       setSheetDirty(false);
@@ -1289,7 +1293,8 @@ export default function MyPlansPage() {
                                 onChange={(next) => {
                                   setSheetDoc(next);
                                   setSheetDirty(true);
-                                  sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
             )}
@@ -1472,7 +1477,8 @@ export default function MyPlansPage() {
                   onChange={(next) => {
                     setSheetDoc(next);
                     setSheetDirty(true);
-                    sheetAutosave.schedule();
+                                  sheetDirtyRef.current = true;
+                    if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                   }}
                 />
               </div>
