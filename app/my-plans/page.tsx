@@ -871,95 +871,67 @@ export default function MyPlansPage() {
     }
   }
 
-  async function savePlan() {
-    if (!selectedPlan) return;
-    if (!canEdit) {
-      setStatus("This plan is not editable.");
-      return;
+  
+async function savePlan() {
+  if (!selectedPlan || !canEdit) return;
+
+  // Snapshot what we're about to save to avoid saving stale state
+  const planId = selectedPlan.id;
+
+  setBusy(true);
+  setStatus("Saving...");
+
+  try {
+    const payload: any = {
+      title: title?.trim() || "Untitled",
+      content: contentHtml ?? "",
+      last_edited_by: myUserId ?? null,
+      last_edited_at: new Date().toISOString(),
+    };
+
+    if (selectedPlan.plan_format === "sheet") {
+      payload.sheet_doc = exportSheetDoc() ?? DEFAULT_SHEET_DOC;
     }
 
-    setBusy(true);
-    setStatus("Saving...");
-    try {
-      const payload: any = {
-        title,
-        last_edited_by: myUserId,
-        last_edited_at: new Date().toISOString(),
-      };
+    const { data: updated, error } = await supabase
+      .from("lesson_plans")
+      .update(payload)
+      .eq("id", planId)
+      .select(
+        "id, created_at, updated_at, title, status, content, plan_format, sheet_doc, owner_user_id, last_edited_by, last_edited_at, last_submitted_by, last_submitted_at"
+      )
+      .maybeSingle();
 
-      if (selectedPlan.plan_format === "text") {
-        payload.content = contentHtml;
-      } else {
-        const exportedRaw = exportSheetDoc();
-        const exported = normalizeForFortune(exportedRaw, DEFAULT_SHEET_DOC);
-        payload.sheet_doc = deepJsonClone(exported);
-      }
+    if (error) throw error;
 
-      // ✅ optimistic lock by updated_at to avoid overwriting newer server state
-      const expectedUpdatedAt = selectedPlan.updated_at;
-
-      const { data: updated, error } = await supabase
+    // Some PostgREST/Supabase configurations may return null data even on success if select is disallowed.
+    // In that case, immediately re-fetch to confirm persistence.
+    if (!updated) {
+      const { data: latest, error: rErr } = await supabase
         .from("lesson_plans")
-        .update(payload)
-        .eq("id", selectedPlan.id)
-        .eq("updated_at", expectedUpdatedAt)
         .select(
           "id, created_at, updated_at, title, status, content, plan_format, sheet_doc, owner_user_id, last_edited_by, last_edited_at, last_submitted_by, last_submitted_at"
         )
+        .eq("id", planId)
         .maybeSingle();
 
-      if (error) throw error;
+      if (rErr) throw rErr;
+      if (!latest) throw new Error("Save did not return data and re-fetch found no row.");
 
-      // If 0 rows updated, Supabase returns null data with no error -> treat as conflict and reload
-      if (!updated) {
-        const { data: latest, error: rErr } = await supabase
-          .from("lesson_plans")
-          .select(
-            "id, created_at, updated_at, title, status, content, plan_format, sheet_doc, owner_user_id, last_edited_by, last_edited_at, last_submitted_by, last_submitted_at"
-          )
-          .eq("id", selectedPlan.id)
-          .maybeSingle();
-
-        if (rErr) throw rErr;
-
-        if (latest) {
-          // Refresh editor with latest server state so we never “save then revert”
-          setStatus("⚠️ Save conflict detected. Reloaded latest version — please re-apply your last change and save again.");
-          setPlans((prev) => prev.map((p) => (p.id === latest.id ? ({ ...p, ...latest } as any) : p)));
-          setTitle((latest as any).title ?? "");
-          if ((latest as any).plan_format === "text") {
-            setContentHtml(normalizeContentToHtml((latest as any).content ?? ""));
-          } else {
-            const normalized = normalizeSheetDoc((latest as any).sheet_doc, DEFAULT_SHEET_DOC);
-            setSheetDoc(normalized);
-            setSheetDirty(false);
-            setWorkbookKey((k) => k + 1);
-          }
-        } else {
-          setStatus("Save conflict detected, and the plan could not be reloaded (not found).");
-        }
-        return;
-      }
-
-      // Success: apply returned server version (includes updated_at)
-      const u = updated as any as MyPlanRow;
-      setPlans((prev) => prev.map((p) => (p.id === u.id ? ({ ...p, ...u } as any) : p)));
-      setTitle(u.title ?? "");
-      if (u.plan_format === "text") {
-        setContentHtml(normalizeContentToHtml(u.content ?? ""));
-      } else {
-        const normalized = normalizeSheetDoc(u.sheet_doc, DEFAULT_SHEET_DOC);
-        setSheetDoc(normalized);
-        setSheetDirty(false);
-      }
-
-      setStatus("✅ Saved.");
-    } catch (e: any) {
-      setStatus("Save error: " + (e?.message ?? "unknown"));
-    } finally {
-      setBusy(false);
+      setPlans((prev) => prev.map((p) => (p.id === planId ? latest : p)));
+    } else {
+      setPlans((prev) => prev.map((p) => (p.id === planId ? updated : p)));
     }
+
+    setSheetDirty(false);
+    setStatus("All changes saved");
+  } catch (e: any) {
+    console.error("[save:my-plans] failed", e);
+    setStatus(`Save failed: ${e?.message ?? "Unknown error"}`);
+  } finally {
+    setBusy(false);
   }
+}
 
   async function submitSelectedPlan() {
     if (!selectedPlan) return;

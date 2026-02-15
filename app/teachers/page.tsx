@@ -1141,14 +1141,11 @@ export default function TeachersPage() {
         payload.sheet_doc = deepJsonClone(exported);
       }
 
-      const expectedUpdatedAt = planDetail.updated_at;
-
       const { data: updated, error } = await supabase
         .from("lesson_plans")
         .update(payload)
         .eq("id", planDetail.id)
-        .eq("updated_at", expectedUpdatedAt)
-        .select(
+                .select(
           "id, owner_user_id, created_at, updated_at, title, status, content, plan_format, sheet_doc, approved_by, approved_at, last_reviewed_at"
         )
         .maybeSingle();
