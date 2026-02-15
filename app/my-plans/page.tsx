@@ -700,6 +700,8 @@ export default function MyPlansPage() {
       }
       console.log("[autosave:my-plans] text save success", { planId: selectedPlan.id, sheets: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
       sheetDirtyRef.current = false;
+      sheetDirtyUiOnceRef.current = false;
+      sheetDirtyUiOnceRef.current = false;
       setSheetDirty(false);
 
       textDirtyRef.current = false;
@@ -792,7 +794,9 @@ export default function MyPlansPage() {
   const [sheetDirty, setSheetDirty] = useState(false);
   const sheetDirtyRef = useRef(false);
 
-  const sheetAutosave = useDebouncedAutosave({
+  
+  const sheetDirtyUiOnceRef = useRef(false);
+const sheetAutosave = useDebouncedAutosave({
     enabled: AUTOSAVE_ENABLED && (!!selectedPlan && canEdit && (selectedPlan?.plan_format === "sheet")),
     delayMs: 2000,
     saveFn: async () => {
@@ -827,17 +831,34 @@ export default function MyPlansPage() {
 
 
   const exportSheetDoc = useCallback((): any[] => {
-  // Prefer reading directly from the FortuneSheet instance (more reliable in production builds)
-  // then fall back to the latest snapshot emitted by <SheetPlanEditor />.
-  try {
-    const api: any = sheetApiRef.current as any;
-    const sheets = api?.getAllSheets?.();
-    if (Array.isArray(sheets) && sheets.length > 0) return deepJsonClone(sheets);
-  } catch {
-    // ignore
-  }
-  return deepJsonClone(latestSheetRef.current ?? sheetDoc);
-}, [sheetDoc]);
+    // Prefer reading directly from the SheetPlanEditor api (more reliable in production builds)
+    try {
+      const api: any = sheetApiRef.current as any;
+      const snap = api?.getSnapshot?.();
+      if (Array.isArray(snap) && snap.length > 0) return deepJsonClone(snap);
+    } catch {
+      // ignore
+    }
+    return deepJsonClone(latestSheetRef.current ?? sheetDoc);
+  }, [sheetDoc]);
+
+  const exportSheetDocNow = async (): Promise<any[] | null> => {
+    try {
+      const api: any = sheetApiRef.current as any;
+      await api?.commitPendingEdits?.();
+      const snap = api?.getSnapshot?.();
+      if (Array.isArray(snap) && snap.length > 0) return deepJsonClone(snap);
+    } catch {
+      // ignore
+    }
+    try {
+      const fallback = exportSheetDoc();
+      return Array.isArray(fallback) && fallback.length > 0 ? fallback : null;
+    } catch {
+      return null;
+    }
+  };
+
 
   async function createNewPlan() {
     setBusy(true);
@@ -897,7 +918,7 @@ async function savePlan() {
     };
 
     if (selectedPlan.plan_format === "sheet") {
-      payload.sheet_doc = exportSheetDoc() ?? DEFAULT_SHEET_DOC;
+      payload.sheet_doc = (await exportSheetDocNow()) ?? DEFAULT_SHEET_DOC;
     }
 
     const { data: updated, error } = await supabase
@@ -1332,8 +1353,7 @@ async function savePlan() {
             ) : (
               <SheetPlanEditor
                                 key={workbookKey}
-                                workbookKey={workbookKey}
-                                apiRef={sheetApiRef}
+                                workbookKey={workbookKey} apiRef={sheetApiRef}
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
@@ -1342,7 +1362,10 @@ async function savePlan() {
                                   // update loops / partial snapshots on some builds (e.g. Vercel).
                                   latestSheetRef.current = next;
                                   sheetDirtyRef.current = true;
-                                  setSheetDirty(true);
+    if (!sheetDirtyUiOnceRef.current) {
+      sheetDirtyUiOnceRef.current = true;
+      setSheetDirty(true);
+    }
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
@@ -1520,16 +1543,16 @@ async function savePlan() {
               <div style={{ height: "100%", width: "100%" }}>
                 <SheetPlanEditor
                   key={workbookKey + ":fullscreen"}
-                  workbookKey={workbookKey + ":fullscreen"}
-                  apiRef={sheetApiRef}
+                  workbookKey={workbookKey + ":fullscreen"} apiRef={sheetApiRef}
                   value={sheetDoc}
                   height={"100%"}
                   onChange={(next) => {
-                    setSheetDoc(next);
                     latestSheetRef.current = next;
                     sheetDirtyRef.current = true;
-                    setSheetDirty(true);
-                                  sheetDirtyRef.current = true;
+                    if (!sheetDirtyUiOnceRef.current) {
+                      sheetDirtyUiOnceRef.current = true;
+                      setSheetDirty(true);
+                    }
                     if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                   }}
                 />

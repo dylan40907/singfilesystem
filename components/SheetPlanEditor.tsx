@@ -1,14 +1,17 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { MutableRefObject } from "react";
-import "@fortune-sheet/react/dist/index.css";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+// FortuneSheet types are intentionally loose here because the library's TS surface varies across builds.
+import { Workbook } from "@fortune-sheet/react";
 
-const FortuneWorkbook = dynamic(
-  () => import("@fortune-sheet/react").then((m) => m.Workbook),
-  { ssr: false }
-);
+export type SheetPlanEditorHandle = {
+  /** Best-effort: force FortuneSheet/LuckySheet to commit any in-progress edit (the user is typing in a cell). */
+  commitPendingEdits: () => Promise<void>;
+  /** Read the *current* workbook snapshot (avoids "one action behind" issues on some deployments). */
+  getSnapshot: () => any[] | null;
+  /** Raw workbook ref, if needed. */
+  workbook?: any;
+};
 
 type Props = {
   value: any[];
@@ -19,11 +22,15 @@ type Props = {
   /** Force remount/re-init when switching plans */
   workbookKey?: string;
   className?: string;
-  /** Optional: access FortuneSheet API (e.g., getAllSheets) from parent */
-  apiRef?: MutableRefObject<any | null>;
+  /** Optional imperative handle so parents can snapshot right before save. */
+  apiRef?: React.MutableRefObject<SheetPlanEditorHandle | null>;
 };
 
-function deepCloneJson<T>(x: T): T {
+function deepClone<T>(x: T): T {
+  try {
+    // @ts-ignore
+    if (typeof structuredClone === "function") return structuredClone(x);
+  } catch {}
   return JSON.parse(JSON.stringify(x));
 }
 
@@ -36,113 +43,98 @@ export default function SheetPlanEditor({
   className,
   apiRef,
 }: Props) {
-  const [localDoc, setLocalDoc] = useState<any[]>(value ?? []);
-  const latestRef = useRef<any[]>(value ?? []);
-  const lastSentJsonRef = useRef<string>("");
-  const warnedNoApiRef = useRef(false);
   const workbookRef = useRef<any>(null);
-  // Expose workbook API to parents (for save-time snapshots)
-  useEffect(() => {
-    if (apiRef) {
-      apiRef.current = workbookRef.current;
-    }
-  }, [apiRef, workbookKey]);
 
+  // IMPORTANT: treat the sheet as *uncontrolled* after mount.
+  // We seed FortuneSheet once (or when workbookKey changes) to avoid React-state feedback loops.
+  const [localDoc, setLocalDoc] = useState<any[]>(() => (Array.isArray(value) ? value : []));
+  const latestRef = useRef<any[]>(Array.isArray(value) ? value : []);
 
-  // keep local+ref synced when parent loads a plan (or changes plans)
   useEffect(() => {
-    const next = value ?? [];
-    setLocalDoc(next);
-    latestRef.current = next;
-    // baseline for change-detection (prevents endless "different" snapshots)
-    try {
-      lastSentJsonRef.current = JSON.stringify(next);
-    } catch {
-      lastSentJsonRef.current = "";
-    }
+    setLocalDoc(Array.isArray(value) ? value : []);
+    latestRef.current = Array.isArray(value) ? value : [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workbookKey]);
 
-  const readWorkbookNow = useCallback((): any[] => {
-    if (typeof window === "undefined") return latestRef.current;
-
-    // ✅ Primary: FortuneSheet ref API (works even when window.luckysheet isn't exposed)
-    const api = workbookRef.current;
-    if (api?.getAllSheets) {
-      try {
-        const sheets = api.getAllSheets();
-        return deepCloneJson(sheets);
-      } catch (err) {
-        console.warn("FortuneSheet: workbookRef.getAllSheets() threw. Falling back.", err);
-      }
-    }
-
-    // Secondary: legacy global (some builds expose this)
-    const ls = (window as any).luckysheet;
-    if (ls?.getAllSheets) {
-      try {
-        const sheets = ls.getAllSheets();
-        return deepCloneJson(sheets);
-      } catch (err) {
-        console.warn("FortuneSheet: window.luckysheet.getAllSheets() threw. Falling back.", err);
-      }
-    }
-
-    if (!warnedNoApiRef.current) {
-      warnedNoApiRef.current = true;
-      console.warn("FortuneSheet: getAllSheets() not available (ref/global). Falling back to latest local snapshot.");
-    }
-    return latestRef.current;
-  }, []);
-
-  const handleOp = useCallback(() => {
-    // Defer to avoid "setState while rendering ForwardRef"
-    queueMicrotask(() => {
-      if (apiRef) apiRef.current = workbookRef.current;
-      const snap = readWorkbookNow();
-      let json = "";
-      try {
-        json = JSON.stringify(snap);
-      } catch {
-        // ignore
-      }
-      if (json && json === lastSentJsonRef.current) return;
-      if (json) lastSentJsonRef.current = json;
-      latestRef.current = snap;
-      // IMPORTANT: do not setLocalDoc here; feeding snapshots back into FortuneSheet can cause loops.
-      onChange(snap);
-    });
-  }, [apiRef, onChange, readWorkbookNow]);
-
-  
-// Production safeguard: some builds don't reliably fire FortuneSheet op callbacks.
-// Poll periodically for workbook changes and emit them to the parent so manual Save exports the latest doc.
-useEffect(() => {
-  if (readOnly) return;
-  const id = window.setInterval(() => {
+  const commitPendingEdits = async () => {
+    // Blur any active input to encourage commit.
     try {
-      const snap = readWorkbookNow();
-      const json = JSON.stringify(snap);
-      if (!json || json === lastSentJsonRef.current) return;
-      lastSentJsonRef.current = json;
-      latestRef.current = snap;
-      // Do NOT setLocalDoc(snap) here; it can trigger FortuneSheet to re-emit changes.
-      onChange(snap);
-    } catch {
-      // ignore
-    }
-  }, 1200);
-  return () => window.clearInterval(id);
-}, [onChange, readWorkbookNow, readOnly]);
+      const ae = document.activeElement as any;
+      if (ae && typeof ae.blur === "function") ae.blur();
+    } catch {}
 
-return (
-    <div style={{ height }} className={className}>
-      <FortuneWorkbook
+    // LuckySheet (used under the hood) sometimes exposes helpers on window.luckysheet.
+    try {
+      const ls = (window as any)?.luckysheet;
+      if (ls?.exitEditMode) ls.exitEditMode();
+      if (ls?.save) ls.save();
+    } catch {}
+
+    // Let the browser flush microtasks + next frame.
+    await new Promise<void>((r) => setTimeout(() => r(), 0));
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  };
+
+  const getSnapshot = (): any[] | null => {
+    // Prefer LuckySheet global snapshot if available (most accurate).
+    try {
+      const ls = (window as any)?.luckysheet;
+      const sheets = ls?.getAllSheets?.();
+      if (Array.isArray(sheets) && sheets.length > 0) return deepClone(sheets);
+    } catch {}
+
+    // Some FortuneSheet builds expose getAllSheets via the forwarded ref.
+    try {
+      const sheets = workbookRef.current?.getAllSheets?.();
+      if (Array.isArray(sheets) && sheets.length > 0) return deepClone(sheets);
+    } catch {}
+
+    // Fallback to our last emitted doc.
+    try {
+      if (Array.isArray(latestRef.current) && latestRef.current.length > 0) return deepClone(latestRef.current);
+    } catch {}
+    return null;
+  };
+
+  // Expose imperative helpers for "save now" snapshotting.
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      commitPendingEdits,
+      getSnapshot,
+      workbook: workbookRef.current,
+    };
+  });
+
+  const handleOp = () => {
+    // Capture a fresher snapshot right when an op happens.
+    const snap = getSnapshot();
+    if (snap) latestRef.current = snap;
+    if (snap) onChange(snap);
+  };
+
+  // Stable props for Workbook to avoid it re-initializing unnecessarily.
+  const workbookProps = useMemo(
+    () => ({
+      allowEdit: !readOnly,
+      showToolbar: !readOnly,
+    }),
+    [readOnly]
+  );
+
+  return (
+    <div className={className} style={{ height }}>
+      <Workbook
         ref={workbookRef}
         key={workbookKey}
         data={localDoc}
         onOp={handleOp}
-        allowEdit={!readOnly}
-        showToolbar={!readOnly}
+        onChange={(next: any) => {
+          if (Array.isArray(next)) latestRef.current = next;
+          onChange(Array.isArray(next) ? next : []);
+        }}
+        allowEdit={workbookProps.allowEdit}
+        showToolbar={workbookProps.showToolbar}
       />
     </div>
   );
