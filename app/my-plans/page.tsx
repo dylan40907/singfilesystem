@@ -827,10 +827,17 @@ export default function MyPlansPage() {
 
 
   const exportSheetDoc = useCallback((): any[] => {
-    // Always export from the latest snapshot emitted by <SheetPlanEditor />.
-    // Do NOT rely on window.luckysheet (not exposed in our build) and avoid reinitializing the workbook on save.
-    return deepJsonClone(latestSheetRef.current ?? sheetDoc);
-  }, [sheetDoc]);
+  // Prefer reading directly from the FortuneSheet instance (more reliable in production builds)
+  // then fall back to the latest snapshot emitted by <SheetPlanEditor />.
+  try {
+    const api: any = sheetApiRef.current as any;
+    const sheets = api?.getAllSheets?.();
+    if (Array.isArray(sheets) && sheets.length > 0) return deepJsonClone(sheets);
+  } catch {
+    // ignore
+  }
+  return deepJsonClone(latestSheetRef.current ?? sheetDoc);
+}, [sheetDoc]);
 
   async function createNewPlan() {
     setBusy(true);
@@ -1330,11 +1337,12 @@ async function savePlan() {
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
-                                  setSheetDoc(next);
-                    latestSheetRef.current = next;
-                    sheetDirtyRef.current = true;
-                                  setSheetDirty(true);
+                                  // IMPORTANT: do NOT setSheetDoc(next) here.
+                                  // Feeding snapshots back into the editor props can cause
+                                  // update loops / partial snapshots on some builds (e.g. Vercel).
+                                  latestSheetRef.current = next;
                                   sheetDirtyRef.current = true;
+                                  setSheetDirty(true);
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />

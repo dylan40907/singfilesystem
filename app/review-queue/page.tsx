@@ -837,10 +837,17 @@ export default function ReviewQueuePage() {
   // ----- Supervisor edit support -----
 
   const exportSheetDoc = useCallback((): any[] => {
-    // Always export from the latest snapshot emitted by <SheetPlanEditor />.
-    // Do NOT rely on window.luckysheet (not exposed in our build) and avoid reinitializing the workbook on save.
-    return deepJsonClone(latestSheetRef.current ?? sheetDoc);
-  }, [sheetDoc]);
+  // Prefer reading directly from the FortuneSheet instance (more reliable in production builds)
+  // then fall back to the latest snapshot emitted by <SheetPlanEditor />.
+  try {
+    const api: any = sheetApiRef.current as any;
+    const sheets = api?.getAllSheets?.();
+    if (Array.isArray(sheets) && sheets.length > 0) return deepJsonClone(sheets);
+  } catch {
+    // ignore
+  }
+  return deepJsonClone(latestSheetRef.current ?? sheetDoc);
+}, [sheetDoc]);
 
   async function autoCommentSupervisorEdit(planId: string, planFormat: "text" | "sheet") {
     try {
@@ -1323,11 +1330,10 @@ export default function ReviewQueuePage() {
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
-                                  setSheetDoc(next);
-                    latestSheetRef.current = next;
-                    sheetDirtyRef.current = true;
-                                  setSheetDirty(true);
+                                  // IMPORTANT: do NOT setSheetDoc(next) here.
+                                  latestSheetRef.current = next;
                                   sheetDirtyRef.current = true;
+                                  setSheetDirty(true);
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
@@ -1465,11 +1471,10 @@ export default function ReviewQueuePage() {
                 value={sheetDoc}
                 height={"100%"}
                 onChange={(next) => {
-                  setSheetDoc(next);
-                    latestSheetRef.current = next;
-                    sheetDirtyRef.current = true;
+                  // IMPORTANT: do NOT setSheetDoc(next) here.
+                  latestSheetRef.current = next;
+                  sheetDirtyRef.current = true;
                   setSheetDirty(true);
-                                  sheetDirtyRef.current = true;
                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                 }}
               />

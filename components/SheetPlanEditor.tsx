@@ -38,6 +38,7 @@ export default function SheetPlanEditor({
 }: Props) {
   const [localDoc, setLocalDoc] = useState<any[]>(value ?? []);
   const latestRef = useRef<any[]>(value ?? []);
+  const lastSentJsonRef = useRef<string>("");
   const warnedNoApiRef = useRef(false);
   const workbookRef = useRef<any>(null);
   // Expose workbook API to parents (for save-time snapshots)
@@ -53,6 +54,12 @@ export default function SheetPlanEditor({
     const next = value ?? [];
     setLocalDoc(next);
     latestRef.current = next;
+    // baseline for change-detection (prevents endless "different" snapshots)
+    try {
+      lastSentJsonRef.current = JSON.stringify(next);
+    } catch {
+      lastSentJsonRef.current = "";
+    }
   }, [workbookKey]);
 
   const readWorkbookNow = useCallback((): any[] => {
@@ -92,13 +99,42 @@ export default function SheetPlanEditor({
     queueMicrotask(() => {
       if (apiRef) apiRef.current = workbookRef.current;
       const snap = readWorkbookNow();
+      let json = "";
+      try {
+        json = JSON.stringify(snap);
+      } catch {
+        // ignore
+      }
+      if (json && json === lastSentJsonRef.current) return;
+      if (json) lastSentJsonRef.current = json;
       latestRef.current = snap;
-      // Do NOT setLocalDoc on every op (can cause flashes/remount-like behavior).
+      // IMPORTANT: do not setLocalDoc here; feeding snapshots back into FortuneSheet can cause loops.
       onChange(snap);
     });
-  }, [onChange, readWorkbookNow]);
+  }, [apiRef, onChange, readWorkbookNow]);
 
-  return (
+  
+// Production safeguard: some builds don't reliably fire FortuneSheet op callbacks.
+// Poll periodically for workbook changes and emit them to the parent so manual Save exports the latest doc.
+useEffect(() => {
+  if (readOnly) return;
+  const id = window.setInterval(() => {
+    try {
+      const snap = readWorkbookNow();
+      const json = JSON.stringify(snap);
+      if (!json || json === lastSentJsonRef.current) return;
+      lastSentJsonRef.current = json;
+      latestRef.current = snap;
+      // Do NOT setLocalDoc(snap) here; it can trigger FortuneSheet to re-emit changes.
+      onChange(snap);
+    } catch {
+      // ignore
+    }
+  }, 1200);
+  return () => window.clearInterval(id);
+}, [onChange, readWorkbookNow, readOnly]);
+
+return (
     <div style={{ height }} className={className}>
       <FortuneWorkbook
         ref={workbookRef}
