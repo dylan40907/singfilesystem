@@ -6,7 +6,7 @@ import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { submitLessonPlan } from "@/lib/lessonPlans";
 import { fetchLessonPlanComments, LessonPlanComment } from "@/lib/lessonPlanComments";
 import "@fortune-sheet/react/dist/index.css";
-import SheetPlanEditor from "@/components/SheetPlanEditor";
+import SheetPlanEditor, { SheetPlanEditorHandle } from "@/components/SheetPlanEditor";
 import { useDebouncedAutosave } from "@/lib/useDebouncedAutosave";
 
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -80,6 +80,30 @@ function deepJsonClone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x));
 }
 
+function fingerprintSheetDoc(doc: any[] | null | undefined): string {
+  try {
+    if (!Array.isArray(doc)) return "null";
+    let sheets = doc.length;
+    let cells = 0;
+    let dataCells = 0;
+    for (const s of doc as any[]) {
+      const cd = (s as any)?.celldata;
+      if (Array.isArray(cd)) cells += cd.length;
+      const data = (s as any)?.data;
+      if (Array.isArray(data)) {
+        for (const row of data) {
+          if (Array.isArray(row)) dataCells += row.filter((x: any) => x != null).length;
+        }
+      }
+    }
+    // Small stable fingerprint
+    return `${sheets}|${cells}|${dataCells}`;
+  } catch {
+    return "err";
+  }
+}
+
+
 function countFilledCells(sheet: any): number {
   if (Array.isArray(sheet?.celldata) && sheet.celldata.length > 0) return sheet.celldata.length;
 
@@ -133,8 +157,16 @@ function ensureCelldata(sheet: any) {
         if (cell == null) continue;
 
         if (typeof cell === "object") {
-          const v = (cell as any).v;
-          if (v !== null && v !== undefined && String(v) !== "") {
+          const obj = cell as any;
+          const v = obj.v;
+          const m = obj.m;
+          const ct = obj.ct;
+          const rt = obj.rt;
+          const rich = (obj.rich ?? obj.r);
+          const hasVal = (v !== null && v !== undefined && String(v) !== "") ||
+            (m !== null && m !== undefined && String(m) !== "") ||
+            ct != null || rt != null || rich != null;
+          if (hasVal) {
             celldata.push({ r, c, v: cell });
           }
         } else {
@@ -664,13 +696,49 @@ export default function MyPlansPage() {
       e.stopPropagation();
 
       // Prefer closing whichever fullscreen is currently open
-      if (isSheetView) setSheetView(false);
-      else if (isTextView) setTextView(false);
+      if (isSheetView) void exitSheetFullscreen();
+      else if (isTextView) void exitTextFullscreen();
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isAnyFullscreen, isSheetView, isTextView]);
+
+  function settleHydrationWindow() {
+    isHydratingRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        isHydratingRef.current = false;
+      });
+    });
+  }
+
+  function openSheetFullscreen() {
+    // Opening fullscreen often causes the sheet to emit an initial change event; ignore it.
+    settleHydrationWindow();
+    setSheetView(true);
+  }
+
+  function openTextFullscreen() {
+    settleHydrationWindow();
+    setTextView(true);
+  }
+
+  async function exitSheetFullscreen() {
+    // Always save before leaving fullscreen to avoid losing edits.
+    await savePlan();
+    // After saving, ignore any immediate sheet re-emissions as it reflows.
+    justSavedUntilRef.current = Date.now() + 1500;
+    settleHydrationWindow();
+    setSheetView(false);
+  }
+
+  async function exitTextFullscreen() {
+    await savePlan();
+    settleHydrationWindow();
+    setTextView(false);
+  }
+
 
 
   // "My Plans" should be *my* plans only (even for admin/supervisor),
@@ -700,11 +768,14 @@ export default function MyPlansPage() {
       }
       console.log("[autosave:my-plans] text save success", { planId: selectedPlan.id, sheets: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
       sheetDirtyRef.current = false;
+    sheetDirtyUiOnceRef.current = false;
       sheetDirtyUiOnceRef.current = false;
       sheetDirtyUiOnceRef.current = false;
       setSheetDirty(false);
-
-      textDirtyRef.current = false;
+    sheetDirtyRef.current = false;
+    sheetDirtyUiOnceRef.current = false;
+    justSavedUntilRef.current = Date.now() + 1500;
+textDirtyRef.current = false;
       await loadMeAndPlans();
     },
   });
@@ -793,9 +864,11 @@ export default function MyPlansPage() {
 
   const [sheetDirty, setSheetDirty] = useState(false);
   const sheetDirtyRef = useRef(false);
+  const isHydratingRef = useRef(true);
 
   
-  const sheetDirtyUiOnceRef = useRef(false);
+  const justSavedUntilRef = useRef(0);
+const sheetDirtyUiOnceRef = useRef(false);
 const sheetAutosave = useDebouncedAutosave({
     enabled: AUTOSAVE_ENABLED && (!!selectedPlan && canEdit && (selectedPlan?.plan_format === "sheet")),
     delayMs: 2000,
@@ -917,8 +990,11 @@ async function savePlan() {
       last_edited_at: new Date().toISOString(),
     };
 
+    let savedFp: string | null = null;
+
     if (selectedPlan.plan_format === "sheet") {
       payload.sheet_doc = (await exportSheetDocNow()) ?? DEFAULT_SHEET_DOC;
+      savedFp = fingerprintSheetDoc(payload.sheet_doc);
     }
 
     const { data: updated, error } = await supabase
@@ -951,8 +1027,45 @@ async function savePlan() {
       setPlans((prev) => prev.map((p) => (p.id === planId ? updated : p)));
     }
 
+// Post-save verification: ensure server stored the snapshot we intended
+if (selectedPlan.plan_format === "sheet") {
+  try {
+    const { data: verifyRow } = await supabase
+      .from("lesson_plans")
+      .select("sheet_doc")
+      .eq("id", planId)
+      .maybeSingle();
+
+    const serverFp = fingerprintSheetDoc((verifyRow as any)?.sheet_doc);
+    if (savedFp && serverFp && serverFp !== "null" && serverFp !== savedFp) {
+      console.warn("[save:my-plans] verify mismatch; retrying once", { savedFp, serverFp });
+      const retryDoc = (await exportSheetDocNow()) ?? payload.sheet_doc;
+      const { data: retryRow2, error: retryErr } = await supabase
+        .from("lesson_plans")
+        .update({ sheet_doc: retryDoc, last_edited_by: myUserId ?? null, last_edited_at: new Date().toISOString() })
+        .eq("id", planId)
+        .select(
+          "id, created_at, updated_at, title, status, content, plan_format, sheet_doc, owner_user_id, last_edited_by, last_edited_at, last_submitted_by, last_submitted_at"
+        )
+        .maybeSingle();
+      if (retryErr) throw retryErr;
+      if (retryRow2) {
+        setPlans((prev) => prev.map((p) => (p.id === planId ? retryRow2 : p)));
+      }
+    }
+  } catch (e) {
+    console.warn("[save:my-plans] verify step failed", e);
+  }
+}
+
     setSheetDirty(false);
-    setStatus("All changes saved");
+    sheetDirtyRef.current = false;
+    sheetDirtyUiOnceRef.current = false;
+    justSavedUntilRef.current = Date.now() + 1500;
+    // post-save settle: ignore any immediate editor re-emissions
+    isHydratingRef.current = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => { isHydratingRef.current = false; }));
+    setStatus("All changes saved.");
   } catch (e: any) {
     console.error("[save:my-plans] failed", e);
     setStatus(`Save failed: ${e?.message ?? "Unknown error"}`);
@@ -1093,6 +1206,18 @@ async function savePlan() {
     setSheetView(false);
     setTextView(false);
     setSheetDirty(false);
+    setStatus("All changes saved.");
+    // Hydration guard: the sheet editor may emit an initial change event while mounting
+    isHydratingRef.current = true;
+    sheetDirtyRef.current = false;
+    sheetDirtyUiOnceRef.current = false;
+    // let the editor settle before we treat edits as user changes
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        isHydratingRef.current = false;
+      });
+    });
+
 
     ensureUserLabels([p.last_edited_by ?? "", p.last_submitted_by ?? ""]);
 
@@ -1336,7 +1461,7 @@ async function savePlan() {
                               </span>
                             </div>
 
-                            <button className="btn" onClick={() => setSheetView(true)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
+                            <button className="btn" onClick={openSheetFullscreen} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                               Full screen
                             </button>
                           </div>
@@ -1357,15 +1482,20 @@ async function savePlan() {
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
-                                  // IMPORTANT: do NOT setSheetDoc(next) here.
-                                  // Feeding snapshots back into the editor props can cause
-                                  // update loops / partial snapshots on some builds (e.g. Vercel).
+                                  // Always keep the latest snapshot for save/export
                                   latestSheetRef.current = next;
+
+                                  // Ignore initial editor emissions while loading a plan
+                                  if (isHydratingRef.current) return;
+
+                                  // Ignore immediate re-emissions right after a save
+                                  if (Date.now() < justSavedUntilRef.current) return;
+
                                   sheetDirtyRef.current = true;
-    if (!sheetDirtyUiOnceRef.current) {
-      sheetDirtyUiOnceRef.current = true;
-      setSheetDirty(true);
-    }
+                                  if (!sheetDirtyUiOnceRef.current) {
+                                    sheetDirtyUiOnceRef.current = true;
+                                    setSheetDirty(true);
+                                  }
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
@@ -1401,7 +1531,7 @@ async function savePlan() {
                           <div className="stack" style={{ gap: 10 }}>
                             <div className="row-between" style={{ alignItems: "center", gap: 10 }}>
                               <div style={{ fontWeight: 900 }}>Text plan</div>
-                              <button className="btn" onClick={() => setTextView(true)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
+                              <button className="btn" onClick={openTextFullscreen} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                                 Full screen
                               </button>
                             </div>
@@ -1513,7 +1643,7 @@ async function savePlan() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setSheetView(false)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
+              <button className="btn" onClick={() => void exitSheetFullscreen()} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn" onClick={savePlan} disabled={!canEdit || busy}>
@@ -1547,14 +1677,22 @@ async function savePlan() {
                   value={sheetDoc}
                   height={"100%"}
                   onChange={(next) => {
-                    latestSheetRef.current = next;
-                    sheetDirtyRef.current = true;
-                    if (!sheetDirtyUiOnceRef.current) {
-                      sheetDirtyUiOnceRef.current = true;
-                      setSheetDirty(true);
-                    }
-                    if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
-                  }}
+                                  // Always keep the latest snapshot for save/export
+                                  latestSheetRef.current = next;
+
+                                  // Ignore initial editor emissions while loading a plan
+                                  if (isHydratingRef.current) return;
+
+                                  // Ignore immediate re-emissions right after a save
+                                  if (Date.now() < justSavedUntilRef.current) return;
+
+                                  sheetDirtyRef.current = true;
+                                  if (!sheetDirtyUiOnceRef.current) {
+                                    sheetDirtyUiOnceRef.current = true;
+                                    setSheetDirty(true);
+                                  }
+                                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
+                                }}
                 />
               </div>
             )}
@@ -1604,7 +1742,7 @@ async function savePlan() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setTextView(false)} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
+              <button className="btn" onClick={() => void exitTextFullscreen()} disabled={busy || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn" onClick={savePlan} disabled={!canEdit || busy}>

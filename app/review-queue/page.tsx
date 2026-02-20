@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile, fetchActiveTeachers } from "@/lib/teachers";
 import "@fortune-sheet/react/dist/index.css";
-import SheetPlanEditor from "@/components/SheetPlanEditor";
+import SheetPlanEditor, { SheetPlanEditorHandle } from "@/components/SheetPlanEditor";
 import { useDebouncedAutosave } from "@/lib/useDebouncedAutosave";
 
 // TipTap (Rich Text)
@@ -93,6 +93,30 @@ function deepJsonClone<T>(x: T): T {
   return JSON.parse(JSON.stringify(x));
 }
 
+function fingerprintSheetDoc(doc: any[] | null | undefined): string {
+  try {
+    if (!Array.isArray(doc)) return "null";
+    let sheets = doc.length;
+    let cells = 0;
+    let dataCells = 0;
+    for (const s of doc as any[]) {
+      const cd = (s as any)?.celldata;
+      if (Array.isArray(cd)) cells += cd.length;
+      const data = (s as any)?.data;
+      if (Array.isArray(data)) {
+        for (const row of data) {
+          if (Array.isArray(row)) dataCells += row.filter((x: any) => x != null).length;
+        }
+      }
+    }
+    // Small stable fingerprint
+    return `${sheets}|${cells}|${dataCells}`;
+  } catch {
+    return "err";
+  }
+}
+
+
 function normalizeSheetDoc(doc: any, fallback: any[]) {
   if (!doc) return fallback;
   if (Array.isArray(doc)) return doc;
@@ -118,8 +142,16 @@ function ensureCelldata(sheet: any) {
         if (cell == null) continue;
 
         if (typeof cell === "object") {
-          const v = (cell as any).v;
-          if (v !== null && v !== undefined && String(v) !== "") {
+          const obj = cell as any;
+          const v = obj.v;
+          const m = obj.m;
+          const ct = obj.ct;
+          const rt = obj.rt;
+          const rich = (obj.rich ?? obj.r);
+          const hasVal = (v !== null && v !== undefined && String(v) !== "") ||
+            (m !== null && m !== undefined && String(m) !== "") ||
+            ct != null || rt != null || rich != null;
+          if (hasVal) {
             celldata.push({ r, c, v: cell });
           }
         } else {
@@ -511,8 +543,11 @@ export default function ReviewQueuePage() {
   const [workbookKey, setWorkbookKey] = useState<string>("init");
   const [sheetDirty, setSheetDirty] = useState(false);
   const sheetDirtyRef = useRef(false);
+  const sheetDirtyUiOnceRef = useRef(false);
+const isHydratingRef = useRef(true);
 
-  const canAutosave = !!selectedPlan && isTeacherAllowed(selectedPlan.owner_user_id);
+  const justSavedUntilRef = useRef(0);
+const canAutosave = !!selectedPlan && isTeacherAllowed(selectedPlan.owner_user_id);
 
   const sheetAutosave = useDebouncedAutosave({
     enabled: AUTOSAVE_ENABLED && (canAutosave && planDetail?.plan_format === "sheet"),
@@ -533,6 +568,8 @@ export default function ReviewQueuePage() {
         last_reviewed_at: new Date().toISOString(),
       };
 
+      const savedFp: string | null = fingerprintSheetDoc(payload.sheet_doc);
+
       const { error } = await supabase.from("lesson_plans").update(payload).eq("id", planDetail.id);
       if (error) {
         console.error("[autosave:review-queue] sheet save error", error);
@@ -540,9 +577,47 @@ export default function ReviewQueuePage() {
       }
       console.log("[autosave:review-queue] sheet save success", { planId: planDetail.id, sheets: Array.isArray(payload.sheet_doc) ? payload.sheet_doc.length : null });
       sheetDirtyRef.current = false;
-      setSheetDirty(false);
 
-      setSheetDoc(exported);
+// Post-save verification: ensure server stored the snapshot we intended
+if (planDetail?.plan_format === "sheet") {
+  try {
+    const planId = planDetail.id;
+    const { data: verifyRow } = await supabase
+      .from("lesson_plans")
+      .select("sheet_doc")
+      .eq("id", planId)
+      .maybeSingle();
+
+    const serverFp = fingerprintSheetDoc((verifyRow as any)?.sheet_doc);
+    if (savedFp && serverFp && serverFp !== "null" && serverFp !== savedFp) {
+      console.warn("[save:review-queue] verify mismatch; retrying once", { savedFp, serverFp });
+      const retryDoc = (await exportSheetDocNow()) ?? payload.sheet_doc;
+      const { data: retryRow2, error: retryErr } = await supabase
+        .from("lesson_plans")
+        .update({ sheet_doc: retryDoc, last_edited_at: new Date().toISOString() })
+        .eq("id", planId)
+        .select("*")
+        .maybeSingle();
+      if (retryErr) throw retryErr;
+      if (retryRow2) {
+        setPlanDetail(retryRow2 as any);
+        setPlans((prev: any[]) => prev.map((p: any) => (p.id === planId ? retryRow2 : p)));
+      }
+    }
+  } catch (e) {
+    console.warn("[save:review-queue] verify step failed", e);
+  }
+}
+
+
+      setSheetDirty(false);
+        sheetDirtyRef.current = false;
+        sheetDirtyUiOnceRef.current = false;
+        justSavedUntilRef.current = Date.now() + 1500;
+    sheetDirtyRef.current = false;
+    sheetDirtyUiOnceRef.current = false;
+    justSavedUntilRef.current = Date.now() + 1500;
+setSheetDoc(exported);
       setSheetDirty(false);
       baselineTitleRef.current = editTitle;
     },
@@ -591,7 +666,17 @@ export default function ReviewQueuePage() {
             const normalized = normalizeForFortune((latest as any).sheet_doc, DEFAULT_SHEET_DOC);
             setSheetDoc(normalized);
             setSheetDirty(false);
-            setWorkbookKey(`${planDetail.id}:${Date.now()}`);
+    setStatus("All changes saved.");
+    // Hydration guard: ignore initial editor change event after loading this plan
+        isHydratingRef.current = true;
+        sheetDirtyRef.current = false;
+        sheetDirtyUiOnceRef.current = false;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isHydratingRef.current = false;
+          });
+        });
+setWorkbookKey(`${planDetail.id}:${Date.now()}`);
             setSheetLoadedPlanId(planDetail.id);
           }
         }
@@ -610,6 +695,42 @@ export default function ReviewQueuePage() {
   // Fullscreen overlays
   const [sheetView, setSheetView] = useState(false);
   const [textView, setTextView] = useState(false);
+
+// ===== Fullscreen open/close helpers (save-on-exit + hydration settle) =====
+function settleHydrationWindow() {
+  isHydratingRef.current = true;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      isHydratingRef.current = false;
+    });
+  });
+}
+
+function openSheetFullscreen() {
+  settleHydrationWindow();
+  setSheetView(true);
+}
+
+function openTextFullscreen() {
+  settleHydrationWindow();
+  setTextView(true);
+}
+
+async function exitSheetFullscreen() {
+  await saveSupervisorEdits();
+  justSavedUntilRef.current = Date.now() + 1500;
+  settleHydrationWindow();
+  setSheetView(false);
+}
+
+async function exitTextFullscreen() {
+  await saveSupervisorEdits();
+  justSavedUntilRef.current = Date.now() + 1500;
+  settleHydrationWindow();
+  setTextView(false);
+}
+// ========================================================================
+
 
   const isSheetSelected = planDetail?.plan_format === "sheet";
   const isTextSelected = planDetail?.plan_format === "text";
@@ -771,12 +892,18 @@ export default function ReviewQueuePage() {
         setSheetLoadedPlanId("");
         setSheetDoc(normalized);
         setSheetDirty(false);
-        setWorkbookKey(`${planId}:${Date.now()}`);
+            sheetDirtyRef.current = false;
+            sheetDirtyUiOnceRef.current = false;
+            justSavedUntilRef.current = Date.now() + 1500;
+            setWorkbookKey(`${planId}:${Date.now()}`);
         setSheetLoadedPlanId(planId);
       } else {
         setSheetLoadedPlanId("");
         setSheetDoc(DEFAULT_SHEET_DOC);
         setSheetDirty(false);
+        sheetDirtyRef.current = false;
+        sheetDirtyUiOnceRef.current = false;
+        justSavedUntilRef.current = Date.now() + 1500;
       }
     } catch (e: any) {
       setStatus("Error loading plan: " + (e?.message ?? "unknown"));
@@ -908,13 +1035,6 @@ export default function ReviewQueuePage() {
 
   async function saveSupervisorEdits() {
     if (!planDetail) return;
-
-    const anyEdits = hasSupervisorEdits();
-    if (!anyEdits) {
-      setStatus("Nothing to save.");
-      return;
-    }
-
     setStatus("Saving edits...");
     try {
       const payload: any = {
@@ -1129,7 +1249,7 @@ export default function ReviewQueuePage() {
   const selectedOwnerLabel = planDetail?.owner_profile ? labelForUser(planDetail.owner_profile) : planDetail?.owner_user_id ?? "";
 
   const showBaseGrid = !(isSheetView || isTextView);
-  const saveDisabled = planLoading || !planDetail || !hasSupervisorEdits();
+  const saveDisabled = planLoading || !planDetail || sheetAutosave.isSaving || textAutosave.isSaving;
 
   return (
     <main className="stack">
@@ -1266,11 +1386,11 @@ export default function ReviewQueuePage() {
                         </button>
 
                         {planDetail?.plan_format === "sheet" ? (
-                          <button className="btn" onClick={() => setSheetView(true)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
+                          <button className="btn" onClick={openSheetFullscreen} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                             Full screen
                           </button>
                         ) : planDetail?.plan_format === "text" ? (
-                          <button className="btn" onClick={() => setTextView(true)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
+                          <button className="btn" onClick={openTextFullscreen} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                             Full screen
                           </button>
                         ) : null}
@@ -1347,10 +1467,22 @@ export default function ReviewQueuePage() {
                                 value={sheetDoc}
                                 height={520}
                                 onChange={(next) => {
-                                  // IMPORTANT: do NOT setSheetDoc(next) here.
+                                  // Always keep the latest snapshot for save/export
                                   latestSheetRef.current = next;
+
+                                  // Ignore initial editor emissions while loading a plan
+                                  if (isHydratingRef.current) return;
+
+                                  // Ignore immediate re-emissions right after a save
+                                  if (Date.now() < justSavedUntilRef.current) return;
+
                                   sheetDirtyRef.current = true;
-                                  setSheetDirty(true);
+                                  if (!sheetDirtyRef.current) {
+  sheetDirtyRef.current = true;
+  sheetDirtyUiOnceRef.current = true;
+  // Defer state update to avoid React "setState during render" warnings from FortuneSheet callbacks
+  requestAnimationFrame(() => setSheetDirty(true));
+}
                                   if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
                                 }}
                               />
@@ -1450,7 +1582,7 @@ export default function ReviewQueuePage() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setSheetView(false)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
+              <button className="btn" onClick={() => void exitSheetFullscreen()} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled}>
@@ -1488,12 +1620,24 @@ export default function ReviewQueuePage() {
                 value={sheetDoc}
                 height={"100%"}
                 onChange={(next) => {
-                  // IMPORTANT: do NOT setSheetDoc(next) here.
-                  latestSheetRef.current = next;
-                  sheetDirtyRef.current = true;
-                  setSheetDirty(true);
-                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
-                }}
+                                  // Always keep the latest snapshot for save/export
+                                  latestSheetRef.current = next;
+
+                                  // Ignore initial editor emissions while loading a plan
+                                  if (isHydratingRef.current) return;
+
+                                  // Ignore immediate re-emissions right after a save
+                                  if (Date.now() < justSavedUntilRef.current) return;
+
+                                  sheetDirtyRef.current = true;
+                                  if (!sheetDirtyRef.current) {
+  sheetDirtyRef.current = true;
+  sheetDirtyUiOnceRef.current = true;
+  // Defer state update to avoid React "setState during render" warnings from FortuneSheet callbacks
+  requestAnimationFrame(() => setSheetDirty(true));
+}
+                                  if (AUTOSAVE_ENABLED) sheetAutosave.schedule();
+                                }}
               />
               </div>
             )}
@@ -1537,7 +1681,7 @@ export default function ReviewQueuePage() {
             </div>
 
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-              <button className="btn" onClick={() => setTextView(false)} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
+              <button className="btn" onClick={() => void exitTextFullscreen()} disabled={planLoading || sheetAutosave.isSaving || textAutosave.isSaving}>
                 Exit full screen
               </button>
               <button className="btn btn-primary" onClick={saveSupervisorEdits} disabled={saveDisabled}>
