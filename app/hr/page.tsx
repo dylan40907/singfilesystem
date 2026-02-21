@@ -1656,7 +1656,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 }
 
 
-// --- Performance Reviews UI (copied from employee [id] page) ---
+// --- Performance Reviews UI (synced from employee [id] page) ---
 type ReviewFormType = "monthly" | "annual";
 
 type HrReviewForm = {
@@ -1667,12 +1667,15 @@ type HrReviewForm = {
   is_active: boolean;
 };
 
+type ReviewQuestionKind = "question" | "section";
+
 type ReviewQuestion = {
   id: string;
   form_id: string;
   question_text: string;
   sort_order: number;
   is_active: boolean;
+  kind?: ReviewQuestionKind; // 'question' (scored) or 'section' (header)
   created_at: string;
   updated_at: string;
 };
@@ -1680,6 +1683,7 @@ type ReviewQuestion = {
 type HrReview = {
   id: string;
   employee_id: string;
+  form_id: string;
   form_type: ReviewFormType;
   period_year: number;
   period_month: number | null;
@@ -1760,6 +1764,8 @@ function EmployeePerformanceReviewsTab({
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
 
+  const canEdit = !readOnly;
+
   const [status, setStatus] = useState<string>("");
 
   // Toggle display type (default monthly)
@@ -1770,12 +1776,26 @@ function EmployeePerformanceReviewsTab({
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
 
   // ---- Question editor modal (edit annual/monthly question bank)
-  type EditQuestion = { id: string; question_text: string; sort_order: number };
+  type EditQuestion = { id: string; question_text: string; sort_order: number; kind: ReviewQuestionKind };
 
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageType, setManageType] = useState<ReviewFormType | "">("");
+  const [showArchivedForms, setShowArchivedForms] = useState(false);
+  const [newFormTitle, setNewFormTitle] = useState("");
+  const [creatingForm, setCreatingForm] = useState(false);
+
+  // ---- Question editor modal (edit questions for a specific form)
   const [editOpen, setEditOpen] = useState(false);
-  const [editFormType, setEditFormType] = useState<ReviewFormType>("annual");
+  const [editFormId, setEditFormId] = useState<string>("");
   const [editQuestions, setEditQuestions] = useState<EditQuestion[]>([]);
   const editRef = useRef<HTMLDivElement | null>(null);
+
+  const closeEditQuestions = () => {
+    setEditOpen(false);
+    setEditFormId("");
+    setEditQuestions([]);
+  };
+
 
   // Existing reviews for this employee
   const [reviews, setReviews] = useState<HrReview[]>([]);
@@ -1787,6 +1807,7 @@ function EmployeePerformanceReviewsTab({
   // Modal state
   const [open, setOpen] = useState(false);
   const [formType, setFormType] = useState<ReviewFormType>("monthly");
+  const [selectedFormId, setSelectedFormId] = useState<string>("");
   const [year, setYear] = useState<number>(currentYear);
   const [month, setMonth] = useState<number>(currentMonth);
 
@@ -1794,31 +1815,87 @@ function EmployeePerformanceReviewsTab({
   const [values, setValues] = useState<Record<string, number | null>>({});
 
   const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
+  const [publishingReviewId, setPublishingReviewId] = useState<string>("");
   const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
-  const formsByType = useMemo(() => {
-    const m = new Map<ReviewFormType, HrReviewForm>();
-    for (const f of forms) m.set(f.form_type, f);
+  const formById = useMemo(() => {
+    const m = new Map<string, HrReviewForm>();
+    for (const f of forms) m.set(f.id, f);
     return m;
   }, [forms]);
 
-  const questionsByType = useMemo(() => {
-    const annualId = formsByType.get("annual")?.id ?? "";
-    const monthlyId = formsByType.get("monthly")?.id ?? "";
+  const formsByType = useMemo(() => {
+    const annual = (forms ?? [])
+      .filter((f) => f.form_type === "annual")
+      .slice()
+      .sort((a, b) => {
+        const ai = a.is_active ? 1 : 0;
+        const bi = b.is_active ? 1 : 0;
+        if (ai !== bi) return bi - ai; // active first
+        return String(a.title ?? "").localeCompare(String(b.title ?? ""));
+      });
 
-    const annual = (questions ?? []).filter((q) => q.form_id === annualId && q.is_active !== false);
-    const monthly = (questions ?? []).filter((q) => q.form_id === monthlyId && q.is_active !== false);
+    const monthly = (forms ?? [])
+      .filter((f) => f.form_type === "monthly")
+      .slice()
+      .sort((a, b) => {
+        const ai = a.is_active ? 1 : 0;
+        const bi = b.is_active ? 1 : 0;
+        if (ai !== bi) return bi - ai;
+        return String(a.title ?? "").localeCompare(String(b.title ?? ""));
+      });
 
-    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) =>
-      (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
-      (a.question_text ?? "").localeCompare(b.question_text ?? "");
+    return { annual, monthly } as Record<ReviewFormType, HrReviewForm[]>;
+  }, [forms]);
 
+  const activeFormsByType = useMemo(() => {
     return {
-      annual: annual.slice().sort(sortFn),
-      monthly: monthly.slice().sort(sortFn),
+      annual: formsByType.annual.filter((f) => f.is_active !== false),
+      monthly: formsByType.monthly.filter((f) => f.is_active !== false),
+    } as Record<ReviewFormType, HrReviewForm[]>;
+  }, [formsByType]);
+
+  const questionsByFormId = useMemo(() => {
+    const map = new Map<string, ReviewQuestion[]>();
+
+    for (const q of questions ?? []) {
+      if (q.is_active === false) continue;
+      const fid = String(q.form_id ?? "");
+      if (!fid) continue;
+      const list = map.get(fid) ?? [];
+      list.push(q);
+      map.set(fid, list);
+    }
+
+    const sortFn = (a: ReviewQuestion, b: ReviewQuestion) => {
+      const ao = Number.isFinite(Number(a.sort_order)) ? Number(a.sort_order) : 0;
+      const bo = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : 0;
+      if (ao !== bo) return ao - bo;
+      return (a.question_text ?? "").localeCompare(b.question_text ?? "");
     };
-  }, [questions, formsByType]);
+
+    for (const [fid, list] of map.entries()) {
+      map.set(fid, list.slice().sort(sortFn));
+    }
+
+    return map;
+  }, [questions]);
+
+  const getQuestionsForForm = useCallback(
+    (formId: string) => {
+      return questionsByFormId.get(formId) ?? [];
+    },
+    [questionsByFormId],
+  );
+
+  const getDefaultActiveFormId = useCallback(
+    (ft: ReviewFormType) => {
+      const list = activeFormsByType[ft] ?? [];
+      return list[0]?.id ?? "";
+    },
+    [activeFormsByType],
+  );
 
 
   function makeLocalId() {
@@ -1833,49 +1910,118 @@ function EmployeePerformanceReviewsTab({
   // ----------------------------
   // Question editor helpers
   // ----------------------------
-  function openEditQuestions(which: ReviewFormType) {
-		if (readOnly) return;
-    const form = formsByType.get(which);
-    if (!form) {
-      setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+  function openManageForms() {
+    setManageOpen(true);
+    setManageType("");
+    setShowArchivedForms(false);
+    setNewFormTitle("");
+    setStatus("");
+  }
+
+  function closeManageForms() {
+    setManageOpen(false);
+    setManageType("");
+    setShowArchivedForms(false);
+    setNewFormTitle("");
+    setStatus("");
+  }
+
+  async function createFormForManage() {
+    if (!manageType) return;
+    const title = (newFormTitle ?? "").trim();
+    if (!title) {
+      setStatus("Please enter a form title.");
       return;
     }
 
-    const list: EditQuestion[] = (which === "annual" ? questionsByType.annual : questionsByType.monthly)
+    setCreatingForm(true);
+    setStatus("Creating form...");
+    try {
+      const scaleMax = manageType === "monthly" ? 3 : 5;
+      const { error } = await supabase.from("hr_review_forms").insert({
+        form_type: manageType,
+        title,
+        scale_max: scaleMax,
+        is_active: true,
+      });
+      if (error) throw error;
+
+      setNewFormTitle("");
+      await loadMeta();
+      setStatus("Form created.");
+    } catch (e: any) {
+      setStatus("Create form error: " + (e?.message ?? "unknown"));
+    } finally {
+      setCreatingForm(false);
+    }
+  }
+
+  async function deleteForm(formId: string) {
+    setStatus("Deleting form...");
+    try {
+      const { error } = await supabase.from("hr_review_forms").delete().eq("id", formId);
+      if (error) throw error;
+
+      await loadMeta();
+      // Close editor if it was open for this form
+      setEditOpen((wasOpen) => {
+        if (wasOpen && editFormId === formId) {
+          setEditFormId("");
+          setEditQuestions([]);
+          return false;
+        }
+        return wasOpen;
+      });
+      setStatus("Form deleted.");
+    } catch (e: any) {
+      setStatus("Delete form error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  function openEditForm(formId: string) {
+    const form = formById.get(formId);
+    if (!form) {
+      setStatus("Missing hr_review_forms row for this form.");
+      return;
+    }
+
+    const list: EditQuestion[] = getQuestionsForForm(formId)
       .slice()
       .map((q, idx) => ({
         id: q.id,
         question_text: q.question_text ?? "",
         sort_order: Number.isFinite(Number(q.sort_order)) ? Number(q.sort_order) : idx,
+        kind: (q.kind as ReviewQuestionKind) || "question",
       }));
 
     if (list.length === 0) {
-      if (which === "annual") {
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2 });
+      if (form.form_type === "annual") {
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2, kind: "question" });
       } else {
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2, kind: "question" });
       }
     }
 
     list.forEach((q, i) => (q.sort_order = i));
-    setEditFormType(which);
+    setEditFormId(formId);
     setEditQuestions(list);
     setEditOpen(true);
   }
 
-  function closeEditQuestions() {
+  function closeEditForm() {
     setEditOpen(false);
+    setEditFormId("");
     setEditQuestions([]);
   }
 
-  function addEditQuestionRow() {
+  function addEditQuestionRow(kind: ReviewQuestionKind) {
     setEditQuestions((cur) => {
       const next = cur.slice();
-      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length });
+      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length, kind });
       return next;
     });
   }
@@ -1903,14 +2049,15 @@ function EmployeePerformanceReviewsTab({
   async function saveQuestions() {
     setStatus("Saving questions...");
     try {
-      const form = formsByType.get(editFormType);
-      if (!form) {
-        setStatus("Missing hr_review_forms rows. Create the annual/monthly forms first.");
+      const formId = editFormId;
+      const form = formById.get(formId);
+      if (!formId || !form) {
+        setStatus("Missing form selection for editing questions.");
         return;
       }
 
       const cleaned = editQuestions
-        .map((q, i) => ({ ...q, sort_order: i, question_text: (q.question_text ?? "").trim() }))
+        .map((q, i) => ({ ...q, sort_order: i, kind: (q.kind as any) || "question", question_text: (q.question_text ?? "").trim() }))
         .filter((q) => q.question_text.length > 0);
 
       if (cleaned.length === 0) {
@@ -1918,15 +2065,13 @@ function EmployeePerformanceReviewsTab({
         return;
       }
 
-      const currentIds = new Set(
-        (editFormType === "annual" ? questionsByType.annual : questionsByType.monthly).map((q) => q.id)
-      );
+      const currentIds = new Set(getQuestionsForForm(formId).map((q) => q.id));
       const desiredExistingIds = new Set(cleaned.filter((q) => !q.id.startsWith("new:")).map((q) => q.id));
       const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
       if (toDelete.length > 0) {
         const ok = confirm(
-          `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete any saved answers for those questions.`
+          `Delete ${toDelete.length} question(s) from "${form.title}"? This will also delete any saved answers for those questions.`
         );
         if (!ok) {
           setStatus("");
@@ -1942,6 +2087,7 @@ function EmployeePerformanceReviewsTab({
           form_id: form.id,
           question_text: q.question_text,
           sort_order: q.sort_order,
+          kind: q.kind,
           is_active: true,
         }));
         const { error } = await supabase.from("hr_review_questions").insert(insertRows);
@@ -1952,12 +2098,12 @@ function EmployeePerformanceReviewsTab({
       for (const q of existing) {
         const { error } = await supabase
           .from("hr_review_questions")
-          .update({ question_text: q.question_text, sort_order: q.sort_order, is_active: true })
+          .update({ question_text: q.question_text, sort_order: q.sort_order, kind: q.kind, is_active: true })
           .eq("id", q.id);
         if (error) throw error;
       }
 
-      closeEditQuestions();
+      closeEditForm();
       await loadMeta();
       setStatus("✅ Saved.");
       setTimeout(() => setStatus(""), 900);
@@ -1966,12 +2112,17 @@ function EmployeePerformanceReviewsTab({
     }
   }
 
+  const effectiveFormId = useMemo(() => {
+    return selectedFormId || getDefaultActiveFormId(formType);
+  }, [selectedFormId, formType, getDefaultActiveFormId]);
+
   const activeQuestions = useMemo(() => {
-    return formType === "annual" ? questionsByType.annual : questionsByType.monthly;
-  }, [formType, questionsByType]);
+    if (!effectiveFormId) return [];
+    return getQuestionsForForm(effectiveFormId);
+  }, [effectiveFormId, getQuestionsForForm]);
 
   const scaleMax = useMemo(() => {
-    return formsByType.get(formType)?.scale_max ?? (formType === "monthly" ? 3 : 5);
+    return formById.get(effectiveFormId)?.scale_max ?? (formType === "monthly" ? 3 : 5);
   }, [formsByType, formType]);
 
   const filteredReviews = useMemo(() => {
@@ -1984,10 +2135,10 @@ function EmployeePerformanceReviewsTab({
 
   async function loadMeta() {
     const [formRes, qRes] = await Promise.all([
-      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").eq("is_active", true),
+      supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").order("form_type", { ascending: true }).order("title", { ascending: true }),
       supabase
         .from("hr_review_questions")
-        .select("id, form_id, question_text, sort_order, is_active, created_at, updated_at")
+        .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
         .eq("is_active", true)
         .order("sort_order", { ascending: true })
         .order("created_at", { ascending: true }),
@@ -2000,46 +2151,67 @@ function EmployeePerformanceReviewsTab({
     setQuestions((qRes.data ?? []) as ReviewQuestion[]);
   }
 
-  async function loadEmployeeReviews(targetEmployeeId?: string, opts?: { includeDrafts?: boolean }) {
-    const eid = (targetEmployeeId || employeeId || "").toString();
-    if (!eid) return;
-
-    const includeDraftsFlag = isSelf ? false : includeDrafts;
-
-
-    let q = supabase
+  async function loadEmployeeReviews() {
+    const q = supabase
       .from("hr_reviews")
-      .select(
-        "id, employee_id, form_type, period_year, period_month, created_at, updated_at, notes, attendance_points_snapshot, published"
-      )
-      .eq("employee_id", eid);
+      .select("id, employee_id, form_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
+      .eq("employee_id", employeeId);
 
-    // Employees should only see published reviews.
-    // Admins/supervisors (reviewing others) can see drafts and published.
-    if (!includeDraftsFlag) q = q.eq("published", true);
+    const res = await (includeDrafts ? q : q.eq("published", true));
 
-    const { data: rows, error: revErr } = await q
-      .order("period_year", { ascending: false })
-      .order("period_month", { ascending: false, nullsFirst: false })
-      .order("updated_at", { ascending: false });
+    if (res.error) throw res.error;
+    const rows = (res.data ?? []) as HrReview[];
+    setReviews(rows);
 
-    if (revErr) throw revErr;
-
-    const list = rows || [];
-    setReviews(list);
-
-    // If the employee only has annual reviews, default the toggle to annual so the list isn't blank.
-    if (!includeDraftsFlag) {
-      const hasMonthly = list.some((r) => r.form_type === "monthly");
-      const hasAnnual = list.some((r) => r.form_type === "annual");
-      if (!hasMonthly && hasAnnual) setShowAnnual(true);
+    if (!rows.length) {
+      setReviewAverages({});
+      setReviewTotalPoints({});
+      setReviewAnswerCounts({});
+      return;
     }
+
+    const ids = rows.map((r) => r.id);
+
+    // hr_review_answers uses the column name `score`.
+    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", ids);
+    if (ansRes.error) throw ansRes.error;
+
+    const sums: Record<string, { sum: number; count: number }> = {};
+    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
+      const rid = String(row.review_id);
+      const v = typeof row.score === "number" ? row.score : null;
+      if (v === null) continue;
+      const cur = sums[rid] ?? { sum: 0, count: 0 };
+      cur.sum += v;
+      cur.count += 1;
+      sums[rid] = cur;
+    }
+
+    const avgsAnnual: Record<string, number> = {};
+    const totalsMonthly: Record<string, number> = {};
+    const countsByReview: Record<string, number> = {};
+
+    for (const r of rows) {
+      const cur = sums[r.id];
+      const count = cur?.count ?? 0;
+      countsByReview[r.id] = count;
+
+      if (r.form_type === "annual") {
+        avgsAnnual[r.id] = count ? cur!.sum / count : 0;
+      } else {
+        totalsMonthly[r.id] = cur?.sum ?? 0;
+      }
+    }
+
+    setReviewAverages(avgsAnnual);
+    setReviewTotalPoints(totalsMonthly);
+    setReviewAnswerCounts(countsByReview);
   }
 
-
   function openCreate(which: ReviewFormType) {
-		if (readOnly) return;
+    if (!canEdit) return;
     setFormType(which);
+    setSelectedFormId(getDefaultActiveFormId(which));
     setYear(currentYear);
     setMonth(currentMonth);
     setReviewId("");
@@ -2050,6 +2222,7 @@ function EmployeePerformanceReviewsTab({
 
   function openEdit(r: HrReview) {
     setFormType(r.form_type);
+    setSelectedFormId(r.form_id ?? "");
     setYear(Number(r.period_year ?? currentYear));
     setMonth(Number(r.period_month ?? currentMonth));
     setReviewId(r.id);
@@ -2066,8 +2239,9 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
-    const qs = ft === "annual" ? questionsByType.annual : questionsByType.monthly;
-    const max = formsByType.get(ft)?.scale_max ?? (ft === "monthly" ? 3 : 5);
+    const formId = selectedFormId || getDefaultActiveFormId(ft);
+    const qs = getQuestionsForForm(formId);
+    const max = formById.get(formId)?.scale_max ?? (ft === "monthly" ? 3 : 5);
 
     if (!qs || qs.length === 0) {
       setReviewId("");
@@ -2078,7 +2252,7 @@ function EmployeePerformanceReviewsTab({
 
     const base = supabase
       .from("hr_reviews")
-      .select("id, employee_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
+      .select("id, employee_id, form_id, form_type, period_year, period_month, notes, published, attendance_points_snapshot, created_at, updated_at")
       .eq("employee_id", empId)
       .eq("form_type", ft)
       .eq("period_year", y);
@@ -2090,6 +2264,13 @@ function EmployeePerformanceReviewsTab({
     if (revRes.error) throw revRes.error;
 
     const existing = (revRes.data ?? null) as HrReview | null;
+
+    if (existing?.form_id) {
+      // Existing review locks the form choice for that period
+      setSelectedFormId(existing.form_id);
+    } else if (!selectedFormId) {
+      setSelectedFormId(formId);
+    }
 
     if (!existing?.id) {
       // New review: do NOT pre-fill scores. Missing answers show as blank until someone rates them.
@@ -2127,6 +2308,7 @@ function EmployeePerformanceReviewsTab({
   async function ensureReviewRow(
     empId: string,
     ft: ReviewFormType,
+    formId: string,
     y: number,
     m: number | null,
     attendancePointsSnapshot: number | null,
@@ -2161,6 +2343,7 @@ function EmployeePerformanceReviewsTab({
 
     const payload: any = {
       employee_id: empId,
+      form_id: formId,
       form_type: ft,
       period_year: y,
       period_month: ft === "annual" ? null : m,
@@ -2178,10 +2361,10 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function saveReview() {
-		if (readOnly) return;
+    if (!canEdit) return;
     if (!employeeId) return;
 
-    const qs = activeQuestions;
+    const qs = activeQuestions.filter((q) => (q.kind || "question") !== "section");
     if (!qs || qs.length === 0) {
       setStatus("No questions for this review type yet.");
       return;
@@ -2200,7 +2383,7 @@ function EmployeePerformanceReviewsTab({
 
     setStatus("Saving review...");
     try {
-      const rid = await ensureReviewRow(employeeId, formType, year, month, attendancePoints ?? null);
+      const rid = await ensureReviewRow(employeeId, formType, effectiveFormId, year, month, attendancePoints ?? null);
       setReviewId(rid);
 
       // Persist freeform notes on the review itself.
@@ -2212,11 +2395,13 @@ function EmployeePerformanceReviewsTab({
       const max = scaleMax;
 
       // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
-      const rows: { review_id: string; question_id: string; score: number | null }[] = qs.map((q) => ({
-        review_id: rid,
-        question_id: q.id,
-        score: clampScore(values[q.id], max),
-      }));
+      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions
+        .filter((q) => (q.kind || "question") !== "section")
+        .map((q) => ({
+          review_id: rid,
+          question_id: q.id,
+          score: clampScore(values[q.id], max),
+        }));
 
       const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
       if (upsertRes.error) throw upsertRes.error;
@@ -2234,7 +2419,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function deleteReview(r: HrReview) {
-		if (readOnly) return;
+    if (!canEdit) return;
     const ok = confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
@@ -2250,6 +2435,25 @@ function EmployeePerformanceReviewsTab({
       setStatus("Delete error: " + (e?.message ?? "unknown"));
     }
   }
+
+  async function publishReview(reviewIdToPublish: string) {
+    if (!canEdit) return;
+    if (!reviewIdToPublish) return;
+    setPublishingReviewId(reviewIdToPublish);
+    setStatus("Publishing review...");
+    try {
+      const { error } = await supabase.from("hr_reviews").update({ published: true }).eq("id", reviewIdToPublish);
+      if (error) throw error;
+      await loadEmployeeReviews();
+      setStatus("✅ Review published.");
+      setTimeout(() => setStatus(""), 2500);
+    } catch (e: any) {
+      setStatus(`❌ Publish failed: ${e?.message ?? "unknown error"}`);
+    } finally {
+      setPublishingReviewId("");
+    }
+  }
+
 
   const computedAvg = useMemo(() => {
     const qs = activeQuestions;
@@ -2281,7 +2485,6 @@ function EmployeePerformanceReviewsTab({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId]);
 
   // When modal open + selection changes, load existing or seed defaults
@@ -2303,8 +2506,7 @@ function EmployeePerformanceReviewsTab({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, employeeId, formType, year, month, questionsByType, formsByType]);
+  }, [open, employeeId, formType, year, month, selectedFormId, questionsByFormId, activeFormsByType, formById]);
 
   // ESC + outside click to close modal
   useEffect(() => {
@@ -2312,7 +2514,7 @@ function EmployeePerformanceReviewsTab({
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editOpen) closeEditQuestions();
+        if (editOpen) closeEditForm();
         else if (open) closeModal();
       }
     };
@@ -2323,7 +2525,7 @@ function EmployeePerformanceReviewsTab({
       }
       if (editOpen) {
         const el2 = editRef.current;
-        if (el2 && !el2.contains(e.target as any)) closeEditQuestions();
+        if (el2 && !el2.contains(e.target as any)) closeEditForm();
       }
     };
 
@@ -2333,7 +2535,6 @@ function EmployeePerformanceReviewsTab({
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onDown);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editOpen]);
 
   return (
@@ -2346,31 +2547,26 @@ function EmployeePerformanceReviewsTab({
           </div>
         </div>
 
-	        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-	          {!readOnly ? (
-	            <>
-	              <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
-	                + Create Annual Evaluation
-	              </button>
-	              <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
-	                + Create Monthly Scorecard
-	              </button>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          {!readOnly ? (
+            <>
+              <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
+                + Create Annual Evaluation
+              </button>
+              <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
+                + Create Monthly Scorecard
+              </button>
+            </>
+          ) : null}
 
-	              <button className="btn" type="button" onClick={() => openEditQuestions("annual")}>
-	                Edit annual questions
-	              </button>
-	              <button className="btn" type="button" onClick={() => openEditQuestions("monthly")}>
-	                Edit monthly questions
-	              </button>
-	            </>
-	          ) : (
-	            <span className="subtle" style={{ fontWeight: 800 }}>
-	              View-only (published evaluations)
-	            </span>
-	          )}
+          {!readOnly ? (
+            <button className="btn" type="button" onClick={() => openManageForms()}>
+              Manage Forms
+            </button>
+          ) : null}
 
-	          {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
-	        </div>
+          {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
+        </div>
       </div>
 
       <div style={{ height: 12 }} />
@@ -2454,27 +2650,33 @@ function EmployeePerformanceReviewsTab({
                   </div>
                 </div>
 
-	                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-	                  {readOnly ? (
-	                    <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
-	                      View
-	                    </button>
-	                  ) : (
-	                    <>
-	                      <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
-	                        Edit
-	                      </button>
-	                      <button
-	                        className="btn"
-	                        type="button"
-	                        onClick={() => void deleteReview(r)}
-	                        style={{ padding: "6px 10px" }}
-	                      >
-	                        Delete
-	                      </button>
-	                    </>
-	                  )}
-	                </div>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  {canEdit ? (
+                    <>
+                      {!r.published && (
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => publishReview(r.id)}
+                          disabled={publishingReviewId === r.id}
+                          style={{ padding: "6px 10px" }}
+                        >
+                          {publishingReviewId === r.id ? "Publishing..." : "Publish"}
+                        </button>
+                      )}
+                      <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+                        Edit
+                      </button>
+                      <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
+                        Delete
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+                      View
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ))}
@@ -2545,7 +2747,7 @@ function EmployeePerformanceReviewsTab({
                   <select
                     className="select"
                     value={formType}
-								disabled={readOnly}
+                    disabled={readOnly}
                     onChange={(e) => {
                       const ft = e.target.value as ReviewFormType;
                       setFormType(ft);
@@ -2558,17 +2760,49 @@ function EmployeePerformanceReviewsTab({
                   </select>
                 </div>
 
+                <div style={{ minWidth: 260 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Form</div>
+                  <select
+                    className="select"
+                    value={effectiveFormId}
+                    onChange={(e) => {
+                      const fid = String(e.target.value);
+                      setSelectedFormId(fid);
+                      if (!reviewId) {
+                        initialAnsweredIdsRef.current = new Set();
+                        setValues({});
+                      }
+                    }}
+                    disabled={!!reviewId}
+                  >
+                    {(() => {
+                      const optionForms = (reviewId ? formsByType[formType] : activeFormsByType[formType]) ?? [];
+                      return optionForms.length ? (
+                        optionForms.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.title}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="">No active forms</option>
+                      );
+                    })()}
+                  </select>
+                  {!!reviewId ? (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      Form is locked for existing reviews.
+                    </div>
+                  ) : null}
+                </div>
+
                 <div style={{ width: 140 }}>
                   <div style={{ fontWeight: 900, marginBottom: 6 }}>Year</div>
                   <input
                     className="input"
                     type="number"
                     value={year}
-								disabled={readOnly}
-								onChange={(e) => {
-									if (readOnly) return;
-									setYear(Number(e.target.value));
-								}}
+                    disabled={readOnly}
+                    onChange={(e) => setYear(Number(e.target.value))}
                     min={2000}
                     max={2100}
                   />
@@ -2577,15 +2811,7 @@ function EmployeePerformanceReviewsTab({
                 {formType === "monthly" ? (
                   <div style={{ width: 200 }}>
                     <div style={{ fontWeight: 900, marginBottom: 6 }}>Month</div>
-								<select
-									className="select"
-									value={month}
-									disabled={readOnly}
-									onChange={(e) => {
-										if (readOnly) return;
-										setMonth(Number(e.target.value));
-									}}
-								>
+                    <select className="select" value={month} disabled={readOnly} onChange={(e) => setMonth(Number(e.target.value))}>
                       {Array.from({ length: 12 }).map((_, i) => {
                         const m = i + 1;
                         return (
@@ -2610,70 +2836,86 @@ function EmployeePerformanceReviewsTab({
               </div>
             ) : (
               <div className="stack" style={{ gap: 10 }}>
-                {activeQuestions.map((q) => (
-                  <div
-                    key={q.id}
-                    style={{
-                      border: "1px solid var(--border)",
-                      borderRadius: 14,
-                      padding: 12,
-                      background: "white",
-                    }}
-                  >
-                    <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
+                {activeQuestions.map((q) => {
+                  const kind = ((q.kind as any) || "question") as ReviewQuestionKind;
 
-                    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <div className="subtle" style={{ minWidth: 140 }}>
-                        Score (1–{scaleMax})
-                      </div>
-
-                      <select
-                        className="select"
-                        value={String(values[q.id] ?? "")}
-										disabled={readOnly}
-                        onChange={(e) => {
-											if (readOnly) return;
-                          const raw = e.target.value;
-                          const s = clampScore(raw, scaleMax);
-                          setValues((cur) => {
-                            const next = { ...cur } as Record<string, number>;
-                            if (s == null) {
-                              delete (next as any)[q.id];
-                            } else {
-                              (next as any)[q.id] = s;
-                            }
-                            return next;
-                          });
+                  if (kind === "section") {
+                    return (
+                      <div
+                        key={q.id}
+                        style={{
+                          border: "1px solid #e5e7eb",
+                          borderRadius: 14,
+                          padding: "10px 12px",
+                          background: "#f8fafc",
                         }}
-                        style={{ width: 140 }}
                       >
-                        <option value="">Undecided</option>
-                        {Array.from({ length: scaleMax }).map((_, i) => {
-                          const v = i + 1;
-                          return (
-                            <option key={v} value={v}>
-                              {v}
-                            </option>
-                          );
-                        })}
-                      </select>
+                        <div style={{ fontWeight: 950, fontSize: 16 }}>{q.question_text}</div>
+                      </div>
+                    );
+                  }
 
-                      <div className="subtle">
-                        {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                  return (
+                    <div
+                      key={q.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 14,
+                        padding: 12,
+                        background: "white",
+                      }}
+                    >
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
+
+                      <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <div className="subtle" style={{ minWidth: 140 }}>
+                          Score (1–{scaleMax})
+                        </div>
+
+                        <select
+                          className="select"
+                          value={String(values[q.id] ?? "")}
+                          disabled={readOnly}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const s = clampScore(raw, scaleMax);
+                            setValues((cur) => {
+                              const next = { ...cur } as Record<string, number>;
+                              if (s == null) {
+                                delete (next as any)[q.id];
+                              } else {
+                                (next as any)[q.id] = s;
+                              }
+                              return next;
+                            });
+                          }}
+                          style={{ width: 140 }}
+                        >
+                          <option value="">Undecided</option>
+                          {Array.from({ length: scaleMax }).map((_, i) => {
+                            const v = i + 1;
+                            return (
+                              <option key={v} value={v}>
+                                {v}
+                              </option>
+                            );
+                          })}
+                        </select>
+
+                        <div className="subtle">
+                          {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
               <textarea
                 className="input"
                 value={reviewNotes}
-								readOnly={readOnly}
-								onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
-									if (readOnly) return;
-									setReviewNotes(e.target.value);
-								}}
+                disabled={readOnly}
+                onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setReviewNotes(e.target.value)}
                 placeholder="Additional notes..."
                 style={{ minHeight: 90, resize: "vertical" }}
               />
@@ -2685,22 +2927,16 @@ function EmployeePerformanceReviewsTab({
                     <span className="subtle">(normal rounding)</span>
                   </div>
 
-								<div className="row" style={{ gap: 10 }}>
-									{readOnly ? (
-										<button className="btn btn-primary" type="button" onClick={closeModal}>
-											Close
-										</button>
-									) : (
-										<>
-											<button className="btn" type="button" onClick={closeModal}>
-												Cancel
-											</button>
-											<button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
-												Save evaluation
-											</button>
-										</>
-									)}
-								</div>
+                  <div className="row" style={{ gap: 10 }}>
+                    <button className="btn" type="button" onClick={closeModal}>
+                      {readOnly ? "Close" : "Cancel"}
+                    </button>
+                    {!readOnly ? (
+                      <button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
+                        Save evaluation
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             )}
@@ -2710,8 +2946,256 @@ function EmployeePerformanceReviewsTab({
       ) : null}
 
       {/* ===========================
-          EDIT QUESTIONS MODAL
+
+      {/* ===========================
+          MANAGE FORMS MODAL
          =========================== */}
+      {manageOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.35)",
+            zIndex: 60,
+            display: "grid",
+            placeItems: "center",
+            padding: 12,
+          }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeManageForms();
+          }}
+        >
+          <div
+            style={{
+              width: "min(860px, 100%)",
+              background: "#fff",
+              borderRadius: 16,
+              border: "1px solid #e5e7eb",
+              boxShadow: "0 24px 60px rgba(0,0,0,0.25)",
+              padding: 14,
+              display: "grid",
+              gap: 12,
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+          >
+            <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
+              <div style={{ fontWeight: 950, fontSize: 16 }}>Manage Review Forms</div>
+              <div className="row" style={{ gap: 8 }}>
+                <button className="btn" type="button" onClick={closeManageForms}>
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {!manageType ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div className="subtle">
+                  Choose which form category you want to manage. Annual forms use a 1–5 scale and monthly forms use a 1–3
+                  scale.
+                </div>
+
+                <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" type="button" onClick={() => setManageType("annual")}>
+                    Annual forms
+                  </button>
+                  <button className="btn btn-primary" type="button" onClick={() => setManageType("monthly")}>
+                    Monthly forms
+                  </button>
+                  <button className="btn" type="button" onClick={closeManageForms}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ display: "grid", gap: 4 }}>
+                    <div style={{ fontWeight: 900 }}>
+                      {manageType === "annual" ? "Annual" : "Monthly"} forms
+                    </div>
+                    <div className="subtle">
+                      Click a form title to edit its questions. Deleting a form will also delete any reviews/answers that used
+                      it.
+                    </div>
+                  </div>
+
+                  <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <label className="row" style={{ gap: 8, alignItems: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={showArchivedForms}
+                        onChange={(e) => setShowArchivedForms(e.target.checked)}
+                      />
+                      <span className="subtle">Show archived</span>
+                    </label>
+
+                    <button className="btn" type="button" onClick={() => setManageType("")}>
+                      Back
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr auto",
+                    gap: 10,
+                    alignItems: "end",
+                    border: "1px solid #e5e7eb",
+                    borderRadius: 12,
+                    padding: 12,
+                    background: "#fafafa",
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>New form title</div>
+                    <input
+                      className="input"
+                      value={newFormTitle}
+                      onChange={(e) => setNewFormTitle(e.target.value)}
+                      placeholder={manageType === "annual" ? "e.g., Annual – Teachers" : "e.g., Monthly – Classroom"}
+                    />
+                    <div className="subtle" style={{ marginTop: 6 }}>
+                      {manageType === "annual" ? "Scale: 1–5" : "Scale: 1–3"}
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={createFormForManage}
+                    disabled={creatingForm || !(newFormTitle ?? "").trim()}
+                    title={creatingForm ? "Creating..." : "Create form"}
+                  >
+                    + Create
+                  </button>
+                </div>
+
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+                  <div style={{ background: "#f9fafb", padding: 10, fontWeight: 900 }}>Forms</div>
+
+                  <div style={{ display: "grid" }}>
+                    {(formsByType[manageType] ?? [])
+                      .filter((f) => (showArchivedForms ? true : f.is_active !== false))
+                      .map((f) => {
+                        const isArchived = f.is_active === false;
+                        return (
+                          <div
+                            key={f.id}
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "1fr auto",
+                              gap: 10,
+                              padding: 10,
+                              borderTop: "1px solid #e5e7eb",
+                              alignItems: "center",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              className="btn"
+                              style={{
+                                justifyContent: "flex-start",
+                                background: "transparent",
+                                border: "none",
+                                padding: 0,
+                                fontWeight: 800,
+                                textAlign: "left",
+                              }}
+                              onClick={() => openEditForm(f.id)}
+                              title="Edit questions"
+                            >
+                              {f.title}
+                              {isArchived ? (
+                                <span className="subtle" style={{ marginLeft: 8, fontWeight: 700 }}>
+                                  (archived)
+                                </span>
+                              ) : null}
+                            </button>
+
+                            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
+                              {!isArchived ? (
+                                <button
+                                  className="btn"
+                                  type="button"
+                                  onClick={async () => {
+                                    setStatus("Archiving form...");
+                                    try {
+                                      const { error } = await supabase
+                                        .from("hr_review_forms")
+                                        .update({ is_active: false })
+                                        .eq("id", f.id);
+                                      if (error) throw error;
+                                      await loadMeta();
+                                      setStatus("Form archived.");
+                                    } catch (e: any) {
+                                      setStatus("Archive error: " + (e?.message ?? "unknown"));
+                                    }
+                                  }}
+                                >
+                                  Archive
+                                </button>
+                              ) : (
+                                <button
+                                  className="btn"
+                                  type="button"
+                                  onClick={async () => {
+                                    setStatus("Un-archiving form...");
+                                    try {
+                                      const { error } = await supabase
+                                        .from("hr_review_forms")
+                                        .update({ is_active: true })
+                                        .eq("id", f.id);
+                                      if (error) throw error;
+                                      await loadMeta();
+                                      setStatus("Form re-activated.");
+                                    } catch (e: any) {
+                                      setStatus("Un-archive error: " + (e?.message ?? "unknown"));
+                                    }
+                                  }}
+                                >
+                                  Restore
+                                </button>
+                              )}
+
+                              <button
+                                className="btn"
+                                type="button"
+                                title="Delete form"
+                                onClick={async () => {
+                                  const ok = confirm(
+                                    'Are you sure you want to delete this form?\n\nDeleting a form will also delete any employee evaluations (reviews) that used it, along with their saved answers.'
+                                  );
+                                  if (!ok) return;
+                                  await deleteForm(f.id);
+                                }}
+                              >
+                                🗑️
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                    {(formsByType[manageType] ?? []).filter((f) => (showArchivedForms ? true : f.is_active !== false))
+                      .length === 0 ? (
+                      <div style={{ padding: 12 }} className="subtle">
+                        No forms found.
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {status ? <div className="subtle">{status}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {/* EDIT QUESTIONS MODAL =========================== */}
       {editOpen ? (
         <div
           role="dialog"
@@ -2743,10 +3227,10 @@ function EmployeePerformanceReviewsTab({
             <div className="row-between" style={{ gap: 10 }}>
               <div style={{ display: "grid", gap: 4 }}>
                 <div style={{ fontWeight: 950, fontSize: 16 }}>
-                  Edit {editFormType === "annual" ? "Annual" : "Monthly"} questions
+                  Edit Questions — {formById.get(editFormId)?.title ?? "Form"}
                 </div>
                 <div className="subtle">
-                  {editFormType === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
+                  {formById.get(editFormId)?.form_type === "annual" ? "Annual answers are 1–5." : "Monthly answers are 1–3."}
                 </div>
               </div>
               <button className="btn" type="button" onClick={closeEditQuestions} title="Close">
@@ -2774,12 +3258,25 @@ function EmployeePerformanceReviewsTab({
                   <div style={{ display: "grid", gap: 8 }}>
                     <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 900 }}>#{idx + 1}</div>
+                      <select
+                        className="select"
+                        value={q.kind}
+                        onChange={(e) => {
+                          const v = e.target.value as ReviewQuestionKind;
+                          setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, kind: v } : x)));
+                        }}
+                        style={{ width: 170 }}
+                        title="Item type"
+                      >
+                        <option value="question">Scored question</option>
+                        <option value="section">Section header</option>
+                      </select>
                     </div>
 
                     <input
                       className="input"
                       value={q.question_text}
-                      placeholder="Question text"
+                      placeholder={q.kind === "section" ? "Section header title" : "Question text"}
                       onChange={(e) => {
                         const v = e.target.value;
                         setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, question_text: v } : x)));
@@ -2823,9 +3320,14 @@ function EmployeePerformanceReviewsTab({
               ))}
 
               <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 6 }}>
-                <button className="btn" type="button" onClick={addEditQuestionRow}>
-                  + Add question
-                </button>
+                <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                  <button className="btn" type="button" onClick={() => addEditQuestionRow("question")}>
+                    + Add question
+                  </button>
+                  <button className="btn" type="button" onClick={() => addEditQuestionRow("section")}>
+                    + Add section header
+                  </button>
+                </div>
 
                 <div className="row" style={{ gap: 10 }}>
                   <button className="btn" type="button" onClick={closeEditQuestions}>

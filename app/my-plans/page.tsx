@@ -649,6 +649,7 @@ export default function MyPlansPage() {
 
   const [plans, setPlans] = useState<MyPlanRow[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const prevSelectedPlanIdRef = useRef<string>("");
 
   const [title, setTitle] = useState("");
   const [contentHtml, setContentHtml] = useState("<p></p>");
@@ -1202,9 +1203,14 @@ if (selectedPlan.plan_format === "sheet") {
     const p = plans.find((x) => x.id === selectedPlanId);
     if (!p) return;
 
+    // Only reset fullscreen modes when the user switches plans.
+    const planSwitched = prevSelectedPlanIdRef.current !== selectedPlanId;
     setTitle(p.title);
-    setSheetView(false);
-    setTextView(false);
+    if (planSwitched) {
+      setSheetView(false);
+      setTextView(false);
+      prevSelectedPlanIdRef.current = selectedPlanId;
+    }
     setSheetDirty(false);
     setStatus("All changes saved.");
     // Hydration guard: the sheet editor may emit an initial change event while mounting

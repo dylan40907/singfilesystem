@@ -57,6 +57,16 @@ type EmployeeAttendanceRow = {
   attendance_type?: AttendanceTypeRow | null;
 };
 
+
+type EmployeeTimeOffRequestRow = {
+  id: string;
+  employee_id: string;
+  occurred_on: string; // YYYY-MM-DD
+  hours_requested: number;
+  notes: string | null;
+  created_at: string;
+};
+
 type EmployeeRow = {
   id: string;
   legal_first_name: string;
@@ -87,6 +97,8 @@ type EmployeeRow = {
   pto_meta: any;
 
   attendance_points: number;
+
+  time_off_hours_requested?: number;
 
   job_level?: JobLevelRow | null;
   campus?: CampusRow | null;
@@ -756,6 +768,7 @@ function normalizeEmployee(raw: any): EmployeeRow {
 
     pto_meta: raw.pto_meta ?? {},
     attendance_points: Number(raw.attendance_points ?? 3),
+    time_off_hours_requested: raw.time_off_hours_requested == null ? 0 : Number(raw.time_off_hours_requested),
 
     job_level: asSingle<JobLevelRow>(raw.job_level),
     campus: asSingle<CampusRow>(raw.campus),
@@ -806,6 +819,7 @@ async function fetchEmployeeData(employeeId: string) {
       insurance_sheet_doc,
       pto_meta,
       attendance_points,
+      time_off_hours_requested,
       created_at,
       updated_at,
       job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name),
@@ -829,12 +843,15 @@ type HrReviewForm = {
   is_active: boolean;
 };
 
+type ReviewQuestionKind = "question" | "section";
+
 type ReviewQuestion = {
   id: string;
   form_id: string;
   question_text: string;
   sort_order: number;
   is_active: boolean;
+  kind?: ReviewQuestionKind;
   created_at: string;
   updated_at: string;
 };
@@ -907,14 +924,18 @@ function reviewMostRecentAt(r: HrReview) {
 function EmployeePerformanceReviewsTab({
   employeeId,
   attendancePoints,
+  readOnly = false,
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
   attendancePoints: number | null;
+  readOnly?: boolean;
 }) {
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
+
+  const canEdit = !readOnly;
 
   const [status, setStatus] = useState<string>("");
 
@@ -926,7 +947,7 @@ function EmployeePerformanceReviewsTab({
   const [questions, setQuestions] = useState<ReviewQuestion[]>([]);
 
   // ---- Question editor modal (edit annual/monthly question bank)
-  type EditQuestion = { id: string; question_text: string; sort_order: number };
+  type EditQuestion = { id: string; question_text: string; sort_order: number; kind: ReviewQuestionKind };
 
   const [manageOpen, setManageOpen] = useState(false);
   const [manageType, setManageType] = useState<ReviewFormType | "">("");
@@ -1141,17 +1162,18 @@ function EmployeePerformanceReviewsTab({
         id: q.id,
         question_text: q.question_text ?? "",
         sort_order: Number.isFinite(Number(q.sort_order)) ? Number(q.sort_order) : idx,
+        kind: (q.kind as ReviewQuestionKind) || "question",
       }));
 
     if (list.length === 0) {
       if (form.form_type === "annual") {
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Quality of work", sort_order: 0, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Communication", sort_order: 1, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Reliability", sort_order: 2, kind: "question" });
       } else {
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1 });
-        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2 });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Preparedness", sort_order: 0, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Classroom management", sort_order: 1, kind: "question" });
+        list.push({ id: `new:${makeLocalId()}`, question_text: "Team collaboration", sort_order: 2, kind: "question" });
       }
     }
 
@@ -1167,10 +1189,10 @@ function EmployeePerformanceReviewsTab({
     setEditQuestions([]);
   }
 
-  function addEditQuestionRow() {
+  function addEditQuestionRow(kind: ReviewQuestionKind) {
     setEditQuestions((cur) => {
       const next = cur.slice();
-      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length });
+      next.push({ id: `new:${makeLocalId()}`, question_text: "", sort_order: next.length, kind });
       return next;
     });
   }
@@ -1206,7 +1228,7 @@ function EmployeePerformanceReviewsTab({
       }
 
       const cleaned = editQuestions
-        .map((q, i) => ({ ...q, sort_order: i, question_text: (q.question_text ?? "").trim() }))
+        .map((q, i) => ({ ...q, sort_order: i, kind: (q.kind as any) || "question", question_text: (q.question_text ?? "").trim() }))
         .filter((q) => q.question_text.length > 0);
 
       if (cleaned.length === 0) {
@@ -1236,6 +1258,7 @@ function EmployeePerformanceReviewsTab({
           form_id: form.id,
           question_text: q.question_text,
           sort_order: q.sort_order,
+          kind: q.kind,
           is_active: true,
         }));
         const { error } = await supabase.from("hr_review_questions").insert(insertRows);
@@ -1246,7 +1269,7 @@ function EmployeePerformanceReviewsTab({
       for (const q of existing) {
         const { error } = await supabase
           .from("hr_review_questions")
-          .update({ question_text: q.question_text, sort_order: q.sort_order, is_active: true })
+          .update({ question_text: q.question_text, sort_order: q.sort_order, kind: q.kind, is_active: true })
           .eq("id", q.id);
         if (error) throw error;
       }
@@ -1286,7 +1309,7 @@ function EmployeePerformanceReviewsTab({
       supabase.from("hr_review_forms").select("id, form_type, title, scale_max, is_active").order("form_type", { ascending: true }).order("title", { ascending: true }),
       supabase
         .from("hr_review_questions")
-        .select("id, form_id, question_text, sort_order, is_active, created_at, updated_at")
+        .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
         .eq("is_active", true)
         .order("sort_order", { ascending: true })
         .order("created_at", { ascending: true }),
@@ -1355,6 +1378,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   function openCreate(which: ReviewFormType) {
+    if (!canEdit) return;
     setFormType(which);
     setSelectedFormId(getDefaultActiveFormId(which));
     setYear(currentYear);
@@ -1506,9 +1530,10 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function saveReview() {
+    if (!canEdit) return;
     if (!employeeId) return;
 
-    const qs = activeQuestions;
+    const qs = activeQuestions.filter((q) => (q.kind || "question") !== "section");
     if (!qs || qs.length === 0) {
       setStatus("No questions for this review type yet.");
       return;
@@ -1539,11 +1564,13 @@ function EmployeePerformanceReviewsTab({
       const max = scaleMax;
 
       // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
-      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions.map((q) => ({
-        review_id: rid,
-        question_id: q.id,
-        score: clampScore(values[q.id], max),
-      }));
+      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions
+        .filter((q) => (q.kind || "question") !== "section")
+        .map((q) => ({
+          review_id: rid,
+          question_id: q.id,
+          score: clampScore(values[q.id], max),
+        }));
 
       const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
       if (upsertRes.error) throw upsertRes.error;
@@ -1561,6 +1588,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function deleteReview(r: HrReview) {
+    if (!canEdit) return;
     const ok = confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
@@ -1578,6 +1606,7 @@ function EmployeePerformanceReviewsTab({
   }
 
   async function publishReview(reviewIdToPublish: string) {
+    if (!canEdit) return;
     if (!reviewIdToPublish) return;
     setPublishingReviewId(reviewIdToPublish);
     setStatus("Publishing review...");
@@ -1688,16 +1717,22 @@ function EmployeePerformanceReviewsTab({
         </div>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
-            + Create Annual Evaluation
-          </button>
-          <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
-            + Create Monthly Scorecard
-          </button>
+          {canEdit ? (
+            <>
+              <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
+                + Create Annual Evaluation
+              </button>
+              <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
+                + Create Monthly Scorecard
+              </button>
+            </>
+          ) : null}
 
-          <button className="btn" type="button" onClick={() => openManageForms()}>
-            Manage Forms
-          </button>
+          {canEdit ? (
+            <button className="btn" type="button" onClick={() => openManageForms()}>
+              Manage Forms
+            </button>
+          ) : null}
 
           {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
         </div>
@@ -1873,6 +1908,7 @@ function EmployeePerformanceReviewsTab({
                   <select
                     className="select"
                     value={formType}
+                    disabled={readOnly}
                     onChange={(e) => {
                       const ft = e.target.value as ReviewFormType;
                       setFormType(ft);
@@ -1926,6 +1962,7 @@ function EmployeePerformanceReviewsTab({
                     className="input"
                     type="number"
                     value={year}
+                    disabled={readOnly}
                     onChange={(e) => setYear(Number(e.target.value))}
                     min={2000}
                     max={2100}
@@ -1935,7 +1972,7 @@ function EmployeePerformanceReviewsTab({
                 {formType === "monthly" ? (
                   <div style={{ width: 200 }}>
                     <div style={{ fontWeight: 900, marginBottom: 6 }}>Month</div>
-                    <select className="select" value={month} onChange={(e) => setMonth(Number(e.target.value))}>
+                    <select className="select" value={month} disabled={readOnly} onChange={(e) => setMonth(Number(e.target.value))}>
                       {Array.from({ length: 12 }).map((_, i) => {
                         const m = i + 1;
                         return (
@@ -1960,63 +1997,85 @@ function EmployeePerformanceReviewsTab({
               </div>
             ) : (
               <div className="stack" style={{ gap: 10 }}>
-                {activeQuestions.map((q) => (
-                  <div
-                    key={q.id}
-                    style={{
-                      border: "1px solid var(--border)",
-                      borderRadius: 14,
-                      padding: 12,
-                      background: "white",
-                    }}
-                  >
-                    <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
+                {activeQuestions.map((q) => {
+                  const kind = ((q.kind as any) || "question") as ReviewQuestionKind;
 
-                    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <div className="subtle" style={{ minWidth: 140 }}>
-                        Score (1–{scaleMax})
-                      </div>
-
-                      <select
-                        className="select"
-                        value={String(values[q.id] ?? "")}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          const s = clampScore(raw, scaleMax);
-                          setValues((cur) => {
-                            const next = { ...cur } as Record<string, number>;
-                            if (s == null) {
-                              delete (next as any)[q.id];
-                            } else {
-                              (next as any)[q.id] = s;
-                            }
-                            return next;
-                          });
+                  if (kind === "section") {
+                    return (
+                      <div
+                        key={q.id}
+                        style={{
+                          border: "1px solid #e5e7eb",
+                          borderRadius: 14,
+                          padding: "10px 12px",
+                          background: "#f8fafc",
                         }}
-                        style={{ width: 140 }}
                       >
-                        <option value="">Undecided</option>
-                        {Array.from({ length: scaleMax }).map((_, i) => {
-                          const v = i + 1;
-                          return (
-                            <option key={v} value={v}>
-                              {v}
-                            </option>
-                          );
-                        })}
-                      </select>
+                        <div style={{ fontWeight: 950, fontSize: 16 }}>{q.question_text}</div>
+                      </div>
+                    );
+                  }
 
-                      <div className="subtle">
-                        {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                  return (
+                    <div
+                      key={q.id}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 14,
+                        padding: 12,
+                        background: "white",
+                      }}
+                    >
+                      <div style={{ fontWeight: 900, marginBottom: 8 }}>{q.question_text}</div>
+
+                      <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <div className="subtle" style={{ minWidth: 140 }}>
+                          Score (1–{scaleMax})
+                        </div>
+
+                        <select
+                          className="select"
+                          value={String(values[q.id] ?? "")}
+                          disabled={readOnly}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const s = clampScore(raw, scaleMax);
+                            setValues((cur) => {
+                              const next = { ...cur } as Record<string, number>;
+                              if (s == null) {
+                                delete (next as any)[q.id];
+                              } else {
+                                (next as any)[q.id] = s;
+                              }
+                              return next;
+                            });
+                          }}
+                          style={{ width: 140 }}
+                        >
+                          <option value="">Undecided</option>
+                          {Array.from({ length: scaleMax }).map((_, i) => {
+                            const v = i + 1;
+                            return (
+                              <option key={v} value={v}>
+                                {v}
+                              </option>
+                            );
+                          })}
+                        </select>
+
+                        <div className="subtle">
+                          {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
               <textarea
                 className="input"
                 value={reviewNotes}
+                disabled={readOnly}
                 onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setReviewNotes(e.target.value)}
                 placeholder="Additional notes..."
                 style={{ minHeight: 90, resize: "vertical" }}
@@ -2031,11 +2090,13 @@ function EmployeePerformanceReviewsTab({
 
                   <div className="row" style={{ gap: 10 }}>
                     <button className="btn" type="button" onClick={closeModal}>
-                      Cancel
+                      {readOnly ? "Close" : "Cancel"}
                     </button>
-                    <button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
-                      Save evaluation
-                    </button>
+                    {!readOnly ? (
+                      <button className="btn btn-primary" type="button" onClick={() => void saveReview()}>
+                        Save evaluation
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -2358,12 +2419,25 @@ function EmployeePerformanceReviewsTab({
                   <div style={{ display: "grid", gap: 8 }}>
                     <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                       <div style={{ fontWeight: 900 }}>#{idx + 1}</div>
+                      <select
+                        className="select"
+                        value={q.kind}
+                        onChange={(e) => {
+                          const v = e.target.value as ReviewQuestionKind;
+                          setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, kind: v } : x)));
+                        }}
+                        style={{ width: 170 }}
+                        title="Item type"
+                      >
+                        <option value="question">Scored question</option>
+                        <option value="section">Section header</option>
+                      </select>
                     </div>
 
                     <input
                       className="input"
                       value={q.question_text}
-                      placeholder="Question text"
+                      placeholder={q.kind === "section" ? "Section header title" : "Question text"}
                       onChange={(e) => {
                         const v = e.target.value;
                         setEditQuestions((cur) => cur.map((x) => (x.id === q.id ? { ...x, question_text: v } : x)));
@@ -2407,9 +2481,14 @@ function EmployeePerformanceReviewsTab({
               ))}
 
               <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 6 }}>
-                <button className="btn" type="button" onClick={addEditQuestionRow}>
-                  + Add question
-                </button>
+                <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                  <button className="btn" type="button" onClick={() => addEditQuestionRow("question")}>
+                    + Add question
+                  </button>
+                  <button className="btn" type="button" onClick={() => addEditQuestionRow("section")}>
+                    + Add section header
+                  </button>
+                </div>
 
                 <div className="row" style={{ gap: 10 }}>
                   <button className="btn" type="button" onClick={closeEditQuestions}>
@@ -2475,6 +2554,15 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const [newAttendanceDate, setNewAttendanceDate] = useState<string>("");
   const [newAttendanceNotes, setNewAttendanceNotes] = useState<string>("");
   const [attSaving, setAttSaving] = useState(false);
+
+  // Time off requests (records + running total stored on hr_employees.time_off_hours_requested)
+  const [timeOffRecords, setTimeOffRecords] = useState<EmployeeTimeOffRequestRow[]>([]);
+  const [timeOffLoading, setTimeOffLoading] = useState(false);
+
+  const [newTimeOffDate, setNewTimeOffDate] = useState<string>("");
+  const [newTimeOffHours, setNewTimeOffHours] = useState<string>("");
+  const [newTimeOffNotes, setNewTimeOffNotes] = useState<string>("");
+  const [timeOffSaving, setTimeOffSaving] = useState(false);
 
   // left-nav (sections)
   const [activeTab, setActiveTab] =
@@ -4019,13 +4107,138 @@ async function addMeetingType() {
     })();
   }, [employeeId]);
 
-  // If user clicks Attendance tab later, refresh attendance + types (keeps it current)
+  
+const loadTimeOffRecords = useCallback(async (empId: string) => {
+  if (!empId) {
+    setTimeOffRecords([]);
+    return;
+  }
+  setTimeOffLoading(true);
+  try {
+    const res = await supabase
+      .from("hr_employee_time_off_requests")
+      .select("id, employee_id, occurred_on, hours_requested, notes, created_at")
+      .eq("employee_id", empId)
+      .order("occurred_on", { ascending: false });
+
+    if (res.error) throw res.error;
+
+    const rows = (res.data ?? []).map((r: any) => ({
+      ...r,
+      hours_requested: Number(r.hours_requested ?? 0),
+    })) as EmployeeTimeOffRequestRow[];
+
+    setTimeOffRecords(rows);
+  } catch {
+    setTimeOffRecords([]);
+  } finally {
+    setTimeOffLoading(false);
+  }
+}, []);
+
+async function addTimeOffRecord() {
+  if (!employeeId) return;
+
+  const date = newTimeOffDate.trim();
+  if (!date) {
+    alert("Please select a date.");
+    return;
+  }
+
+  const hoursNum = Number(newTimeOffHours);
+  if (!Number.isFinite(hoursNum) || hoursNum <= 0) {
+    alert("Please enter a valid hours amount (> 0).");
+    return;
+  }
+
+  setError(null);
+  setTimeOffSaving(true);
+  try {
+    const { error } = await supabase.from("hr_employee_time_off_requests").insert({
+      employee_id: employeeId,
+      occurred_on: date,
+      hours_requested: hoursNum,
+      notes: newTimeOffNotes.trim() || null,
+    });
+
+    if (error) throw error;
+
+    setNewTimeOffDate("");
+    setNewTimeOffHours("");
+    setNewTimeOffNotes("");
+
+    await loadTimeOffRecords(employeeId);
+
+    // refresh employee totals
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to add time off request record.");
+  } finally {
+    setTimeOffSaving(false);
+  }
+}
+
+async function deleteTimeOffRecord(recId: string) {
+  const ok = confirm("Delete this time off request record? (This will subtract the hours automatically.)");
+  if (!ok) return;
+
+  setError(null);
+  try {
+    const { error } = await supabase.from("hr_employee_time_off_requests").delete().eq("id", recId);
+    if (error) throw error;
+
+    await loadTimeOffRecords(employeeId);
+
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to delete time off request record.");
+  }
+}
+
+async function resetAttendancePointsToDefault() {
+  if (!employeeId) return;
+  const ok = confirm("Reset attendance points to 3? (This keeps all existing records.)");
+  if (!ok) return;
+
+  setError(null);
+  try {
+    const { error } = await supabase.from("hr_employees").update({ attendance_points: 3 }).eq("id", employeeId);
+    if (error) throw error;
+
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to reset attendance points.");
+  }
+}
+
+async function resetTimeOffHoursToDefault() {
+  if (!employeeId) return;
+  const ok = confirm("Reset time off requested hours to 0? (This keeps all existing records.)");
+  if (!ok) return;
+
+  setError(null);
+  try {
+    const { error } = await supabase.from("hr_employees").update({ time_off_hours_requested: 0 }).eq("id", employeeId);
+    if (error) throw error;
+
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to reset time off requested hours.");
+  }
+}
+
+// If user clicks Attendance tab later, refresh attendance + types (keeps it current)
   useEffect(() => {
     if (!employeeId) return;
     if (activeTab !== "attendance") return;
-    void loadEmployeeAttendance(employeeId);
+        void loadEmployeeAttendance(employeeId);
     void loadAttendanceTypes();
-  }, [activeTab, employeeId, loadEmployeeAttendance, loadAttendanceTypes]);
+    void loadTimeOffRecords(employeeId);
+  }, [activeTab, employeeId, loadEmployeeAttendance, loadAttendanceTypes, loadTimeOffRecords]);
 
   async function saveChanges() {
     if (!employeeId) return;
@@ -4840,7 +5053,8 @@ async function addMeetingType() {
               )}
 
               {activeTab === "attendance" && (
-                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                <div style={{ display: "grid", gap: 14 }}>
+                  <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div className="row-between" style={{ gap: 12, alignItems: "center" }}>
                     <div style={{ fontWeight: 900 }}>
                       Attendance <span style={{ marginLeft: 10, fontWeight: 900, color: scoreColor(attPoints) }}>({attPoints})</span>
@@ -4849,6 +5063,9 @@ async function addMeetingType() {
                     <div className="row" style={{ gap: 10 }}>
                       <button className="btn" type="button" onClick={() => void loadEmployeeAttendance(employeeId)} disabled={empAttendanceLoading}>
                         {empAttendanceLoading ? "Loading..." : "Refresh records"}
+                      </button>
+                      <button className="btn" type="button" onClick={() => void resetAttendancePointsToDefault()}>
+                        Reset points
                       </button>
                     </div>
                   </div>
@@ -4906,10 +5123,6 @@ async function addMeetingType() {
                       >
                         Clear
                       </button>
-                    </div>
-
-                    <div className="subtle" style={{ marginTop: 8 }}>
-                      When you add a record, points are automatically deducted based on the type.
                     </div>
                   </div>
 
@@ -4970,6 +5183,123 @@ async function addMeetingType() {
                       </div>
                     )}
                   </div>
+                  </div>
+  <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+    <div className="row-between" style={{ gap: 12, alignItems: "center" }}>
+      <div style={{ fontWeight: 900 }}>
+        Time Off Request Records{" "}
+        <span style={{ marginLeft: 10, fontWeight: 900 }}>
+          ({Number(employee?.time_off_hours_requested ?? 0).toFixed(2)} hrs)
+        </span>
+      </div>
+
+      <div className="row" style={{ gap: 10 }}>
+        <button className="btn" type="button" onClick={() => void loadTimeOffRecords(employeeId)} disabled={timeOffLoading}>
+          {timeOffLoading ? "Loading..." : "Refresh records"}
+        </button>
+        <button className="btn" type="button" onClick={() => void resetTimeOffHoursToDefault()}>
+          Reset hours
+        </button>
+      </div>
+    </div>
+    <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px dashed #e5e7eb" }}>
+      <div style={{ fontWeight: 800, marginBottom: 10 }}>Add time off request record</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+        <div>
+          <FieldLabel>Date</FieldLabel>
+          <TextInput type="date" value={newTimeOffDate} onChange={(e) => setNewTimeOffDate(e.target.value)} />
+        </div>
+
+        <div>
+          <FieldLabel>Hours requested</FieldLabel>
+          <TextInput
+            inputMode="decimal"
+            value={newTimeOffHours}
+            onChange={(e) => setNewTimeOffHours(e.target.value)}
+            placeholder="e.g. 4"
+          />
+        </div>
+      </div>
+
+      <div style={{ height: 10 }} />
+
+      <div>
+        <FieldLabel>Notes</FieldLabel>
+        <TextInput value={newTimeOffNotes} onChange={(e) => setNewTimeOffNotes(e.target.value)} placeholder="Optional details…" />
+      </div>
+
+      <div className="row" style={{ gap: 10, marginTop: 12 }}>
+        <button className="btn btn-primary" type="button" onClick={() => void addTimeOffRecord()} disabled={timeOffSaving}>
+          {timeOffSaving ? "Adding..." : "Add record"}
+        </button>
+
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            setNewTimeOffDate("");
+            setNewTimeOffHours("");
+            setNewTimeOffNotes("");
+          }}
+          disabled={timeOffSaving}
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>
+        Existing time off requests ({timeOffRecords.length})
+        {timeOffLoading ? <span className="subtle" style={{ marginLeft: 10 }}>Loading…</span> : null}
+      </div>
+
+      {timeOffRecords.length === 0 ? (
+        <div className="subtle">No time off request records yet.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {timeOffRecords.map((r) => (
+            <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+              <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>
+                    {formatYmd(r.occurred_on)} • <span style={{ fontWeight: 900 }}>{Number(r.hours_requested).toFixed(2)} hrs</span>
+                  </div>
+
+                  {r.notes ? (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      {r.notes}
+                    </div>
+                  ) : (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      —
+                    </div>
+                  )}
+
+                  <div className="subtle" style={{ marginTop: 6, fontSize: 12 }}>
+                    Created: {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                  </div>
+                </div>
+
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <button className="btn" type="button" onClick={() => void deleteTimeOffRecord(r.id)} style={{ padding: "6px 10px" }}>
+                    Delete
+                  </button>
+                  <div className="subtle" style={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    ID:{" "}
+                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                      {r.id.slice(0, 8)}…
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
                 </div>
               )}
               {activeTab === "reviews" && (
