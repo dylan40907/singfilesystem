@@ -2844,10 +2844,10 @@ function EmployeePerformanceReviewsTab({
                       <div
                         key={q.id}
                         style={{
-                          border: "1px solid #e5e7eb",
+                          border: "1px solid #bae6fd",
                           borderRadius: 14,
                           padding: "10px 12px",
-                          background: "#f8fafc",
+                          background: "#e0f2fe",
                         }}
                       >
                         <div style={{ fontWeight: 950, fontSize: 16 }}>{q.question_text}</div>
@@ -3250,9 +3250,9 @@ function EmployeePerformanceReviewsTab({
                     gap: 10,
                     alignItems: "start",
                     padding: "10px 10px",
-                    border: "1px solid #e5e7eb",
+                    border: q.kind === "section" ? "1px solid #bae6fd" : "1px solid #e5e7eb",
                     borderRadius: 14,
-                    background: "white",
+                    background: q.kind === "section" ? "#e0f2fe" : "white",
                   }}
                 >
                   <div style={{ display: "grid", gap: 8 }}>

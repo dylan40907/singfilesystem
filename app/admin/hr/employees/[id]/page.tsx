@@ -2005,10 +2005,10 @@ function EmployeePerformanceReviewsTab({
                       <div
                         key={q.id}
                         style={{
-                          border: "1px solid #e5e7eb",
+                          border: "1px solid #bae6fd",
                           borderRadius: 14,
                           padding: "10px 12px",
-                          background: "#f8fafc",
+                          background: "#e0f2fe",
                         }}
                       >
                         <div style={{ fontWeight: 950, fontSize: 16 }}>{q.question_text}</div>
@@ -2411,9 +2411,9 @@ function EmployeePerformanceReviewsTab({
                     gap: 10,
                     alignItems: "start",
                     padding: "10px 10px",
-                    border: "1px solid #e5e7eb",
+                    border: q.kind === "section" ? "1px solid #bae6fd" : "1px solid #e5e7eb",
                     borderRadius: 14,
-                    background: "white",
+                    background: q.kind === "section" ? "#e0f2fe" : "white",
                   }}
                 >
                   <div style={{ display: "grid", gap: 8 }}>
@@ -5124,6 +5124,10 @@ async function resetTimeOffHoursToDefault() {
                         Clear
                       </button>
                     </div>
+
+                    <div className="subtle" style={{ marginTop: 8 }}>
+                      When you add a record, points are automatically deducted based on the type.
+                    </div>
                   </div>
 
                   <div style={{ marginTop: 12 }}>
@@ -5202,6 +5206,11 @@ async function resetTimeOffHoursToDefault() {
         </button>
       </div>
     </div>
+
+    <div className="subtle" style={{ marginTop: 6 }}>
+      Records are shown most recent first. Total hours shown above can be reset for a new year without deleting records.
+    </div>
+
     <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px dashed #e5e7eb" }}>
       <div style={{ fontWeight: 800, marginBottom: 10 }}>Add time off request record</div>
 
