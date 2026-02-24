@@ -1342,14 +1342,25 @@ function EmployeePerformanceReviewsTab({
     const ids = rows.map((r) => r.id);
 
     // hr_review_answers uses the column name `score`.
-    const ansRes = await supabase.from("hr_review_answers").select("review_id, score").in("review_id", ids);
+    // IMPORTANT: exclude SECTION HEADER rows (kind='section') from averages/totals.
+    const kindByQuestionId = new Map<string, string>();
+    for (const q of questions) kindByQuestionId.set(q.id, (q as any).kind ?? "question");
+
+    const ansRes = await supabase
+      .from("hr_review_answers")
+      .select("review_id, question_id, score")
+      .in("review_id", ids);
     if (ansRes.error) throw ansRes.error;
 
     const sums: Record<string, { sum: number; count: number }> = {};
-    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; score: number | null }>) {
+    for (const row of (ansRes.data ?? []) as Array<{ review_id: string; question_id: string; score: number | null }>) {
       const rid = String(row.review_id);
+      const qid = String((row as any).question_id);
+      if (kindByQuestionId.get(qid) === "section") continue;
+
       const v = typeof row.score === "number" ? row.score : null;
       if (v === null) continue;
+
       const cur = sums[rid] ?? { sum: 0, count: 0 };
       cur.sum += v;
       cur.count += 1;
@@ -1625,7 +1636,7 @@ function EmployeePerformanceReviewsTab({
 
 
   const computedAvg = useMemo(() => {
-    const qs = activeQuestions;
+    const qs = (activeQuestions ?? []).filter((q: any) => (q?.kind ?? "question") !== "section");
     if (!qs || qs.length === 0) return null;
 
     const max = scaleMax;
