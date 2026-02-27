@@ -67,6 +67,14 @@ type EmployeeTimeOffRequestRow = {
   created_at: string;
 };
 
+type EmployeeTimeOffDayRequestRow = {
+  id: string;
+  employee_id: string;
+  occurred_on: string; // YYYY-MM-DD
+  notes: string | null;
+  created_at: string;
+};
+
 type EmployeeRow = {
   id: string;
   legal_first_name: string;
@@ -99,6 +107,8 @@ type EmployeeRow = {
   attendance_points: number;
 
   time_off_hours_requested?: number;
+
+  time_off_days_requested?: number;
 
   job_level?: JobLevelRow | null;
   campus?: CampusRow | null;
@@ -769,6 +779,7 @@ function normalizeEmployee(raw: any): EmployeeRow {
     pto_meta: raw.pto_meta ?? {},
     attendance_points: Number(raw.attendance_points ?? 3),
     time_off_hours_requested: raw.time_off_hours_requested == null ? 0 : Number(raw.time_off_hours_requested),
+    time_off_days_requested: raw.time_off_days_requested == null ? 0 : Number(raw.time_off_days_requested),
 
     job_level: asSingle<JobLevelRow>(raw.job_level),
     campus: asSingle<CampusRow>(raw.campus),
@@ -820,6 +831,7 @@ async function fetchEmployeeData(employeeId: string) {
       pto_meta,
       attendance_points,
       time_off_hours_requested,
+      time_off_days_requested,
       created_at,
       updated_at,
       job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name),
@@ -874,6 +886,7 @@ type HrReviewAnswer = {
   review_id: string;
   question_id: string;
   score: number | null;
+  note?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -915,6 +928,181 @@ function recommendedIncreasePercent(total: number) {
 }
 
 
+function escapeHtml(s: string) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+type PrintRow =
+  | { kind: "section"; title: string; avg: number | null }
+  | { kind: "question"; text: string; score: number | null };
+
+function buildAnnualPrintRows(questions: ReviewQuestion[], answersByQ: Map<string, HrReviewAnswer>, scaleMax: number) {
+  const rows: PrintRow[] = [];
+  let bucket: Array<number> = [];
+
+  const flushAvgIntoLastSection = () => {
+    // Find the most recent section header row and attach avg
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (r.kind === "section") {
+        const avg = bucket.length ? bucket.reduce((a, b) => a + b, 0) / bucket.length : null;
+        (r as any).avg = avg === null ? null : round1dp(avg);
+        bucket = [];
+        return;
+      }
+    }
+    // No explicit section header yet; ignore
+    bucket = [];
+  };
+
+  for (const q of questions) {
+    const kind = (q.kind ?? "question") as any;
+    if (kind === "section") {
+      // before starting new section, flush avg for previous section
+      flushAvgIntoLastSection();
+      rows.push({ kind: "section", title: q.question_text, avg: null });
+      continue;
+    }
+    const ans = answersByQ.get(q.id);
+    const score = typeof ans?.score === "number" ? clampScore(ans.score, scaleMax) : null;
+    if (typeof score === "number") bucket.push(score);
+    rows.push({ kind: "question", text: q.question_text, score });
+  }
+
+  // flush avg at end
+  flushAvgIntoLastSection();
+  return rows;
+}
+
+function buildAnnualPrintHtml(opts: {
+  year: number;
+  employeeName: string;
+  jobLevelName: string;
+  attendancePoints: number;
+  performanceAvg: number | null;
+  rows: PrintRow[];
+  overallNotes: string;
+}) {
+  const today = new Date();
+  const dateStr = today.toLocaleDateString();
+
+  const perfAvg = opts.performanceAvg === null ? "—" : formatOneDecimal(opts.performanceAvg);
+  const total = opts.performanceAvg === null ? null : opts.attendancePoints + round1dp(opts.performanceAvg);
+  const inc = total === null ? "—" : `${recommendedIncreasePercent(total)}%`;
+  const totalStr = total === null ? "—" : formatOneDecimal(total);
+
+  const rowsHtml = opts.rows
+    .map((r) => {
+      if (r.kind === "section") {
+        const avg = r.avg === null ? "—" : formatOneDecimal(r.avg);
+        return `
+          <div class="sec">
+            <div class="sec-title">${escapeHtml(r.title)}</div>
+            <div class="sec-avg">Section Avg: ${escapeHtml(avg)}</div>
+          </div>
+        `;
+      }
+      const s = r.score === null ? "—" : String(r.score);
+      return `
+        <div class="qrow">
+          <div class="qtext">${escapeHtml(r.text)}</div>
+          <div class="qscore">${escapeHtml(s)}</div>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${opts.year} Performance Evaluation</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 28px; color: #111; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    .sub { margin: 0 0 14px; color: #444; }
+    .meta { margin: 0 0 16px; }
+    .meta div { margin: 2px 0; }
+    .sec { background: #fff4c2; padding: 10px 12px; border-radius: 10px; margin: 14px 0 8px; display:flex; justify-content:space-between; gap: 12px; align-items:flex-end; }
+    .sec-title { font-weight: 800; }
+    .sec-avg { color:#333; font-weight: 700; font-size: 13px; white-space: nowrap; }
+    .qrow { display:flex; justify-content:space-between; gap: 14px; padding: 6px 2px; }
+    .qtext { flex: 1; }
+    .qscore { width: 70px; text-align: right; font-weight: 800; }
+    .hr { height:1px; background:#ddd; margin: 14px 0; }
+    .overall { display:flex; justify-content:space-between; font-weight: 900; margin-top: 10px; }
+    .box { border:1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 14px; }
+    .box h2 { margin:0 0 8px; font-size: 16px; }
+    .mini { font-size: 12px; color:#333; }
+    table { border-collapse: collapse; margin-top: 10px; width: 420px; }
+    th, td { border: 1px solid #333; padding: 6px 8px; text-align: center; }
+    .sig { margin-top: 22px; }
+    .sigline { margin: 16px 0 6px; }
+  </style>
+</head>
+<body>
+  <h1>${opts.year} Performance Evaluation</h1>
+  <p class="sub">${escapeHtml(opts.jobLevelName)}</p>
+  <div class="meta">
+    <div><b>Employee Name:</b> ${escapeHtml(opts.employeeName)}</div>
+    <div><b>Date:</b> ${escapeHtml(dateStr)}</div>
+  </div>
+
+  ${rowsHtml}
+
+  <div class="overall">
+    <div>Overall Rating (Average):</div>
+    <div>${escapeHtml(perfAvg)}</div>
+  </div>
+
+  <div class="box">
+    <h2>Additional Notes &amp; Plan of Action</h2>
+    <div><b>Attendance Score:</b> ${escapeHtml(String(opts.attendancePoints))}</div>
+    <div><b>Performance:</b> ${escapeHtml(perfAvg)}</div>
+    <div><b>Total:</b> ${escapeHtml(totalStr)} &nbsp;&nbsp; <b>Recommended Increase:</b> ${escapeHtml(inc)}</div>
+    <div class="hr"></div>
+    <div style="white-space:pre-wrap;">${escapeHtml(opts.overallNotes || "")}</div>
+
+    <div class="hr"></div>
+    <div class="mini">
+      <div><b>5</b> = Exceeds Expectations</div>
+      <div><b>4</b> = Meets Expectations</div>
+      <div><b>3</b> = Improving</div>
+      <div><b>2</b> = Below Expectations</div>
+      <div><b>1</b> = Probation</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Attendance</th><th>Performance</th><th>Total</th><th>Increase</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>3</td><td>5</td><td>8</td><td>4%</td></tr>
+        <tr><td>3</td><td>4</td><td>7</td><td>3%</td></tr>
+        <tr><td>3</td><td>3</td><td>6</td><td>2%</td></tr>
+        <tr><td>3</td><td>2</td><td>5</td><td>0%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="sig">
+    <div class="sigline"><b>Teacher Signature</b></div>
+    <div>______________________________</div>
+
+    <div class="sigline"><b>Supervisor Signature</b></div>
+    <div>______________________________</div>
+  </div>
+</body>
+</html>`;
+}
+
+
+
 function reviewMostRecentAt(r: HrReview) {
   const t = r.updated_at || r.created_at;
   const d = new Date(t);
@@ -924,11 +1112,13 @@ function reviewMostRecentAt(r: HrReview) {
 function EmployeePerformanceReviewsTab({
   employeeId,
   attendancePoints,
+  viewerRole,
   readOnly = false,
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
   attendancePoints: number | null;
+  viewerRole?: string | null;
   readOnly?: boolean;
 }) {
   const now = useMemo(() => new Date(), []);
@@ -984,6 +1174,8 @@ function EmployeePerformanceReviewsTab({
 
   const [reviewId, setReviewId] = useState<string>("");
   const [values, setValues] = useState<Record<string, number | null>>({});
+  const [answerNotes, setAnswerNotes] = useState<Record<string, string>>({}); // per-question notes
+
 
   const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
   const [publishingReviewId, setPublishingReviewId] = useState<string>("");
@@ -1348,7 +1540,7 @@ function EmployeePerformanceReviewsTab({
 
     const ansRes = await supabase
       .from("hr_review_answers")
-      .select("review_id, question_id, score")
+      .select("review_id, question_id, score, note")
       .in("review_id", ids);
     if (ansRes.error) throw ansRes.error;
 
@@ -1418,7 +1610,142 @@ function EmployeePerformanceReviewsTab({
     setReviewNotes("");
   }
 
-  async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
+  
+  async function printAnnualEvaluation() {
+    if (!employeeId) return;
+    const role = viewerRole;
+    const canPrint = role === "admin" || role === "supervisor";
+    if (!canPrint) return;
+
+    // Open the print window synchronously (before any awaits) to avoid popup blockers.
+    const w = window.open("", "_blank", "noopener,noreferrer");
+    if (!w) {
+      alert("Popup blocked — please allow popups to print.");
+      return;
+    }
+
+    try {
+      console.log("[printAnnual] start", { employeeId });
+      w.document.open();
+      w.document.write(`<!doctype html><html><head><title>Loading…</title></head><body style="font-family:system-ui;padding:24px;">
+        <h2 style="margin:0 0 8px 0;">Preparing print view…</h2>
+        <div style="color:#6b7280;">Please wait.</div>
+      </body></html>`);
+      w.document.close();
+      const { data: annuals, error: aerr } = await supabase
+        .from("hr_reviews")
+        .select("id, form_id, period_year, notes, attendance_points_snapshot, published")
+        .eq("employee_id", employeeId)
+        .eq("form_type", "annual")
+        .eq("published", true)
+        .order("period_year", { ascending: false });
+
+      if (aerr) throw aerr;
+      const list = (annuals ?? []) as any[];
+      if (list.length === 0) {
+        alert("No published annual evaluations found for this employee.");
+        return;
+      }
+
+      const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
+      const defaultYear = years[0];
+      const input = prompt(
+        `Print Annual Evaluation\nAvailable years: ${years.join(", ")}\n\nEnter year:`,
+        String(defaultYear),
+      );
+      if (!input) return;
+      const year = Number(input);
+      if (!Number.isFinite(year)) {
+        alert("Invalid year.");
+        return;
+      }
+      const review = list.find((r) => r.period_year === year);
+      if (!review) {
+        alert("That year is not available.");
+        return;
+      }
+
+      const { data: formRow, error: ferr } = await supabase
+        .from("hr_review_forms")
+        .select("id, scale_max")
+        .eq("id", review.form_id)
+        .single();
+      if (ferr) throw ferr;
+      const scaleMax = (formRow as any)?.scale_max ?? 5;
+
+      const { data: qs, error: qerr } = await supabase
+        .from("hr_review_questions")
+        .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
+        .eq("form_id", review.form_id)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+      if (qerr) throw qerr;
+
+      const { data: ans, error: anserr } = await supabase
+        .from("hr_review_answers")
+        .select("review_id, question_id, score, note, created_at, updated_at")
+        .eq("review_id", review.id);
+      if (anserr) throw anserr;
+
+      const byQ = new Map<string, HrReviewAnswer>();
+      for (const a of (ans ?? []) as any[]) {
+        byQ.set(a.question_id, a as HrReviewAnswer);
+      }
+
+      const scores: number[] = [];
+      for (const q of (qs ?? []) as any[]) {
+        if ((q.kind ?? "question") === "section") continue;
+        const s = byQ.get(q.id)?.score;
+        if (typeof s === "number") scores.push(Math.max(1, Math.min(scaleMax, Math.trunc(s))));
+      }
+      const performanceAvg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+
+      // Fetch employee meta (names, job level, attendance points) for printing
+      const { data: empMeta, error: emerr } = await supabase
+        .from("hr_employees")
+        .select(
+          "id, legal_first_name, legal_middle_name, legal_last_name, attendance_points, job_level:hr_job_levels(name)",
+        )
+        .eq("id", employeeId)
+        .single();
+      if (emerr) throw emerr;
+
+      const att =
+        typeof review.attendance_points_snapshot === "number"
+          ? review.attendance_points_snapshot
+          : (empMeta as any)?.attendance_points ?? 3;
+
+      const jobLevelName = (empMeta as any)?.job_level?.name ?? "";
+      const employeeName = formatEmployeeName(empMeta as any);
+
+      const printRows = buildAnnualPrintRows((qs ?? []) as any, byQ, scaleMax);
+      const html = buildAnnualPrintHtml({
+        year,
+        employeeName,
+        jobLevelName,
+        attendancePoints: att,
+        performanceAvg,
+        rows: printRows,
+        overallNotes: (review.notes ?? "") as string,
+      });
+      console.log("[printAnnual] writing html", { year });
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+      w.focus();
+      setTimeout(() => {
+        try {
+          w.print();
+        } catch {}
+      }, 350);
+    } catch (e: any) {
+      console.error("[printAnnual] error", e);
+      try { w.close(); } catch {}
+      alert(e?.message ?? "Failed to print annual evaluation.");
+    }
+  }
+
+async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
     const formId = selectedFormId || getDefaultActiveFormId(ft);
     const qs = getQuestionsForForm(formId);
     const max = formById.get(formId)?.scale_max ?? (ft === "monthly" ? 3 : 5);
@@ -1427,6 +1754,7 @@ function EmployeePerformanceReviewsTab({
       setReviewId("");
       setValues({});
       setReviewNotes("");
+      setAnswerNotes({});
       return;
     }
 
@@ -1458,18 +1786,23 @@ function EmployeePerformanceReviewsTab({
       setReviewId("");
       setValues({});
       setReviewNotes("");
+      setAnswerNotes({});
       return;
     }
 
     const ansRes = await supabase
       .from("hr_review_answers")
-      .select("review_id, question_id, score, created_at, updated_at")
+      .select("review_id, question_id, score, note, created_at, updated_at")
       .eq("review_id", existing.id);
 
     if (ansRes.error) throw ansRes.error;
 
     const byQ = new Map<string, number | null>();
-    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score ?? null);
+    const byQNote = new Map<string, string>();
+    for (const a of (ansRes.data ?? []) as any[]) {
+      byQ.set(a.question_id, a.score ?? null);
+      if (typeof a.note === "string") byQNote.set(a.question_id, a.note);
+    }
 
     // Existing review: only populate questions that have an answer row.
     const init: Record<string, number> = {};
@@ -1483,6 +1816,7 @@ function EmployeePerformanceReviewsTab({
     setReviewId(existing.id);
     setValues(init);
     setReviewNotes(existing.notes ?? "");
+    setAnswerNotes(Object.fromEntries(byQNote.entries()));
   }
 
   async function ensureReviewRow(
@@ -1575,12 +1909,13 @@ function EmployeePerformanceReviewsTab({
       const max = scaleMax;
 
       // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
-      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions
+      const rows: { review_id: string; question_id: string; score: number | null; note: string | null }[] = activeQuestions
         .filter((q) => (q.kind || "question") !== "section")
         .map((q) => ({
           review_id: rid,
           question_id: q.id,
           score: clampScore(values[q.id], max),
+          note: (answerNotes[q.id] ?? null) || null,
         }));
 
       const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
@@ -1647,6 +1982,18 @@ function EmployeePerformanceReviewsTab({
     if (valsArr.length === 0) return null;
     return round1dp(valsArr.reduce((s, x) => s + x, 0) / valsArr.length);
   }, [activeQuestions, values, scaleMax]);
+
+  const computedTotal = useMemo(() => {
+    const qs = (activeQuestions ?? []).filter((q: any) => (q?.kind ?? "question") !== "section");
+    if (!qs || qs.length === 0) return null;
+    const max = scaleMax;
+    const valsArr = qs
+      .map((q) => clampScore(values[q.id], max))
+      .filter((v): v is number => typeof v === "number");
+    if (valsArr.length === 0) return null;
+    return valsArr.reduce((s, x) => s + x, 0);
+  }, [activeQuestions, values, scaleMax]);
+
 
   // Boot
   useEffect(() => {
@@ -1742,6 +2089,12 @@ function EmployeePerformanceReviewsTab({
           {canEdit ? (
             <button className="btn" type="button" onClick={() => openManageForms()}>
               Manage Forms
+            </button>
+          ) : null}
+
+          {(viewerRole === "admin" || viewerRole === "supervisor") ? (
+            <button className="btn" type="button" onClick={() => void printAnnualEvaluation()}>
+              Print Annual Evaluation
             </button>
           ) : null}
 
@@ -2078,11 +2431,28 @@ function EmployeePerformanceReviewsTab({
                           {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
                         </div>
                       </div>
+
+                      <div style={{ marginTop: 10 }}>
+                        <div className="subtle" style={{ marginBottom: 6 }}>Question note (optional)</div>
+                        <textarea
+                          className="input"
+                          value={answerNotes[q.id] ?? ""}
+                          disabled={readOnly}
+                          onChange={(e) =>
+                            setAnswerNotes((cur) => ({
+                              ...cur,
+                              [q.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="Optional note for this question..."
+                          style={{ minHeight: 70, resize: "vertical" }}
+                        />
+                      </div>
                     </div>
                   );
                 })}
                 <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Overall Notes</div>
               <textarea
                 className="input"
                 value={reviewNotes}
@@ -2094,10 +2464,16 @@ function EmployeePerformanceReviewsTab({
             </div>
 
                 <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
-                  <div className="subtle">
-                    Average (auto): <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>{" "}
-                    <span className="subtle">(normal rounding)</span>
-                  </div>
+                  {formType === "monthly" ? (
+                    <div className="subtle">
+                      Total (auto): <b>{computedTotal === null ? "—" : computedTotal}</b>
+                    </div>
+                  ) : (
+                    <div className="subtle">
+                      Average (auto): <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>{" "}
+                      <span className="subtle">(normal rounding)</span>
+                    </div>
+                  )}
 
                   <div className="row" style={{ gap: 10 }}>
                     <button className="btn" type="button" onClick={closeModal}>
@@ -2524,12 +2900,33 @@ export default function EmployeeByIdPage() {
   const params = useParams();
   const router = useRouter();
 
+  const [viewerRole, setViewerRole] = useState<string | null>(null);
+
+
   // ✅ Fix: normalize ParamValue -> string
   const employeeId = useMemo(() => {
     const raw = (params as any)?.id as string | string[] | undefined;
     if (!raw) return "";
     return Array.isArray(raw) ? raw[0] ?? "" : raw;
   }, [params]);
+
+  // Load viewer role (admin/supervisor/teacher) for permission-gated UI
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: u } = await supabase.auth.getUser();
+        const uid = u.user?.id;
+        if (!uid) return;
+        const { data: pr } = await supabase.from("user_profiles").select("role").eq("id", uid).maybeSingle();
+        if (!cancelled) setViewerRole((pr as any)?.role ?? null);
+      } catch {
+        if (!cancelled) setViewerRole(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -2574,6 +2971,16 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const [newTimeOffHours, setNewTimeOffHours] = useState<string>("");
   const [newTimeOffNotes, setNewTimeOffNotes] = useState<string>("");
   const [timeOffSaving, setTimeOffSaving] = useState(false);
+
+
+  // Time off requests by DAY (records + running total stored on hr_employees.time_off_days_requested)
+  const [timeOffDayRecords, setTimeOffDayRecords] = useState<EmployeeTimeOffDayRequestRow[]>([]);
+  const [timeOffDayLoading, setTimeOffDayLoading] = useState(false);
+
+  const [newTimeOffDayDate, setNewTimeOffDayDate] = useState<string>("");
+  const [newTimeOffDayNotes, setNewTimeOffDayNotes] = useState<string>("");
+  const [timeOffDaySaving, setTimeOffDaySaving] = useState(false);
+
 
   // left-nav (sections)
   const [activeTab, setActiveTab] =
@@ -4147,6 +4554,30 @@ const loadTimeOffRecords = useCallback(async (empId: string) => {
   }
 }, []);
 
+const loadTimeOffDayRecords = useCallback(async (empId: string) => {
+  if (!empId) {
+    setTimeOffDayRecords([]);
+    return;
+  }
+  setTimeOffDayLoading(true);
+  try {
+    const res = await supabase
+      .from("hr_employee_time_off_requests_days")
+      .select("id, employee_id, occurred_on, notes, created_at")
+      .eq("employee_id", empId)
+      .order("occurred_on", { ascending: false });
+
+    if (res.error) throw res.error;
+
+    const rows = (res.data ?? []) as EmployeeTimeOffDayRequestRow[];
+    setTimeOffDayRecords(rows);
+  } catch {
+    setTimeOffDayRecords([]);
+  } finally {
+    setTimeOffDayLoading(false);
+  }
+}, []);
+
 async function addTimeOffRecord() {
   if (!employeeId) return;
 
@@ -4208,6 +4639,25 @@ async function deleteTimeOffRecord(recId: string) {
   }
 }
 
+
+async function deleteTimeOffDayRecord(recId: string) {
+  const ok = confirm("Delete this time off day request record? (This will subtract 1 day automatically.)");
+  if (!ok) return;
+
+  setError(null);
+  try {
+    const { error } = await supabase.from("hr_employee_time_off_requests_days").delete().eq("id", recId);
+    if (error) throw error;
+
+    await loadTimeOffDayRecords(employeeId);
+
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    setError(e?.message ?? "Failed to delete time off day request record.");
+  }
+}
+
 async function resetAttendancePointsToDefault() {
   if (!employeeId) return;
   const ok = confirm("Reset attendance points to 3? (This keeps all existing records.)");
@@ -4222,6 +4672,52 @@ async function resetAttendancePointsToDefault() {
     setEmployee(fresh);
   } catch (e: any) {
     setError(e?.message ?? "Failed to reset attendance points.");
+  }
+}
+
+
+async function addTimeOffDayRecord() {
+  if (!employeeId) return;
+
+  const date = (newTimeOffDayDate || "").trim();
+  if (!date) {
+    alert("Please choose a date.");
+    return;
+  }
+
+  setTimeOffDaySaving(true);
+  try {
+    const res = await supabase.from("hr_employee_time_off_requests_days").insert({
+      employee_id: employeeId,
+      occurred_on: date,
+      notes: (newTimeOffDayNotes || "").trim() || null,
+    });
+    if (res.error) throw res.error;
+
+    setNewTimeOffDayDate("");
+    setNewTimeOffDayNotes("");
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+    await loadTimeOffDayRecords(employeeId);
+  } catch (e: any) {
+    alert(e?.message ?? "Failed to add time off day record.");
+  } finally {
+    setTimeOffDaySaving(false);
+  }
+}
+
+async function resetTimeOffDaysToDefault() {
+  if (!employeeId) return;
+  const ok = confirm("Reset time off DAY count back to 0? (Records will be kept.)");
+  if (!ok) return;
+
+  try {
+    const res = await supabase.from("hr_employees").update({ time_off_days_requested: 0 }).eq("id", employeeId);
+    if (res.error) throw res.error;
+    const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
+    setEmployee(fresh);
+  } catch (e: any) {
+    alert(e?.message ?? "Failed to reset day count.");
   }
 }
 
@@ -4249,6 +4745,7 @@ async function resetTimeOffHoursToDefault() {
         void loadEmployeeAttendance(employeeId);
     void loadAttendanceTypes();
     void loadTimeOffRecords(employeeId);
+    void loadTimeOffDayRecords(employeeId);
   }, [activeTab, employeeId, loadEmployeeAttendance, loadAttendanceTypes, loadTimeOffRecords]);
 
   async function saveChanges() {
@@ -5202,7 +5699,7 @@ async function resetTimeOffHoursToDefault() {
   <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
     <div className="row-between" style={{ gap: 12, alignItems: "center" }}>
       <div style={{ fontWeight: 900 }}>
-        Time Off Request Records{" "}
+        Time off Requests by Hour{" "}
         <span style={{ marginLeft: 10, fontWeight: 900 }}>
           ({Number(employee?.time_off_hours_requested ?? 0).toFixed(2)} hrs)
         </span>
@@ -5319,6 +5816,118 @@ async function resetTimeOffHoursToDefault() {
         </div>
       )}
     </div>
+
+  <div style={{ height: 12 }} />
+
+  <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+    <div className="row-between" style={{ gap: 12, alignItems: "center" }}>
+      <div style={{ fontWeight: 900 }}>
+        Time Off Requests by Day{" "}
+        <span style={{ marginLeft: 10, fontWeight: 900 }}>
+          ({Number(employee?.time_off_days_requested ?? 0)} days)
+        </span>
+      </div>
+
+      <div className="row" style={{ gap: 10 }}>
+        <button className="btn" type="button" onClick={() => void loadTimeOffDayRecords(employeeId)} disabled={timeOffDayLoading}>
+          {timeOffDayLoading ? "Loading..." : "Refresh records"}
+        </button>
+        <button className="btn" type="button" onClick={() => void resetTimeOffDaysToDefault()}>
+          Reset days
+        </button>
+      </div>
+    </div>
+
+    <div className="subtle" style={{ marginTop: 6 }}>
+      Records are shown most recent first. Total days shown above can be reset for a new year without deleting records.
+    </div>
+
+    <div style={{ marginTop: 12, padding: 12, borderRadius: 14, border: "1px dashed #e5e7eb" }}>
+      <div style={{ fontWeight: 800, marginBottom: 10 }}>Add time off day record</div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, alignItems: "end" }}>
+        <div>
+          <FieldLabel>Date</FieldLabel>
+          <TextInput type="date" value={newTimeOffDayDate} onChange={(e) => setNewTimeOffDayDate(e.target.value)} />
+        </div>
+      </div>
+
+      <div style={{ height: 10 }} />
+
+      <div>
+        <FieldLabel>Notes</FieldLabel>
+        <TextInput value={newTimeOffDayNotes} onChange={(e) => setNewTimeOffDayNotes(e.target.value)} placeholder="Optional details…" />
+      </div>
+
+      <div className="row" style={{ gap: 10, marginTop: 12 }}>
+        <button className="btn btn-primary" type="button" onClick={() => void addTimeOffDayRecord()} disabled={timeOffDaySaving}>
+          {timeOffDaySaving ? "Adding..." : "Add record"}
+        </button>
+
+        <button
+          className="btn"
+          type="button"
+          onClick={() => {
+            setNewTimeOffDayDate("");
+            setNewTimeOffDayNotes("");
+          }}
+          disabled={timeOffDaySaving}
+        >
+          Clear
+        </button>
+      </div>
+    </div>
+
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontWeight: 800, marginBottom: 8 }}>
+        Existing time off day records ({timeOffDayRecords.length})
+        {timeOffDayLoading ? <span className="subtle" style={{ marginLeft: 10 }}>Loading…</span> : null}
+      </div>
+
+      {timeOffDayRecords.length === 0 ? (
+        <div className="subtle">No time off day records yet.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {timeOffDayRecords.map((r) => (
+            <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 14, padding: 12 }}>
+              <div className="row-between" style={{ gap: 12, alignItems: "flex-start" }}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>{formatYmd(r.occurred_on)}</div>
+
+                  {r.notes ? (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      {r.notes}
+                    </div>
+                  ) : (
+                    <div className="subtle" style={{ marginTop: 4 }}>
+                      —
+                    </div>
+                  )}
+
+                  <div className="subtle" style={{ marginTop: 6, fontSize: 12 }}>
+                    Created: {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                  </div>
+                </div>
+
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <button className="btn" type="button" onClick={() => void deleteTimeOffDayRecord(r.id)} style={{ padding: "6px 10px" }}>
+                    Delete
+                  </button>
+                  <div className="subtle" style={{ fontWeight: 800, whiteSpace: "nowrap" }}>
+                    ID:{" "}
+                    <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>
+                      {r.id.slice(0, 8)}…
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  </div>
+
   </div>
                 </div>
               )}
