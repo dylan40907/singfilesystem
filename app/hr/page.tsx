@@ -327,25 +327,15 @@ export default function HrPage() {
 
 
 
+
 async function printAnnualEvaluationForEmployee(empId: string) {
   if (!canReviewOthers) return;
 
-  // Open the print window synchronously (before any awaits) to avoid popup blockers.
-  const w = window.open("", "_blank", "noopener,noreferrer");
-  if (!w) {
-    alert("Popup blocked — please allow popups to print.");
-    return;
-  }
+  const log = (...args: any[]) => console.log("[printAnnual]", ...args);
+  const err = (...args: any[]) => console.error("[printAnnual]", ...args);
 
   try {
-    console.log("[printAnnual] start", { empId });
-
-    w.document.open();
-    w.document.write(`<!doctype html><html><head><title>Loading…</title></head><body style="font-family:system-ui;padding:24px;">
-      <h2 style="margin:0 0 8px 0;">Preparing print view…</h2>
-      <div style="color:#6b7280;">Please wait.</div>
-    </body></html>`);
-    w.document.close();
+    log("start", { empId });
 
     const { data: empMeta, error: emerr } = await supabase
       .from("hr_employees")
@@ -361,13 +351,12 @@ async function printAnnualEvaluationForEmployee(empId: string) {
       .eq("form_type", "annual")
       .eq("published", true)
       .order("period_year", { ascending: false });
-
     if (aerr) throw aerr;
+
     const list = (annuals ?? []) as any[];
-    console.log("[printAnnual] annual list", { count: list.length });
+    log("annual list", { count: list.length });
 
     if (list.length === 0) {
-      w.close();
       alert("No published annual evaluations found for this employee.");
       return;
     }
@@ -375,23 +364,21 @@ async function printAnnualEvaluationForEmployee(empId: string) {
     const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
     const defaultYear = years[0];
     const input = prompt(
-      `Print Annual Evaluation\nAvailable years: ${years.join(", ")}\n\nEnter year:`,
+      `Print Annual Evaluation
+Available years: ${years.join(", ")}
+
+Enter year:`,
       String(defaultYear),
     );
-    if (!input) {
-      w.close();
-      return;
-    }
+    if (!input) return;
 
     const year = Number(input);
     if (!Number.isFinite(year)) {
-      w.close();
       alert("Invalid year.");
       return;
     }
     const review = list.find((r) => r.period_year === year);
     if (!review) {
-      w.close();
       alert("That year is not available.");
       return;
     }
@@ -448,24 +435,61 @@ async function printAnnualEvaluationForEmployee(empId: string) {
       overallNotes: (review.notes ?? "") as string,
     });
 
-    console.log("[printAnnual] writing html", { year, employeeName, jobLevelName });
+    log("ready", { year, employeeName, jobLevelName });
 
-    w.document.open();
-    w.document.write(html);
-    w.document.close();
-    w.focus();
+    // Print WITHOUT popups: hidden iframe + Blob URL (more reliable than srcdoc under CSP)
+const iframe = document.createElement("iframe");
+iframe.style.position = "fixed";
+iframe.style.right = "0";
+iframe.style.bottom = "0";
+iframe.style.width = "1px";
+iframe.style.height = "1px";
+iframe.style.border = "0";
+iframe.style.opacity = "0";
+iframe.setAttribute("aria-hidden", "true");
 
-    // Wait a tick so the new document lays out before invoking print.
+const cleanup = (blobUrl?: string) => {
+  try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch {}
+  try { iframe.parentNode?.removeChild(iframe); } catch {}
+};
+
+const blob = new Blob([html], { type: "text/html" });
+const blobUrl = URL.createObjectURL(blob);
+
+// Prevent double onload (about:blank + blob load)
+let didPrint = false;
+
+iframe.onload = () => {
+  if (didPrint) return;
+  didPrint = true;
+
+  try {
+    const cw = iframe.contentWindow;
+    if (!cw) {
+      err("iframe has no contentWindow");
+      cleanup(blobUrl);
+      return;
+    }
+
     setTimeout(() => {
       try {
-        w.print();
-      } catch (e) {
-        console.warn("[printAnnual] print() failed", e);
+        cw.focus();
+        cw.print();
+      } finally {
+        setTimeout(() => cleanup(blobUrl), 1000);
       }
-    }, 350);
-  } catch (e: any) {
-    console.error("[printAnnual] error", e);
-    try { w.close(); } catch {}
+    }, 50);
+  } catch (e) {
+    err("print failed", e);
+    cleanup(blobUrl);
+  }
+};
+
+// IMPORTANT: set src BEFORE appending so we don't trigger about:blank load first
+iframe.src = blobUrl;
+document.body.appendChild(iframe);
+} catch (e: any) {
+    err("error", e);
     alert(e?.message ?? "Failed to print annual evaluation.");
   }
 }

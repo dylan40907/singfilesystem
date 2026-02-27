@@ -1611,27 +1611,19 @@ function EmployeePerformanceReviewsTab({
   }
 
   
+
   async function printAnnualEvaluation() {
     if (!employeeId) return;
     const role = viewerRole;
-    const canPrint = role === "admin" || role === "supervisor";
+    const canPrint = role === "admin" || role === "supervisor" || canEdit; // idpage is admin-only, but keep safe
     if (!canPrint) return;
 
-    // Open the print window synchronously (before any awaits) to avoid popup blockers.
-    const w = window.open("", "_blank", "noopener,noreferrer");
-    if (!w) {
-      alert("Popup blocked — please allow popups to print.");
-      return;
-    }
+    const log = (...args: any[]) => console.log("[printAnnual]", ...args);
+    const err = (...args: any[]) => console.error("[printAnnual]", ...args);
 
     try {
-      console.log("[printAnnual] start", { employeeId });
-      w.document.open();
-      w.document.write(`<!doctype html><html><head><title>Loading…</title></head><body style="font-family:system-ui;padding:24px;">
-        <h2 style="margin:0 0 8px 0;">Preparing print view…</h2>
-        <div style="color:#6b7280;">Please wait.</div>
-      </body></html>`);
-      w.document.close();
+      log("start", { employeeId });
+
       const { data: annuals, error: aerr } = await supabase
         .from("hr_reviews")
         .select("id, form_id, period_year, notes, attendance_points_snapshot, published")
@@ -1650,10 +1642,14 @@ function EmployeePerformanceReviewsTab({
       const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
       const defaultYear = years[0];
       const input = prompt(
-        `Print Annual Evaluation\nAvailable years: ${years.join(", ")}\n\nEnter year:`,
+        `Print Annual Evaluation
+Available years: ${years.join(", ")}
+
+Enter year:`,
         String(defaultYear),
       );
       if (!input) return;
+
       const year = Number(input);
       if (!Number.isFinite(year)) {
         alert("Invalid year.");
@@ -1688,9 +1684,7 @@ function EmployeePerformanceReviewsTab({
       if (anserr) throw anserr;
 
       const byQ = new Map<string, HrReviewAnswer>();
-      for (const a of (ans ?? []) as any[]) {
-        byQ.set(a.question_id, a as HrReviewAnswer);
-      }
+      for (const a of (ans ?? []) as any[]) byQ.set(a.question_id, a as HrReviewAnswer);
 
       const scores: number[] = [];
       for (const q of (qs ?? []) as any[]) {
@@ -1703,14 +1697,12 @@ function EmployeePerformanceReviewsTab({
       // Fetch employee meta (names, job level, attendance points) for printing
       const { data: empMeta, error: emerr } = await supabase
         .from("hr_employees")
-        .select(
-          "id, legal_first_name, legal_middle_name, legal_last_name, attendance_points, job_level:hr_job_levels(name)",
-        )
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, attendance_points, job_level:hr_job_levels(name)")
         .eq("id", employeeId)
         .single();
       if (emerr) throw emerr;
 
-      const att =
+      const attendancePoints =
         typeof review.attendance_points_snapshot === "number"
           ? review.attendance_points_snapshot
           : (empMeta as any)?.attendance_points ?? 3;
@@ -1723,24 +1715,72 @@ function EmployeePerformanceReviewsTab({
         year,
         employeeName,
         jobLevelName,
-        attendancePoints: att,
+        attendancePoints,
         performanceAvg,
         rows: printRows,
         overallNotes: (review.notes ?? "") as string,
       });
-      console.log("[printAnnual] writing html", { year });
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
-      w.focus();
-      setTimeout(() => {
-        try {
-          w.print();
-        } catch {}
-      }, 350);
-    } catch (e: any) {
-      console.error("[printAnnual] error", e);
-      try { w.close(); } catch {}
+
+      log("ready", { year, employeeName, jobLevelName });
+
+      // Print WITHOUT popups: hidden iframe + Blob URL (more reliable than srcdoc under CSP)
+const iframe = document.createElement("iframe");
+iframe.style.position = "fixed";
+iframe.style.right = "0";
+iframe.style.bottom = "0";
+iframe.style.width = "1px";
+iframe.style.height = "1px";
+iframe.style.border = "0";
+iframe.style.opacity = "0";
+iframe.setAttribute("aria-hidden", "true");
+
+const cleanup = (blobUrl?: string) => {
+  try {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+  } catch {}
+  try {
+    iframe.parentNode?.removeChild(iframe);
+  } catch {}
+};
+
+const blob = new Blob([html], { type: "text/html" });
+const blobUrl = URL.createObjectURL(blob);
+
+// Prevent double onload (about:blank + blob load)
+let didPrint = false;
+
+iframe.onload = () => {
+  if (didPrint) return;
+  didPrint = true;
+
+  try {
+    const cw = iframe.contentWindow;
+    if (!cw) {
+      err("iframe has no contentWindow");
+      cleanup(blobUrl);
+      return;
+    }
+
+    setTimeout(() => {
+      try {
+        cw.focus();
+        cw.print();
+      } finally {
+        setTimeout(() => cleanup(blobUrl), 1000);
+      }
+    }, 50);
+  } catch (e) {
+    err("print failed", e);
+    cleanup(blobUrl);
+  }
+};
+
+// IMPORTANT: set src BEFORE appending so we don't trigger about:blank load first
+iframe.src = blobUrl;
+document.body.appendChild(iframe);
+
+} catch (e: any) {
+      err("error", e);
       alert(e?.message ?? "Failed to print annual evaluation.");
     }
   }
@@ -2092,7 +2132,7 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
             </button>
           ) : null}
 
-          {(viewerRole === "admin" || viewerRole === "supervisor") ? (
+          {canEdit ? (
             <button className="btn" type="button" onClick={() => void printAnnualEvaluation()}>
               Print Annual Evaluation
             </button>
