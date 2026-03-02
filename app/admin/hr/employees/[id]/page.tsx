@@ -1129,6 +1129,13 @@ function EmployeePerformanceReviewsTab({
 
   const [status, setStatus] = useState<string>("");
 
+  // Export Monthly Reviews by Year
+  const [exportMonthlyOpen, setExportMonthlyOpen] = useState(false);
+  const [exportMonthlyYears, setExportMonthlyYears] = useState<number[]>([]);
+  const [exportMonthlyYear, setExportMonthlyYear] = useState<number | null>(null);
+  const [exportMonthlyBusy, setExportMonthlyBusy] = useState(false);
+
+
   // Toggle display type (default monthly)
   const [showAnnual, setShowAnnual] = useState<boolean>(false);
 
@@ -1612,52 +1619,41 @@ function EmployeePerformanceReviewsTab({
 
   
 
-  async function printAnnualEvaluation() {
+  
+  async function printAnnualEvaluationForReview(r: HrReview) {
     if (!employeeId) return;
     const role = viewerRole;
-    const canPrint = role === "admin" || role === "supervisor" || canEdit; // idpage is admin-only, but keep safe
+    const canPrint = role === "admin" || role === "supervisor" || canEdit;
     if (!canPrint) return;
+
+    if (!r || r.form_type !== "annual") {
+      alert("Print is only available for annual evaluations.");
+      return;
+    }
+    if (!r.published) {
+      alert("Only published annual evaluations can be printed.");
+      return;
+    }
 
     const log = (...args: any[]) => console.log("[printAnnual]", ...args);
     const err = (...args: any[]) => console.error("[printAnnual]", ...args);
 
     try {
-      log("start", { employeeId });
+      const reviewId = r.id;
+      const year = Number(r.period_year);
+      log("start", { employeeId, reviewId, year });
 
-      const { data: annuals, error: aerr } = await supabase
+      // Re-fetch the review to ensure we have the latest snapshot + notes
+      const { data: reviewRow, error: rerr } = await supabase
         .from("hr_reviews")
         .select("id, form_id, period_year, notes, attendance_points_snapshot, published")
-        .eq("employee_id", employeeId)
-        .eq("form_type", "annual")
-        .eq("published", true)
-        .order("period_year", { ascending: false });
+        .eq("id", reviewId)
+        .maybeSingle();
+      if (rerr) throw rerr;
 
-      if (aerr) throw aerr;
-      const list = (annuals ?? []) as any[];
-      if (list.length === 0) {
-        alert("No published annual evaluations found for this employee.");
-        return;
-      }
-
-      const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
-      const defaultYear = years[0];
-      const input = prompt(
-        `Print Annual Evaluation
-Available years: ${years.join(", ")}
-
-Enter year:`,
-        String(defaultYear),
-      );
-      if (!input) return;
-
-      const year = Number(input);
-      if (!Number.isFinite(year)) {
-        alert("Invalid year.");
-        return;
-      }
-      const review = list.find((r) => r.period_year === year);
-      if (!review) {
-        alert("That year is not available.");
+      const review = (reviewRow ?? r) as any;
+      if (!review?.published) {
+        alert("Only published annual evaluations can be printed.");
         return;
       }
 
@@ -1694,7 +1690,7 @@ Enter year:`,
       }
       const performanceAvg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
 
-      // Fetch employee meta (names, job level, attendance points) for printing
+      // Employee meta (name, job level, attendance)
       const { data: empMeta, error: emerr } = await supabase
         .from("hr_employees")
         .select("id, legal_first_name, legal_middle_name, legal_last_name, attendance_points, job_level:hr_job_levels(name)")
@@ -1723,67 +1719,283 @@ Enter year:`,
 
       log("ready", { year, employeeName, jobLevelName });
 
-      // Print WITHOUT popups: hidden iframe + Blob URL (more reliable than srcdoc under CSP)
-const iframe = document.createElement("iframe");
-iframe.style.position = "fixed";
-iframe.style.right = "0";
-iframe.style.bottom = "0";
-iframe.style.width = "1px";
-iframe.style.height = "1px";
-iframe.style.border = "0";
-iframe.style.opacity = "0";
-iframe.setAttribute("aria-hidden", "true");
+      // Print WITHOUT popups: hidden iframe + Blob URL
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.right = "0";
+      iframe.style.bottom = "0";
+      iframe.style.width = "1px";
+      iframe.style.height = "1px";
+      iframe.style.border = "0";
+      iframe.style.opacity = "0";
+      iframe.setAttribute("aria-hidden", "true");
 
-const cleanup = (blobUrl?: string) => {
-  try {
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
-  } catch {}
-  try {
-    iframe.parentNode?.removeChild(iframe);
-  } catch {}
-};
+      const cleanup = (blobUrl?: string) => {
+        try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch {}
+        try { iframe.parentNode?.removeChild(iframe); } catch {}
+      };
 
-const blob = new Blob([html], { type: "text/html" });
-const blobUrl = URL.createObjectURL(blob);
+      const blob = new Blob([html], { type: "text/html" });
+      const blobUrl = URL.createObjectURL(blob);
 
-// Prevent double onload (about:blank + blob load)
-let didPrint = false;
+      let didPrint = false;
+      iframe.onload = () => {
+        if (didPrint) return;
+        didPrint = true;
+        try {
+          const cw = iframe.contentWindow;
+          if (!cw) {
+            err("iframe has no contentWindow");
+            cleanup(blobUrl);
+            return;
+          }
+          setTimeout(() => {
+            try {
+              cw.focus();
+              cw.print();
+            } finally {
+              setTimeout(() => cleanup(blobUrl), 1000);
+            }
+          }, 50);
+        } catch (e) {
+          err("print failed", e);
+          cleanup(blobUrl);
+        }
+      };
 
-iframe.onload = () => {
-  if (didPrint) return;
-  didPrint = true;
-
-  try {
-    const cw = iframe.contentWindow;
-    if (!cw) {
-      err("iframe has no contentWindow");
-      cleanup(blobUrl);
-      return;
-    }
-
-    setTimeout(() => {
-      try {
-        cw.focus();
-        cw.print();
-      } finally {
-        setTimeout(() => cleanup(blobUrl), 1000);
-      }
-    }, 50);
-  } catch (e) {
-    err("print failed", e);
-    cleanup(blobUrl);
-  }
-};
-
-// IMPORTANT: set src BEFORE appending so we don't trigger about:blank load first
-iframe.src = blobUrl;
-document.body.appendChild(iframe);
-
-} catch (e: any) {
+      // set src BEFORE append to avoid about:blank onload
+      iframe.src = blobUrl;
+      document.body.appendChild(iframe);
+    } catch (e: any) {
       err("error", e);
       alert(e?.message ?? "Failed to print annual evaluation.");
     }
   }
+
+
+  async function openExportMonthlyModal() {
+    if (!employeeId) return;
+    setExportMonthlyBusy(true);
+    try {
+      const { data, error } = await supabase
+        .from("hr_reviews")
+        .select("period_year, form_id, period_month")
+        .eq("employee_id", employeeId)
+        .eq("form_type", "monthly")
+        .eq("published", true)
+        .order("period_year", { ascending: false });
+
+      if (error) throw error;
+      const yrs = Array.from(new Set(((data ?? []) as any[]).map((r) => Number(r.period_year)).filter((x) => Number.isFinite(x))));
+      yrs.sort((a, b) => b - a);
+      setExportMonthlyYears(yrs);
+      setExportMonthlyYear(yrs.length ? yrs[0] : null);
+      setExportMonthlyOpen(true);
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to load monthly review years.");
+    } finally {
+      setExportMonthlyBusy(false);
+    }
+  }
+
+  function downloadBlob(filename: string, blob: Blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function totalsFillForMonthly(total: number) {
+    // Match your legend buckets (approx colors)
+    // 22-24: green, 18-21: yellow, 15-17: orange, <=14: red
+    if (total >= 22) return "FFB7E1CD"; // light green
+    if (total >= 18) return "FFFFF2CC"; // light yellow
+    if (total >= 15) return "FFFCE5CD"; // light orange
+    return "FFF8CBAD"; // light red
+  }
+
+  async function exportMonthlyReviewsByYear() {
+    if (!employeeId) return;
+    if (!exportMonthlyYear) {
+      alert("Select a year.");
+      return;
+    }
+
+    setExportMonthlyBusy(true);
+    try {
+      const year = exportMonthlyYear;
+
+      // Fetch employee name for title
+      const { data: empMeta, error: emerr } = await supabase
+        .from("hr_employees")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name")
+        .eq("id", employeeId)
+        .single();
+      if (emerr) throw emerr;
+      const employeeName = formatEmployeeName(empMeta as any);
+
+      const { data: reviews, error: rerr } = await supabase
+        .from("hr_reviews")
+        .select("id, form_id, period_month, period_year, published")
+        .eq("employee_id", employeeId)
+        .eq("form_type", "monthly")
+        .eq("period_year", year)
+        .eq("published", true)
+        .order("period_month", { ascending: true });
+      if (rerr) throw rerr;
+
+      const list = (reviews ?? []) as any[];
+      if (list.length === 0) {
+        alert("No published monthly reviews found for that year.");
+        return;
+      }
+
+      const uniqueFormIds = Array.from(new Set(list.map((r) => r.form_id).filter(Boolean)));
+      if (uniqueFormIds.length !== 1) {
+        alert("Cannot export: multiple monthly forms were used in the selected year.");
+        return;
+      }
+      const formId = uniqueFormIds[0] as string;
+
+      const { data: qs, error: qerr } = await supabase
+        .from("hr_review_questions")
+        .select("id, question_text, sort_order, is_active, kind")
+        .eq("form_id", formId)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+      if (qerr) throw qerr;
+
+      const questions = ((qs ?? []) as any[]).filter((q) => (q.kind ?? "question") === "question");
+      if (questions.length === 0) {
+        alert("No questions found for that monthly form.");
+        return;
+      }
+
+      const reviewIds = list.map((r) => r.id);
+      const { data: ans, error: anserr } = await supabase
+        .from("hr_review_answers")
+        .select("review_id, question_id, score")
+        .in("review_id", reviewIds);
+      if (anserr) throw anserr;
+
+      const scoreByReviewQ = new Map<string, number>();
+      for (const a of (ans ?? []) as any[]) {
+        if (typeof a.score !== "number") continue;
+        scoreByReviewQ.set(`${a.review_id}:${a.question_id}`, a.score);
+      }
+
+      // Excel export via ExcelJS (client-side)
+      const ExcelJSMod: any = await import("exceljs");
+      const ExcelJS = ExcelJSMod?.default ?? ExcelJSMod;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Teacher By Year");
+
+      // Column widths (A..O)
+      ws.columns = [
+        { width: 4 },   // A
+        { width: 78 },  // B
+        { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 },
+        { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 },
+        { width: 16 },  // O
+      ];
+
+      // Title row
+      ws.mergeCells(1, 2, 1, 14); // B1:N1
+      ws.getCell(1, 2).value = `Monthly Reviews for ${employeeName} In ${year}`;
+      ws.getCell(1, 2).font = { bold: true, size: 14 };
+
+      // Header row
+      const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      ws.getCell(2, 2).value = "Questions";
+      ws.getCell(2, 2).font = { bold: true };
+      for (let i=0;i<12;i++){
+        const c = 3 + i; // C..N
+        ws.getCell(2, c).value = monthNames[i];
+        ws.getCell(2, c).font = { bold: true };
+        ws.getCell(2, c).alignment = { horizontal: "center" };
+      }
+
+      // Question rows start at row 3
+      const rowStart = 3;
+      for (let idx=0; idx<questions.length; idx++){
+        const rowNum = rowStart + idx;
+        ws.getCell(rowNum,1).value = idx + 1;
+        ws.getCell(rowNum,2).value = questions[idx].question_text;
+        ws.getCell(rowNum,2).alignment = { wrapText: true };
+        for (let m=1; m<=12; m++){
+          const review = list.find((r) => Number(r.period_month) === m);
+          if (!review) continue;
+          const key = `${review.id}:${questions[idx].id}`;
+          const score = scoreByReviewQ.get(key);
+          if (typeof score === "number") {
+            ws.getCell(rowNum, 2 + m).value = score;
+            ws.getCell(rowNum, 2 + m).alignment = { horizontal: "center" };
+          }
+        }
+      }
+
+      // Totals row
+      const totalsRow = rowStart + questions.length;
+      ws.getCell(totalsRow,2).value = "Totals";
+      ws.getCell(totalsRow,2).font = { bold: true };
+
+      const totals: number[] = [];
+      for (let m=1; m<=12; m++){
+        let sum = 0;
+        for (let idx=0; idx<questions.length; idx++){
+          const review = list.find((r) => Number(r.period_month) === m);
+          if (!review) continue;
+          const key = `${review.id}:${questions[idx].id}`;
+          const score = scoreByReviewQ.get(key);
+          if (typeof score === "number") sum += score;
+        }
+        totals[m-1]=sum;
+        const cell = ws.getCell(totalsRow, 2 + m);
+        if (list.find((r)=>Number(r.period_month)===m)) {
+          cell.value = sum;
+          cell.alignment = { horizontal: "center" };
+          cell.font = { bold: true };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: totalsFillForMonthly(sum) } };
+        }
+      }
+
+      // "Current Average" label and value at col O
+      ws.getCell(totalsRow-1, 15).value = "Current Average";
+      ws.getCell(totalsRow-1, 15).font = { bold: true };
+      const monthsWithData = list.map((r)=>Number(r.period_month)).filter((m)=>m>=1 && m<=12);
+      const avg = monthsWithData.length ? (monthsWithData.reduce((s,m)=>s+(totals[m-1]??0),0)/monthsWithData.length) : 0;
+      ws.getCell(totalsRow, 15).value = Number(avg.toFixed(1));
+      ws.getCell(totalsRow, 15).font = { bold: true };
+
+      // Legend rows below
+      const legendStart = totalsRow + 2;
+      const legend = [
+        ["22 - 24 (3.5% Teachers/TA, 4% for office)", "FFB7E1CD"],
+        ["18 - 21 (2.5% Teachers/TA, 3% for office)", "FFFFF2CC"],
+        ["15 - 17 (1% Teachers/TA, 1.5% for office)", "FFFCE5CD"],
+        ["14 and below (0%)", "FFF8CBAD"],
+      ];
+      for (let i=0;i<legend.length;i++){
+        const rr = legendStart + i;
+        ws.getCell(rr,2).value = legend[i][0];
+        ws.getCell(rr,2).fill = { type:"pattern", pattern:"solid", fgColor:{ argb: legend[i][1] } };
+      }
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      downloadBlob(`Monthly Reviews - ${employeeName} - ${year}.xlsx`, blob);
+      setExportMonthlyOpen(false);
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to export monthly reviews.");
+    } finally {
+      setExportMonthlyBusy(false);
+    }
+  }
+
 
 async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
     const formId = selectedFormId || getDefaultActiveFormId(ft);
@@ -2133,8 +2345,8 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
           ) : null}
 
           {canEdit ? (
-            <button className="btn" type="button" onClick={() => void printAnnualEvaluation()}>
-              Print Annual Evaluation
+            <button className="btn" type="button" onClick={() => void openExportMonthlyModal()}>
+              Export Monthly Reviews by Year
             </button>
           ) : null}
 
@@ -2241,6 +2453,11 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                   <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
                     Delete
                   </button>
+                  {r.form_type === "annual" && r.published ? (
+                    <button className="btn" type="button" onClick={() => void printAnnualEvaluationForReview(r)} style={{ padding: "6px 10px" }}>
+                      Print
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -2784,7 +3001,65 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
       ) : null}
 
       {/* EDIT QUESTIONS MODAL =========================== */}
-      {editOpen ? (
+      
+      {/* =========================
+          EXPORT MONTHLY REVIEWS (XLSX)
+         ========================= */}
+      {exportMonthlyOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.25)",
+            display: "grid",
+            placeItems: "center",
+            padding: 16,
+            zIndex: 50,
+          }}
+        >
+          <div style={{ width: "min(560px, 95vw)", background: "white", borderRadius: 16, padding: 14, border: "1px solid #e5e7eb" }}>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 8 }}>Export Monthly Reviews by Year</div>
+
+            {exportMonthlyBusy ? (
+              <div className="subtle">Loading…</div>
+            ) : exportMonthlyYears.length === 0 ? (
+              <div className="subtle">No published monthly reviews found for this employee.</div>
+            ) : (
+              <>
+                <div className="subtle" style={{ marginBottom: 8 }}>Select a year to export published monthly reviews.</div>
+                <select
+                  className="input"
+                  value={exportMonthlyYear ?? ""}
+                  onChange={(e) => setExportMonthlyYear(Number(e.target.value))}
+                  style={{ width: "100%", maxWidth: 220 }}
+                >
+                  {exportMonthlyYears.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+              </>
+            )}
+
+            <div className="row" style={{ gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+              <button className="btn" type="button" onClick={() => setExportMonthlyOpen(false)} disabled={exportMonthlyBusy}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                type="button"
+                onClick={() => void exportMonthlyReviewsByYear()}
+                disabled={exportMonthlyBusy || exportMonthlyYears.length === 0}
+              >
+                Export (.xlsx)
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+{editOpen ? (
         <div
           role="dialog"
           aria-modal="true"

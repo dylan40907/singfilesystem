@@ -325,175 +325,6 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-
-
-
-async function printAnnualEvaluationForEmployee(empId: string) {
-  if (!canReviewOthers) return;
-
-  const log = (...args: any[]) => console.log("[printAnnual]", ...args);
-  const err = (...args: any[]) => console.error("[printAnnual]", ...args);
-
-  try {
-    log("start", { empId });
-
-    const { data: empMeta, error: emerr } = await supabase
-      .from("hr_employees")
-      .select("id, legal_first_name, legal_middle_name, legal_last_name, attendance_points, job_level:hr_job_levels(name)")
-      .eq("id", empId)
-      .single();
-    if (emerr) throw emerr;
-
-    const { data: annuals, error: aerr } = await supabase
-      .from("hr_reviews")
-      .select("id, form_id, period_year, notes, attendance_points_snapshot, published")
-      .eq("employee_id", empId)
-      .eq("form_type", "annual")
-      .eq("published", true)
-      .order("period_year", { ascending: false });
-    if (aerr) throw aerr;
-
-    const list = (annuals ?? []) as any[];
-    log("annual list", { count: list.length });
-
-    if (list.length === 0) {
-      alert("No published annual evaluations found for this employee.");
-      return;
-    }
-
-    const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
-    const defaultYear = years[0];
-    const input = prompt(
-      `Print Annual Evaluation
-Available years: ${years.join(", ")}
-
-Enter year:`,
-      String(defaultYear),
-    );
-    if (!input) return;
-
-    const year = Number(input);
-    if (!Number.isFinite(year)) {
-      alert("Invalid year.");
-      return;
-    }
-    const review = list.find((r) => r.period_year === year);
-    if (!review) {
-      alert("That year is not available.");
-      return;
-    }
-
-    const { data: formRow, error: ferr } = await supabase
-      .from("hr_review_forms")
-      .select("id, scale_max")
-      .eq("id", review.form_id)
-      .single();
-    if (ferr) throw ferr;
-    const scaleMax = (formRow as any)?.scale_max ?? 5;
-
-    const { data: qs, error: qerr } = await supabase
-      .from("hr_review_questions")
-      .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
-      .eq("form_id", review.form_id)
-      .eq("is_active", true)
-      .order("sort_order", { ascending: true });
-    if (qerr) throw qerr;
-
-    const { data: ans, error: anserr } = await supabase
-      .from("hr_review_answers")
-      .select("review_id, question_id, score, note, created_at, updated_at")
-      .eq("review_id", review.id);
-    if (anserr) throw anserr;
-
-    const byQ = new Map<string, HrReviewAnswer>();
-    for (const a of (ans ?? []) as any[]) byQ.set(a.question_id, a as HrReviewAnswer);
-
-    const scores: number[] = [];
-    for (const q of (qs ?? []) as any[]) {
-      if ((q.kind ?? "question") === "section") continue;
-      const s = byQ.get(q.id)?.score;
-      if (typeof s === "number") scores.push(Math.max(1, Math.min(scaleMax, Math.trunc(s))));
-    }
-    const performanceAvg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-    const attendancePoints =
-      typeof review.attendance_points_snapshot === "number"
-        ? review.attendance_points_snapshot
-        : (empMeta as any)?.attendance_points ?? 3;
-
-    const jobLevelName = (empMeta as any)?.job_level?.name ?? "";
-    const employeeName = formatEmployeeName(empMeta as any);
-
-    const printRows = buildAnnualPrintRows((qs ?? []) as any, byQ, scaleMax);
-    const html = buildAnnualPrintHtml({
-      year,
-      employeeName,
-      jobLevelName,
-      attendancePoints,
-      performanceAvg,
-      rows: printRows,
-      overallNotes: (review.notes ?? "") as string,
-    });
-
-    log("ready", { year, employeeName, jobLevelName });
-
-    // Print WITHOUT popups: hidden iframe + Blob URL (more reliable than srcdoc under CSP)
-const iframe = document.createElement("iframe");
-iframe.style.position = "fixed";
-iframe.style.right = "0";
-iframe.style.bottom = "0";
-iframe.style.width = "1px";
-iframe.style.height = "1px";
-iframe.style.border = "0";
-iframe.style.opacity = "0";
-iframe.setAttribute("aria-hidden", "true");
-
-const cleanup = (blobUrl?: string) => {
-  try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch {}
-  try { iframe.parentNode?.removeChild(iframe); } catch {}
-};
-
-const blob = new Blob([html], { type: "text/html" });
-const blobUrl = URL.createObjectURL(blob);
-
-// Prevent double onload (about:blank + blob load)
-let didPrint = false;
-
-iframe.onload = () => {
-  if (didPrint) return;
-  didPrint = true;
-
-  try {
-    const cw = iframe.contentWindow;
-    if (!cw) {
-      err("iframe has no contentWindow");
-      cleanup(blobUrl);
-      return;
-    }
-
-    setTimeout(() => {
-      try {
-        cw.focus();
-        cw.print();
-      } finally {
-        setTimeout(() => cleanup(blobUrl), 1000);
-      }
-    }, 50);
-  } catch (e) {
-    err("print failed", e);
-    cleanup(blobUrl);
-  }
-};
-
-// IMPORTANT: set src BEFORE appending so we don't trigger about:blank load first
-iframe.src = blobUrl;
-document.body.appendChild(iframe);
-} catch (e: any) {
-    err("error", e);
-    alert(e?.message ?? "Failed to print annual evaluation.");
-  }
-}
-
   type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
 
@@ -637,7 +468,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
         `
         )
         .eq("employee_id", employee.id)
-                .order("occurred_on", { ascending: false })
+        .order("occurred_on", { ascending: false })
         .order("created_at", { ascending: false });
 
       if (res.error) throw res.error;
@@ -668,7 +499,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 			.select(
 				"id,profile_id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points"
 			)
-			.eq("is_active", true)
 			.order("legal_last_name", { ascending: true })
 			.order("legal_first_name", { ascending: true });
 		if (res.error) throw res.error;
@@ -1164,8 +994,8 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   // When switching to Meetings tab (supervisors only), lazy-load meeting types, employees, and meetings
   useEffect(() => {
     if (!employee?.id) return;
-    if (activeTab !== "meetings" && activeTab !== "employeeReviews") return;
-    if (!canReviewOthers) return;
+    if (activeTab !== "meetings") return;
+    if (!isSupervisor) return;
 
     (async () => {
       try {
@@ -1176,7 +1006,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
       }
       await loadAttendeeMeetings(employee.id);
     })();
-  }, [activeTab, employee?.id, canReviewOthers, reloadMeetingTypes, reloadAllEmployees, loadAttendeeMeetings]);
+  }, [activeTab, employee?.id, isSupervisor, reloadMeetingTypes, reloadAllEmployees, loadAttendeeMeetings]);
 
   const headerName = useMemo(() => formatEmployeeName(employee as any), [employee]);
 
@@ -1315,11 +1145,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   attendancePoints={(employee as any)?.attendance_points ?? null}
                   includeDrafts={false}
                   readOnly={true}
-                  canPrintAnnual={isSupervisor || isAdmin}
-                  onPrintAnnual={() => {
-                    if (!employee?.id) return;
-                    void printAnnualEvaluationForEmployee(employee.id);
-                  }}
                 />
               ) : (
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
@@ -1426,8 +1251,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                       attendancePoints={reviewEmployee?.attendance_points ?? null}
                       includeDrafts
                       readOnly={false}
-                      canPrintAnnual={isSupervisor || isAdmin}
-                      onPrintAnnual={() => void printAnnualEvaluationForEmployee(reviewEmployeeId)}
                     />
                   ) : (
                     <div className="subtle" style={{ marginTop: 8 }}>
@@ -1871,7 +1694,6 @@ type HrReviewAnswer = {
   review_id: string;
   question_id: string;
   score: number | null;
-  note?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -1913,181 +1735,6 @@ function recommendedIncreasePercent(total: number) {
 }
 
 
-function escapeHtml(s: string) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-
-type PrintRow =
-  | { kind: "section"; title: string; avg: number | null }
-  | { kind: "question"; text: string; score: number | null };
-
-function buildAnnualPrintRows(questions: ReviewQuestion[], answersByQ: Map<string, HrReviewAnswer>, scaleMax: number) {
-  const rows: PrintRow[] = [];
-  let bucket: Array<number> = [];
-
-  const flushAvgIntoLastSection = () => {
-    // Find the most recent section header row and attach avg
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const r = rows[i];
-      if (r.kind === "section") {
-        const avg = bucket.length ? bucket.reduce((a, b) => a + b, 0) / bucket.length : null;
-        (r as any).avg = avg === null ? null : round1dp(avg);
-        bucket = [];
-        return;
-      }
-    }
-    // No explicit section header yet; ignore
-    bucket = [];
-  };
-
-  for (const q of questions) {
-    const kind = (q.kind ?? "question") as any;
-    if (kind === "section") {
-      // before starting new section, flush avg for previous section
-      flushAvgIntoLastSection();
-      rows.push({ kind: "section", title: q.question_text, avg: null });
-      continue;
-    }
-    const ans = answersByQ.get(q.id);
-    const score = typeof ans?.score === "number" ? clampScore(ans.score, scaleMax) : null;
-    if (typeof score === "number") bucket.push(score);
-    rows.push({ kind: "question", text: q.question_text, score });
-  }
-
-  // flush avg at end
-  flushAvgIntoLastSection();
-  return rows;
-}
-
-function buildAnnualPrintHtml(opts: {
-  year: number;
-  employeeName: string;
-  jobLevelName: string;
-  attendancePoints: number;
-  performanceAvg: number | null;
-  rows: PrintRow[];
-  overallNotes: string;
-}) {
-  const today = new Date();
-  const dateStr = today.toLocaleDateString();
-
-  const perfAvg = opts.performanceAvg === null ? "—" : formatOneDecimal(opts.performanceAvg);
-  const total = opts.performanceAvg === null ? null : opts.attendancePoints + round1dp(opts.performanceAvg);
-  const inc = total === null ? "—" : `${recommendedIncreasePercent(total)}%`;
-  const totalStr = total === null ? "—" : formatOneDecimal(total);
-
-  const rowsHtml = opts.rows
-    .map((r) => {
-      if (r.kind === "section") {
-        const avg = r.avg === null ? "—" : formatOneDecimal(r.avg);
-        return `
-          <div class="sec">
-            <div class="sec-title">${escapeHtml(r.title)}</div>
-            <div class="sec-avg">Section Avg: ${escapeHtml(avg)}</div>
-          </div>
-        `;
-      }
-      const s = r.score === null ? "—" : String(r.score);
-      return `
-        <div class="qrow">
-          <div class="qtext">${escapeHtml(r.text)}</div>
-          <div class="qscore">${escapeHtml(s)}</div>
-        </div>
-      `;
-    })
-    .join("");
-
-  return `<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>${opts.year} Performance Evaluation</title>
-  <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 28px; color: #111; }
-    h1 { font-size: 22px; margin: 0 0 6px; }
-    .sub { margin: 0 0 14px; color: #444; }
-    .meta { margin: 0 0 16px; }
-    .meta div { margin: 2px 0; }
-    .sec { background: #fff4c2; padding: 10px 12px; border-radius: 10px; margin: 14px 0 8px; display:flex; justify-content:space-between; gap: 12px; align-items:flex-end; }
-    .sec-title { font-weight: 800; }
-    .sec-avg { color:#333; font-weight: 700; font-size: 13px; white-space: nowrap; }
-    .qrow { display:flex; justify-content:space-between; gap: 14px; padding: 6px 2px; }
-    .qtext { flex: 1; }
-    .qscore { width: 70px; text-align: right; font-weight: 800; }
-    .hr { height:1px; background:#ddd; margin: 14px 0; }
-    .overall { display:flex; justify-content:space-between; font-weight: 900; margin-top: 10px; }
-    .box { border:1px solid #ddd; border-radius: 12px; padding: 12px; margin-top: 14px; }
-    .box h2 { margin:0 0 8px; font-size: 16px; }
-    .mini { font-size: 12px; color:#333; }
-    table { border-collapse: collapse; margin-top: 10px; width: 420px; }
-    th, td { border: 1px solid #333; padding: 6px 8px; text-align: center; }
-    .sig { margin-top: 22px; }
-    .sigline { margin: 16px 0 6px; }
-  </style>
-</head>
-<body>
-  <h1>${opts.year} Performance Evaluation</h1>
-  <p class="sub">${escapeHtml(opts.jobLevelName)}</p>
-  <div class="meta">
-    <div><b>Employee Name:</b> ${escapeHtml(opts.employeeName)}</div>
-    <div><b>Date:</b> ${escapeHtml(dateStr)}</div>
-  </div>
-
-  ${rowsHtml}
-
-  <div class="overall">
-    <div>Overall Rating (Average):</div>
-    <div>${escapeHtml(perfAvg)}</div>
-  </div>
-
-  <div class="box">
-    <h2>Additional Notes &amp; Plan of Action</h2>
-    <div><b>Attendance Score:</b> ${escapeHtml(String(opts.attendancePoints))}</div>
-    <div><b>Performance:</b> ${escapeHtml(perfAvg)}</div>
-    <div><b>Total:</b> ${escapeHtml(totalStr)} &nbsp;&nbsp; <b>Recommended Increase:</b> ${escapeHtml(inc)}</div>
-    <div class="hr"></div>
-    <div style="white-space:pre-wrap;">${escapeHtml(opts.overallNotes || "")}</div>
-
-    <div class="hr"></div>
-    <div class="mini">
-      <div><b>5</b> = Exceeds Expectations</div>
-      <div><b>4</b> = Meets Expectations</div>
-      <div><b>3</b> = Improving</div>
-      <div><b>2</b> = Below Expectations</div>
-      <div><b>1</b> = Probation</div>
-    </div>
-
-    <table>
-      <thead>
-        <tr><th>Attendance</th><th>Performance</th><th>Total</th><th>Increase</th></tr>
-      </thead>
-      <tbody>
-        <tr><td>3</td><td>5</td><td>8</td><td>4%</td></tr>
-        <tr><td>3</td><td>4</td><td>7</td><td>3%</td></tr>
-        <tr><td>3</td><td>3</td><td>6</td><td>2%</td></tr>
-        <tr><td>3</td><td>2</td><td>5</td><td>0%</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="sig">
-    <div class="sigline"><b>Teacher Signature</b></div>
-    <div>______________________________</div>
-
-    <div class="sigline"><b>Supervisor Signature</b></div>
-    <div>______________________________</div>
-  </div>
-</body>
-</html>`;
-}
-
-
-
 function reviewMostRecentAt(r: HrReview) {
   const t = r.updated_at || r.created_at;
   const d = new Date(t);
@@ -2100,8 +1747,6 @@ function EmployeePerformanceReviewsTab({
   includeDrafts = false,
   readOnly = false,
   mode = "manage",
-  canPrintAnnual = false,
-  onPrintAnnual,
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
@@ -2109,8 +1754,6 @@ function EmployeePerformanceReviewsTab({
   includeDrafts?: boolean;
   readOnly?: boolean;
   mode?: "manage" | "self";
-  canPrintAnnual?: boolean;
-  onPrintAnnual?: (() => void) | null;
 }) {
   const isSelf = mode === "self";
   const now = useMemo(() => new Date(), []);
@@ -2120,6 +1763,491 @@ function EmployeePerformanceReviewsTab({
   const canEdit = !readOnly;
 
   const [status, setStatus] = useState<string>("");
+
+  // Export Monthly Reviews by Year (admins/supervisors in manage mode)
+  const [exportMonthlyOpen, setExportMonthlyOpen] = useState(false);
+  const [exportMonthlyYears, setExportMonthlyYears] = useState<number[]>([]);
+  const [exportMonthlyYear, setExportMonthlyYear] = useState<number | null>(null);
+  const [exportMonthlyBusy, setExportMonthlyBusy] = useState(false);
+
+
+
+  function downloadBlob(filename: string, blob: Blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  function totalsFillForMonthly(total: number) {
+    // 22-24: green, 18-21: yellow, 15-17: orange, <=14: red
+    if (total >= 22) return "FFB7E1CD";
+    if (total >= 18) return "FFFFF2CC";
+    if (total >= 15) return "FFFCE5CD";
+    return "FFF8CBAD";
+  }
+
+  async function openExportMonthlyModal() {
+    if (!employeeId) return;
+    setExportMonthlyBusy(true);
+    try {
+      const { data, error } = await supabase
+        .from("hr_reviews")
+        .select("period_year")
+        .eq("employee_id", employeeId)
+        .eq("form_type", "monthly")
+        .eq("published", true)
+        .order("period_year", { ascending: false });
+
+      if (error) throw error;
+      const yrs = Array.from(
+        new Set(((data ?? []) as any[]).map((r) => Number(r.period_year)).filter((x) => Number.isFinite(x))),
+      ).sort((a, b) => b - a);
+
+      setExportMonthlyYears(yrs);
+      setExportMonthlyYear(yrs.length ? yrs[0] : null);
+      setExportMonthlyOpen(true);
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to load monthly review years.");
+    } finally {
+      setExportMonthlyBusy(false);
+    }
+  }
+
+  async function exportMonthlyReviewsByYear() {
+    if (!employeeId) return;
+    if (!exportMonthlyYear) {
+      alert("Select a year.");
+      return;
+    }
+
+    setExportMonthlyBusy(true);
+    try {
+      const year = exportMonthlyYear;
+
+      // Employee name (for title)
+      const { data: empMeta, error: emerr } = await supabase
+        .from("hr_employees")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name")
+        .eq("id", employeeId)
+        .single();
+      if (emerr) throw emerr;
+      const employeeName = formatEmployeeName(empMeta as any);
+
+      // Fetch monthly published reviews for the year
+      const { data: reviews, error: rerr } = await supabase
+        .from("hr_reviews")
+        .select("id, form_id, period_month, period_year, published")
+        .eq("employee_id", employeeId)
+        .eq("form_type", "monthly")
+        .eq("period_year", year)
+        .eq("published", true);
+
+      if (rerr) throw rerr;
+      const list = (reviews ?? []) as any[];
+      if (!list.length) {
+        alert("No published monthly reviews found for that year.");
+        return;
+      }
+
+      // Validate single form_id for the year
+      const formIds = Array.from(new Set(list.map((r) => String(r.form_id ?? "")))).filter(Boolean);
+      if (formIds.length !== 1) {
+        alert("Cannot export: multiple monthly forms were used in the selected year.");
+        return;
+      }
+      const formId = formIds[0];
+
+      // Questions for that monthly form (exclude section headers)
+      const { data: qs, error: qerr } = await supabase
+        .from("hr_review_questions")
+        .select("id, question_text, sort_order, kind, is_active")
+        .eq("form_id", formId)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+
+      if (qerr) throw qerr;
+      const questions = ((qs ?? []) as any[]).filter((q) => (q.kind ?? "question") !== "section");
+
+      if (!questions.length) {
+        alert("No questions found for this monthly form.");
+        return;
+      }
+
+      // Answers
+      const reviewIds = list.map((r) => r.id);
+      const { data: ans, error: anserr } = await supabase
+        .from("hr_review_answers")
+        .select("review_id, question_id, score")
+        .in("review_id", reviewIds);
+
+      if (anserr) throw anserr;
+
+      const scoreByReviewQ = new Map<string, number>();
+      for (const a of (ans ?? []) as any[]) {
+        if (typeof a.score !== "number") continue;
+        scoreByReviewQ.set(`${a.review_id}:${a.question_id}`, a.score);
+      }
+
+      // Excel export via ExcelJS
+      const ExcelJSMod: any = await import("exceljs");
+      const ExcelJS = ExcelJSMod?.default ?? ExcelJSMod;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet("Teacher By Year");
+
+      ws.columns = [
+        { width: 4 },   // A
+        { width: 78 },  // B
+        { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 },
+        { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 }, { width: 6 },
+        { width: 16 },  // O
+      ];
+
+      // Title row
+      ws.mergeCells(1, 2, 1, 14); // B1:N1
+      ws.getCell(1, 2).value = `Monthly Reviews for ${employeeName} In ${year}`;
+      ws.getCell(1, 2).font = { bold: true, size: 14 };
+
+      // Header row
+      const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      ws.getCell(2, 2).value = "Questions";
+      ws.getCell(2, 2).font = { bold: true };
+      for (let i = 0; i < 12; i++) {
+        const c = 3 + i; // C..N
+        ws.getCell(2, c).value = monthNames[i];
+        ws.getCell(2, c).font = { bold: true };
+        ws.getCell(2, c).alignment = { horizontal: "center" };
+      }
+
+      const rowStart = 3;
+      for (let idx = 0; idx < questions.length; idx++) {
+        const rowNum = rowStart + idx;
+        ws.getCell(rowNum, 1).value = idx + 1;
+        ws.getCell(rowNum, 2).value = questions[idx].question_text;
+        ws.getCell(rowNum, 2).alignment = { wrapText: true };
+
+        for (let m = 1; m <= 12; m++) {
+          const review = list.find((r) => Number(r.period_month) === m);
+          if (!review) continue;
+          const key = `${review.id}:${questions[idx].id}`;
+          const score = scoreByReviewQ.get(key);
+          if (typeof score === "number") {
+            ws.getCell(rowNum, 2 + m).value = score;
+            ws.getCell(rowNum, 2 + m).alignment = { horizontal: "center" };
+          }
+        }
+      }
+
+      // Totals row
+      const totalsRow = rowStart + questions.length;
+      ws.getCell(totalsRow, 2).value = "Totals";
+      ws.getCell(totalsRow, 2).font = { bold: true };
+
+      const totals: number[] = [];
+      for (let m = 1; m <= 12; m++) {
+        let sum = 0;
+        for (let idx = 0; idx < questions.length; idx++) {
+          const review = list.find((r) => Number(r.period_month) === m);
+          if (!review) continue;
+          const key = `${review.id}:${questions[idx].id}`;
+          const score = scoreByReviewQ.get(key);
+          if (typeof score === "number") sum += score;
+        }
+        totals[m - 1] = sum;
+
+        const cell = ws.getCell(totalsRow, 2 + m);
+        if (list.find((r) => Number(r.period_month) === m)) {
+          cell.value = sum;
+          cell.alignment = { horizontal: "center" };
+          cell.font = { bold: true };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: totalsFillForMonthly(sum) } };
+        }
+      }
+
+      // Average of month totals (only months with data)
+      ws.getCell(totalsRow - 1, 15).value = "Current Average";
+      ws.getCell(totalsRow - 1, 15).font = { bold: true };
+
+      const monthsWithData = list
+        .map((r) => Number(r.period_month))
+        .filter((m) => m >= 1 && m <= 12);
+
+      const avg = monthsWithData.length
+        ? monthsWithData.reduce((s, m) => s + (totals[m - 1] ?? 0), 0) / monthsWithData.length
+        : 0;
+
+      ws.getCell(totalsRow, 15).value = Number(avg.toFixed(1));
+      ws.getCell(totalsRow, 15).font = { bold: true };
+
+      // Legend rows
+      const legendStart = totalsRow + 2;
+      const legend = [
+        ["22 - 24 (3.5% Teachers/TA, 4% for office)", "FFB7E1CD"],
+        ["18 - 21 (2.5% Teachers/TA, 3% for office)", "FFFFF2CC"],
+        ["15 - 17 (1% Teachers/TA, 1.5% for office)", "FFFCE5CD"],
+        ["14 and below (0%)", "FFF8CBAD"],
+      ];
+      for (let i = 0; i < legend.length; i++) {
+        const rr = legendStart + i;
+        ws.getCell(rr, 2).value = legend[i][0];
+        ws.getCell(rr, 2).fill = { type: "pattern", pattern: "solid", fgColor: { argb: legend[i][1] } };
+      }
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      downloadBlob(`Monthly Reviews - ${employeeName} - ${year}.xlsx`, blob);
+      setExportMonthlyOpen(false);
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to export monthly reviews.");
+    } finally {
+      setExportMonthlyBusy(false);
+    }
+  }
+
+  function buildAnnualPrintHtml(args: {
+    year: number;
+    jobLevelName: string;
+    employeeName: string;
+    dateStr: string;
+    questions: ReviewQuestion[];
+    scoreByQ: Map<string, number>;
+    attendanceScore: number | null;
+  }) {
+    const { year, jobLevelName, employeeName, dateStr, questions, scoreByQ, attendanceScore } = args;
+
+    const rows: string[] = [];
+    let sectionTitle: string | null = null;
+    let sectionScores: number[] = [];
+    let allScores: number[] = [];
+
+    const flushSectionAverage = () => {
+      if (!sectionTitle) return;
+      if (!sectionScores.length) return;
+      const avg = sectionScores.reduce((s, x) => s + x, 0) / sectionScores.length;
+      rows.push(`
+        <div class="row sectionavg">
+          <div class="q"><i>Section Average</i></div>
+          <div class="s"><b>${avg.toFixed(1)}</b></div>
+        </div>
+      `);
+    };
+
+    for (const q of questions) {
+      const kind = (q.kind ?? "question") as any;
+      if (kind === "section") {
+        flushSectionAverage();
+        sectionTitle = q.question_text;
+        sectionScores = [];
+        rows.push(`<div class="section">${escapeHtml(q.question_text)}</div>`);
+        continue;
+      }
+      const score = scoreByQ.get(q.id);
+      if (typeof score === "number") {
+        sectionScores.push(score);
+        allScores.push(score);
+      }
+      rows.push(`
+        <div class="row">
+          <div class="q">${escapeHtml(q.question_text)}</div>
+          <div class="s">${typeof score === "number" ? `<b>${score}</b>` : ""}</div>
+        </div>
+      `);
+    }
+    flushSectionAverage();
+
+    const overallAvg = allScores.length ? (allScores.reduce((s, x) => s + x, 0) / allScores.length) : 0;
+    const att = attendanceScore;
+    const total = att !== null ? att + overallAvg : overallAvg;
+    const pct = att !== null ? recommendedIncreasePercent(total) : 0;
+
+    return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${year} Performance Evaluation</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+  h1 { font-size: 22px; margin: 0 0 6px 0; }
+  .meta { margin: 0 0 18px 0; }
+  .meta div { margin: 2px 0; }
+  .grid { margin-top: 10px; }
+  .section { background: #FEF08A; padding: 8px 10px; font-weight: 800; border-radius: 8px; margin-top: 12px; }
+  .row { display: grid; grid-template-columns: 1fr 90px; gap: 16px; padding: 6px 8px; align-items: start; }
+  .row .q { font-size: 13px; }
+  .row .s { text-align: right; font-size: 13px; }
+  .sectionavg { color: #374151; border-bottom: 1px solid #e5e7eb; padding-bottom: 10px; margin-bottom: 6px; }
+  .overall { margin-top: 18px; padding-top: 10px; border-top: 2px solid #111827; display: grid; grid-template-columns: 1fr 90px; gap: 16px; }
+  .notes { margin-top: 18px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  td, th { border: 1px solid #e5e7eb; padding: 8px; font-size: 12px; }
+  .sig { margin-top: 24px; }
+  .sigline { margin-top: 28px; font-weight: 800; }
+  .sigspace { margin-top: 18px; }
+</style>
+</head>
+<body>
+  <h1>${year} Performance Evaluation</h1>
+  <div class="meta">
+    <div><b>${escapeHtml(jobLevelName)}</b></div>
+    <div>Employee Name: <b>${escapeHtml(employeeName)}</b></div>
+    <div>Date: <b>${escapeHtml(dateStr)}</b></div>
+  </div>
+
+  <div class="grid">
+    ${rows.join("\n")}
+  </div>
+
+  <div class="overall">
+    <div><b>Overall Rating</b></div>
+    <div style="text-align:right"><b>${overallAvg.toFixed(1)}</b></div>
+  </div>
+
+  <div class="notes">
+    <div style="font-weight:900; margin-bottom:6px;">Additional Notes &amp; Plan of Action</div>
+    <div>Attendance Score: <b>${att ?? "—"}</b></div>
+    <div>Performance: <b>${overallAvg.toFixed(1)}</b></div>
+    ${att !== null ? `<div>Total: <b>${total.toFixed(1)}</b> → Recommended Increase: <b>${pct}%</b></div>` : ""}
+    <table>
+      <tbody>
+        <tr><td><b>5</b> = Exceeds Expectations</td></tr>
+        <tr><td><b>4</b> = Meets Expectations</td></tr>
+        <tr><td><b>3</b> = Improving</td></tr>
+        <tr><td><b>2</b> = Below Expectations</td></tr>
+        <tr><td><b>1</b> = Probation</td></tr>
+      </tbody>
+    </table>
+
+    <table>
+      <thead><tr><th>Attendance</th><th>Performance</th><th>Total</th><th>Increase</th></tr></thead>
+      <tbody>
+        <tr><td>3</td><td>5</td><td>8</td><td>4%</td></tr>
+        <tr><td>3</td><td>4</td><td>7</td><td>3%</td></tr>
+        <tr><td>3</td><td>3</td><td>6</td><td>2%</td></tr>
+        <tr><td>3</td><td>2</td><td>5</td><td>0%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="sig">
+    <div class="sigline"><b>Teacher Signature</b></div>
+    <div class="sigspace">______________________________</div>
+
+    <div class="sigline"><b>Supervisor Signature</b></div>
+    <div class="sigspace">______________________________</div>
+  </div>
+</body>
+</html>`;
+  }
+
+  function escapeHtml(s: any) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function printHtml(html: string) {
+    // Hidden iframe + blob URL (avoids popup blockers)
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+
+    const blob = new Blob([html], { type: "text/html" });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const cleanup = (url: string) => {
+      try { URL.revokeObjectURL(url); } catch {}
+      try { iframe.remove(); } catch {}
+    };
+
+    let didPrint = false;
+    iframe.onload = () => {
+      if (didPrint) return;
+      didPrint = true;
+      const cw = iframe.contentWindow;
+      if (!cw) {
+        cleanup(blobUrl);
+        return;
+      }
+      setTimeout(() => {
+        try {
+          cw.focus();
+          cw.print();
+        } finally {
+          setTimeout(() => cleanup(blobUrl), 1000);
+        }
+      }, 50);
+    };
+
+    iframe.src = blobUrl;
+    document.body.appendChild(iframe);
+  }
+
+  async function printAnnualReview(r: HrReview) {
+    try {
+      if (r.form_type !== "annual" || !r.published) return;
+
+      // Employee meta + job level name
+      const { data: emp, error: eerr } = await supabase
+        .from("hr_employees")
+        .select(`id, legal_first_name, legal_middle_name, legal_last_name, job_level_id, job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name)`)
+        .eq("id", r.employee_id)
+        .single();
+      if (eerr) throw eerr;
+
+      const employeeName = formatEmployeeName(emp as any);
+      const jobLevelName = (emp as any)?.job_level?.name ?? "—";
+      const dateStr = new Date().toLocaleDateString();
+
+      // Questions
+      const { data: qs, error: qerr } = await supabase
+        .from("hr_review_questions")
+        .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
+        .eq("form_id", r.form_id)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+      if (qerr) throw qerr;
+      const qlist = (qs ?? []) as any[];
+
+      // Answers
+      const { data: ans, error: aerr } = await supabase
+        .from("hr_review_answers")
+        .select("question_id, score")
+        .eq("review_id", r.id);
+      if (aerr) throw aerr;
+
+      const scoreByQ = new Map<string, number>();
+      for (const a of (ans ?? []) as any[]) {
+        if (typeof a.score !== "number") continue;
+        scoreByQ.set(String(a.question_id), a.score);
+      }
+
+      const html = buildAnnualPrintHtml({
+        year: Number(r.period_year),
+        jobLevelName,
+        employeeName,
+        dateStr,
+        questions: qlist as any,
+        scoreByQ,
+        attendanceScore: typeof r.attendance_points_snapshot === "number" ? r.attendance_points_snapshot : null,
+      });
+
+      printHtml(html);
+    } catch (e: any) {
+      console.error("[printAnnualReview] error", e);
+      alert(e?.message ?? "Failed to print annual evaluation.");
+    }
+  }
 
   // Toggle display type (default monthly)
   const [showAnnual, setShowAnnual] = useState<boolean>(false);
@@ -2166,8 +2294,6 @@ function EmployeePerformanceReviewsTab({
 
   const [reviewId, setReviewId] = useState<string>("");
   const [values, setValues] = useState<Record<string, number | null>>({});
-  const [answerNotes, setAnswerNotes] = useState<Record<string, string>>({}); // per-question notes
-
 
   const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
   const [publishingReviewId, setPublishingReviewId] = useState<string>("");
@@ -2534,7 +2660,7 @@ function EmployeePerformanceReviewsTab({
 
     const ansRes = await supabase
       .from("hr_review_answers")
-      .select("review_id, question_id, score, note")
+      .select("review_id, question_id, score")
       .in("review_id", ids);
     if (ansRes.error) throw ansRes.error;
 
@@ -2602,103 +2728,7 @@ function EmployeePerformanceReviewsTab({
     setReviewNotes("");
   }
 
-  function handlePrintAnnualClick() {
-    if (onPrintAnnual) return onPrintAnnual();
-    console.warn("[printAnnual] onPrintAnnual not provided");
-  }
-      /*
-      const years = Array.from(new Set(list.map((r) => r.period_year))).sort((a, b) => b - a);
-      const defaultYear = years[0];
-      const input = prompt(
-        `Print Annual Evaluation\nAvailable years: ${years.join(", ")}\n\nEnter year:`,
-        String(defaultYear),
-      );
-      if (!input) return;
-      const year = Number(input);
-      if (!Number.isFinite(year)) {
-        alert("Invalid year.");
-        return;
-      }
-      const review = list.find((r) => r.period_year === year);
-      if (!review) {
-        alert("That year is not available.");
-        return;
-      }
-
-      const { data: formRow, error: ferr } = await supabase
-        .from("hr_review_forms")
-        .select("id, scale_max")
-        .eq("id", review.form_id)
-        .single();
-      if (ferr) throw ferr;
-      const scaleMax = (formRow as any)?.scale_max ?? 5;
-
-      const { data: qs, error: qerr } = await supabase
-        .from("hr_review_questions")
-        .select("id, form_id, question_text, sort_order, is_active, kind, created_at, updated_at")
-        .eq("form_id", review.form_id)
-        .eq("is_active", true)
-        .order("sort_order", { ascending: true });
-      if (qerr) throw qerr;
-
-      const { data: ans, error: anserr } = await supabase
-        .from("hr_review_answers")
-        .select("review_id, question_id, score, note, created_at, updated_at")
-        .eq("review_id", review.id);
-      if (anserr) throw anserr;
-
-      const byQ = new Map<string, HrReviewAnswer>();
-      for (const a of (ans ?? []) as any[]) {
-        byQ.set(a.question_id, a as HrReviewAnswer);
-      }
-
-      const scores: number[] = [];
-      for (const q of (qs ?? []) as any[]) {
-        if ((q.kind ?? "question") === "section") continue;
-        const s = byQ.get(q.id)?.score;
-        if (typeof s === "number") scores.push(Math.max(1, Math.min(scaleMax, Math.trunc(s))));
-      }
-      const performanceAvg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
-
-      const att =
-        typeof review.attendance_points_snapshot === "number"
-          ? review.attendance_points_snapshot
-          : employeeRow?.attendance_points ?? 3;
-
-      const jobLevelName = employeeRow?.job_level?.name ?? "";
-      const employeeName = formatEmployeeName(employeeRow as any);
-
-      const printRows = buildAnnualPrintRows((qs ?? []) as any, byQ, scaleMax);
-      const html = buildAnnualPrintHtml({
-        year,
-        employeeName,
-        jobLevelName,
-        attendancePoints: att,
-        performanceAvg,
-        rows: printRows,
-        overallNotes: (review.notes ?? "") as string,
-      });
-
-      const w = window.open("", "_blank", "noopener,noreferrer");
-      if (!w) {
-        alert("Popup blocked — please allow popups to print.");
-        return;
-      }
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
-      w.focus();
-      setTimeout(() => {
-        try {
-          w.print();
-        } catch {}
-      }, 250);
-    } catch (e: any) {
-      alert(e?.message ?? "Failed to print annual evaluation.");
-    }
-  }*/
-
-async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
+  async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: number, m: number) {
     const formId = selectedFormId || getDefaultActiveFormId(ft);
     const qs = getQuestionsForForm(formId);
     const max = formById.get(formId)?.scale_max ?? (ft === "monthly" ? 3 : 5);
@@ -2707,7 +2737,6 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
       setReviewId("");
       setValues({});
       setReviewNotes("");
-      setAnswerNotes({});
       return;
     }
 
@@ -2739,23 +2768,18 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
       setReviewId("");
       setValues({});
       setReviewNotes("");
-      setAnswerNotes({});
       return;
     }
 
     const ansRes = await supabase
       .from("hr_review_answers")
-      .select("review_id, question_id, score, note, created_at, updated_at")
+      .select("review_id, question_id, score, created_at, updated_at")
       .eq("review_id", existing.id);
 
     if (ansRes.error) throw ansRes.error;
 
     const byQ = new Map<string, number | null>();
-    const byQNote = new Map<string, string>();
-    for (const a of (ansRes.data ?? []) as any[]) {
-      byQ.set(a.question_id, a.score ?? null);
-      if (typeof a.note === "string") byQNote.set(a.question_id, a.note);
-    }
+    for (const a of (ansRes.data ?? []) as HrReviewAnswer[]) byQ.set(a.question_id, a.score ?? null);
 
     // Existing review: only populate questions that have an answer row.
     const init: Record<string, number> = {};
@@ -2769,7 +2793,6 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
     setReviewId(existing.id);
     setValues(init);
     setReviewNotes(existing.notes ?? "");
-    setAnswerNotes(Object.fromEntries(byQNote.entries()));
   }
 
   async function ensureReviewRow(
@@ -2862,13 +2885,12 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
       const max = scaleMax;
 
       // Persist answers for every question. Unset answers are stored as NULL ("Undecided").
-      const rows: { review_id: string; question_id: string; score: number | null; note: string | null }[] = activeQuestions
+      const rows: { review_id: string; question_id: string; score: number | null }[] = activeQuestions
         .filter((q) => (q.kind || "question") !== "section")
         .map((q) => ({
           review_id: rid,
           question_id: q.id,
           score: clampScore(values[q.id], max),
-          note: (answerNotes[q.id] ?? null) || null,
         }));
 
       const upsertRes = await supabase.from("hr_review_answers").upsert(rows, { onConflict: "review_id,question_id" });
@@ -2936,18 +2958,6 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
     if (valsArr.length === 0) return null;
     return round1dp(valsArr.reduce((s, x) => s + x, 0) / valsArr.length);
   }, [activeQuestions, values, scaleMax]);
-
-  const computedTotal = useMemo(() => {
-    const qs = (activeQuestions ?? []).filter((q: any) => (q?.kind ?? "question") !== "section");
-    if (!qs || qs.length === 0) return null;
-    const max = scaleMax;
-    const valsArr = qs
-      .map((q) => clampScore(values[q.id], max))
-      .filter((v): v is number => typeof v === "number");
-    if (valsArr.length === 0) return null;
-    return valsArr.reduce((s, x) => s + x, 0);
-  }, [activeQuestions, values, scaleMax]);
-
 
   // Boot
   useEffect(() => {
@@ -3045,12 +3055,12 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
               Manage Forms
             </button>
           ) : null}
-
-          {canPrintAnnual && onPrintAnnual ? (
-            <button className="btn" type="button" onClick={onPrintAnnual}>
-              Print Annual Evaluation
+          {!readOnly ? (
+            <button className="btn" type="button" onClick={() => void openExportMonthlyModal()} disabled={exportMonthlyBusy}>
+              Export Monthly Reviews by Year
             </button>
           ) : null}
+
 
           {status ? <span className="subtle" style={{ fontWeight: 800 }}>{status}</span> : null}
         </div>
@@ -3157,11 +3167,23 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                       <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
                         Delete
                       </button>
+                      {r.form_type === "annual" && r.published ? (
+                        <button className="btn" type="button" onClick={() => void printAnnualReview(r)} style={{ padding: "6px 10px" }}>
+                          Print
+                        </button>
+                      ) : null}
                     </>
                   ) : (
-                    <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
-                      View
-                    </button>
+                    <>
+                      <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
+                        View
+                      </button>
+                      {r.form_type === "annual" && r.published ? (
+                        <button className="btn" type="button" onClick={() => void printAnnualReview(r)} style={{ padding: "6px 10px" }}>
+                          Print
+                        </button>
+                      ) : null}
+                    </>
                   )}
                 </div>
               </div>
@@ -3393,28 +3415,11 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                           {formType === "monthly" ? "1 = needs improvement · 3 = excellent" : "1 = needs improvement · 5 = excellent"}
                         </div>
                       </div>
-
-                      <div style={{ marginTop: 10 }}>
-                        <div className="subtle" style={{ marginBottom: 6 }}>Question note (optional)</div>
-                        <textarea
-                          className="input"
-                          value={answerNotes[q.id] ?? ""}
-                          disabled={readOnly}
-                          onChange={(e) =>
-                            setAnswerNotes((cur) => ({
-                              ...cur,
-                              [q.id]: e.target.value,
-                            }))
-                          }
-                          placeholder="Optional note for this question..."
-                          style={{ minHeight: 70, resize: "vertical" }}
-                        />
-                      </div>
                     </div>
                   );
                 })}
                 <div style={{ marginTop: 12 }}>
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>Overall Notes</div>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>Notes</div>
               <textarea
                 className="input"
                 value={reviewNotes}
@@ -3426,16 +3431,10 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
             </div>
 
                 <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
-                  {formType === "monthly" ? (
-                    <div className="subtle">
-                      Total (auto): <b>{computedTotal === null ? "—" : computedTotal}</b>
-                    </div>
-                  ) : (
-                    <div className="subtle">
-                      Average (auto): <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>{" "}
-                      <span className="subtle">(normal rounding)</span>
-                    </div>
-                  )}
+                  <div className="subtle">
+                    Average (auto): <b>{computedAvg === null ? "—" : computedAvg.toFixed(1)}</b>{" "}
+                    <span className="subtle">(normal rounding)</span>
+                  </div>
 
                   <div className="row" style={{ gap: 10 }}>
                     <button className="btn" type="button" onClick={closeModal}>
@@ -3852,6 +3851,60 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
           </div>
         </div>
       ) : null}
+
+
+      {/* =========================
+          EXPORT MONTHLY REVIEWS (XLSX)
+         ========================= */}
+      {exportMonthlyOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            zIndex: 260,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 14,
+          }}
+        >
+          <div style={{ background: "white", borderRadius: 16, padding: 14, width: "min(720px, 96vw)" }}>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 8 }}>Export Monthly Reviews by Year</div>
+
+            {exportMonthlyYears.length === 0 ? (
+              <div className="subtle">(No published monthly reviews found.)</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 850, marginBottom: 6 }}>Year</div>
+                  <select
+                    value={exportMonthlyYear ?? ""}
+                    onChange={(e) => setExportMonthlyYear(e.target.value ? Number(e.target.value) : null)}
+                    style={{ width: "100%", padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 12 }}
+                  >
+                    {exportMonthlyYears.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="row" style={{ gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  <button className="btn" type="button" onClick={() => setExportMonthlyOpen(false)} disabled={exportMonthlyBusy}>
+                    Cancel
+                  </button>
+                  <button className="btn btn-primary" type="button" onClick={() => void exportMonthlyReviewsByYear()} disabled={exportMonthlyBusy || !exportMonthlyYear}>
+                    {exportMonthlyBusy ? "Exporting…" : "Export (.xlsx)"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
 
     </div>
   );

@@ -1164,10 +1164,6 @@ export default function HrOrgChartPage() {
                                   </div>
                                 </div>
                               </div>
-
-                              <div className="subtle" style={{ marginTop: 10 }}>
-                                Note: deletion will fail if employees are assigned to this level (foreign key from hr_employees.job_level_id).
-                              </div>
                             </div>
                           );
                         })}
