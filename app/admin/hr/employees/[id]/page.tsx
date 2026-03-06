@@ -1103,6 +1103,83 @@ function buildAnnualPrintHtml(opts: {
 
 
 
+
+function MonthlyIncreaseGuide() {
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        padding: 12,
+        background: "#fafafa",
+      }}
+    >
+      <div style={{ fontWeight: 900, marginBottom: 8 }}>Monthly score distribution</div>
+      <div className="subtle" style={{ display: "grid", gap: 4 }}>
+        <div><b>22 - 24</b> (3.5%)</div>
+        <div><b>18 - 21</b> (2.5%)</div>
+        <div><b>15 - 17</b> (1%)</div>
+        <div><b>14 and below</b> (0%)</div>
+      </div>
+    </div>
+  );
+}
+
+function AnnualEvaluationGuide() {
+  return (
+    <div
+      style={{
+        border: "1px solid #e5e7eb",
+        borderRadius: 12,
+        padding: 12,
+        background: "#fafafa",
+        display: "grid",
+        gap: 10,
+      }}
+    >
+      <div className="subtle" style={{ display: "grid", gap: 2 }}>
+        <div><b>5</b> = Exceeds Expectations</div>
+        <div><b>4</b> = Meets Expectations</div>
+        <div><b>3</b> = Improving</div>
+        <div><b>2</b> = Below Expectations</div>
+        <div><b>1</b> = Probation</div>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ border: "1px solid #374151", padding: "8px 10px", textAlign: "center" }}>Attendance</th>
+              <th style={{ border: "1px solid #374151", padding: "8px 10px", textAlign: "center" }}>Performance</th>
+              <th style={{ border: "1px solid #374151", padding: "8px 10px", textAlign: "center" }}>Total</th>
+              <th style={{ border: "1px solid #374151", padding: "8px 10px", textAlign: "center" }}>Increase</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              [3, 5, 8, '4%'],
+              [3, 4, 7, '3%'],
+              [3, 3, 6, '2%'],
+              [3, 2, 5, '0%'],
+            ].map((row, idx) => (
+              <tr key={idx}>
+                {row.map((cell, cellIdx) => (
+                  <td
+                    key={cellIdx}
+                    style={{ border: "1px solid #374151", padding: "8px 10px", textAlign: "center" }}
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function reviewMostRecentAt(r: HrReview) {
   const t = r.updated_at || r.created_at;
   const d = new Date(t);
@@ -2720,7 +2797,11 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
               />
             </div>
 
-                <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 4 }}>
+                <div style={{ marginTop: 12 }}>
+                  {formType === "monthly" ? <MonthlyIncreaseGuide /> : <AnnualEvaluationGuide />}
+                </div>
+
+                <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
                   {formType === "monthly" ? (
                     <div className="subtle">
                       Total (auto): <b>{computedTotal === null ? "—" : computedTotal}</b>
