@@ -113,13 +113,50 @@ function normalizeSheetDoc(doc: any, fallback: any[]) {
   return fallback;
 }
 
+function cellHasPersistablePayload(cell: any): boolean {
+  if (cell == null) return false;
+
+  if (typeof cell !== "object") return String(cell) !== "";
+
+  const obj = cell as any;
+  const valueKeys = ["v", "m", "ct", "rt", "rich", "r", "f"];
+  const formatKeys = [
+    "bg",
+    "fc",
+    "ff",
+    "fs",
+    "bl",
+    "it",
+    "cl",
+    "un",
+    "ht",
+    "vt",
+    "tb",
+    "tr",
+    "strike",
+    "ps",
+    "mc",
+    "qp",
+    "borderInfo",
+  ];
+
+  for (const key of [...valueKeys, ...formatKeys]) {
+    const val = obj[key];
+    if (val == null) continue;
+    if (typeof val === "string" && val === "") continue;
+    return true;
+  }
+
+  return Object.keys(obj).length > 0;
+}
+
 function ensureCelldata(sheet: any) {
   const sh = { ...(sheet ?? {}) };
-  if (!Array.isArray(sh.celldata)) sh.celldata = [];
+
   if (sh.status == null) sh.status = 1;
 
   const grid = sh.data;
-  if (sh.celldata.length === 0 && Array.isArray(grid)) {
+  if (Array.isArray(grid)) {
     const celldata: any[] = [];
 
     for (let r = 0; r < grid.length; r++) {
@@ -131,31 +168,22 @@ function ensureCelldata(sheet: any) {
         if (cell == null) continue;
 
         if (typeof cell === "object") {
-          const obj = cell as any;
-          const v = obj.v;
-          const m = obj.m;
-          const ct = obj.ct;
-          const rt = obj.rt;
-          const rich = (obj.rich ?? obj.r);
-          const hasVal = (v !== null && v !== undefined && String(v) !== "") ||
-            (m !== null && m !== undefined && String(m) !== "") ||
-            ct != null || rt != null || rich != null;
-          if (hasVal) {
+          if (cellHasPersistablePayload(cell)) {
             celldata.push({ r, c, v: cell });
           }
-        } else {
-          if (String(cell) !== "") {
-            celldata.push({
-              r,
-              c,
-              v: { v: cell, m: String(cell), ct: { t: "g", fa: "General" } },
-            });
-          }
+        } else if (String(cell) !== "") {
+          celldata.push({
+            r,
+            c,
+            v: { v: cell, m: String(cell), ct: { t: "g", fa: "General" } },
+          });
         }
       }
     }
 
     sh.celldata = celldata;
+  } else if (!Array.isArray(sh.celldata)) {
+    sh.celldata = [];
   }
 
   return sh;

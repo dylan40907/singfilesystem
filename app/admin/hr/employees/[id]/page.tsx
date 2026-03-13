@@ -682,6 +682,43 @@ function normalizeSheetDoc(doc: any, fallback: any[]) {
   return fallback;
 }
 
+function cellHasPersistablePayload(cell: any): boolean {
+  if (cell == null) return false;
+
+  if (typeof cell !== "object") return String(cell) !== "";
+
+  const obj = cell as any;
+  const valueKeys = ["v", "m", "ct", "rt", "rich", "r", "f"];
+  const formatKeys = [
+    "bg",
+    "fc",
+    "ff",
+    "fs",
+    "bl",
+    "it",
+    "cl",
+    "un",
+    "ht",
+    "vt",
+    "tb",
+    "tr",
+    "strike",
+    "ps",
+    "mc",
+    "qp",
+    "borderInfo",
+  ];
+
+  for (const key of [...valueKeys, ...formatKeys]) {
+    const val = obj[key];
+    if (val == null) continue;
+    if (typeof val === "string" && val === "") continue;
+    return true;
+  }
+
+  return Object.keys(obj).length > 0;
+}
+
 function isEmptyInsuranceDoc(doc: any): boolean {
   if (!doc) return true;
   const arr = Array.isArray(doc) ? doc : typeof doc === "object" ? [doc] : [];
@@ -695,7 +732,7 @@ function isEmptyInsuranceDoc(doc: any): boolean {
     const grid = (sh as any)?.data;
     if (
       Array.isArray(grid) &&
-      grid.some((row: any[]) => Array.isArray(row) && row.some((c) => c != null && String((c?.v ?? c) ?? "") !== ""))
+      grid.some((row: any[]) => Array.isArray(row) && row.some((c) => cellHasPersistablePayload(c)))
     ) {
       return false;
     }
@@ -707,11 +744,10 @@ function isEmptyInsuranceDoc(doc: any): boolean {
 function ensureCelldata(sheet: any) {
   const sh = { ...(sheet ?? {}) };
 
-  if (!Array.isArray(sh.celldata)) sh.celldata = [];
   if (sh.status == null) sh.status = 1;
 
   const grid = sh.data;
-  if (sh.celldata.length === 0 && Array.isArray(grid)) {
+  if (Array.isArray(grid)) {
     const celldata: any[] = [];
 
     for (let r = 0; r < grid.length; r++) {
@@ -723,23 +759,22 @@ function ensureCelldata(sheet: any) {
         if (cell == null) continue;
 
         if (typeof cell === "object") {
-          const v = (cell as any).v;
-          if (v !== null && v !== undefined && String(v) !== "") {
+          if (cellHasPersistablePayload(cell)) {
             celldata.push({ r, c, v: cell });
           }
-        } else {
-          if (String(cell) !== "") {
-            celldata.push({
-              r,
-              c,
-              v: { v: cell, m: String(cell), ct: { t: "g", fa: "General" } },
-            });
-          }
+        } else if (String(cell) !== "") {
+          celldata.push({
+            r,
+            c,
+            v: { v: cell, m: String(cell), ct: { t: "g", fa: "General" } },
+          });
         }
       }
     }
 
     sh.celldata = celldata;
+  } else if (!Array.isArray(sh.celldata)) {
+    sh.celldata = [];
   }
 
   return sh;
@@ -5844,7 +5879,24 @@ async function resetTimeOffHoursToDefault() {
 
                     <div>
                       <FieldLabel>Notes (optional)</FieldLabel>
-                      <TextInput value={newEventNotes} onChange={(e) => setNewEventNotes(e.target.value)} placeholder="Optional details…" />
+                      <textarea
+                        value={newEventNotes}
+                        onChange={(e) => setNewEventNotes(e.target.value)}
+                        placeholder="Optional details…"
+                        style={{
+                          width: "100%",
+                          minHeight: 110,
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid #e5e7eb",
+                          outline: "none",
+                          fontSize: 14,
+                          resize: "vertical",
+                          fontFamily: "inherit",
+                          lineHeight: 1.5,
+                          whiteSpace: "pre-wrap",
+                        }}
+                      />
                     </div>
 
                     <div style={{ height: 12 }} />
@@ -5910,7 +5962,7 @@ async function resetTimeOffHoursToDefault() {
                                     {ev.event_type?.name ?? "—"} • {formatYmd(ev.event_date)}
                                   </div>
                                   {ev.notes ? (
-                                    <div className="subtle" style={{ marginTop: 4 }}>
+                                    <div className="subtle" style={{ marginTop: 4, whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
                                       {ev.notes}
                                     </div>
                                   ) : (
