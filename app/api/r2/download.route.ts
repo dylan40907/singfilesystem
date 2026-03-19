@@ -86,10 +86,9 @@ async function hasFolderDownloadAccess(
       .from("folders")
       .select("parent_id")
       .eq("id", cursorId)
-      .maybeSingle();
+      .single();
 
     if (folderErr) throw folderErr;
-    if (!folderRow) break;
 
     cursorId = (folderRow as any)?.parent_id ?? null;
     isDirectFolder = false;

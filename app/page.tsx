@@ -30,6 +30,14 @@ type PermissionRowForUi = {
   created_at: string;
 };
 
+type SharedFolderGrant = Folder & {
+  access: PermissionAccess;
+};
+
+type SharedFileGrant = FileRow & {
+  access: PermissionAccess;
+};
+
 function labelForTeacher(t: TeacherProfile) {
   const name = ((t as any).full_name ?? "").trim();
   const email = (t.email ?? "").trim();
@@ -692,8 +700,8 @@ export default function Home() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [rootFolder, setRootFolder] = useState<Folder | null>(null);
 
-  const [sharedFolders, setSharedFolders] = useState<Folder[]>([]);
-  const [sharedFiles, setSharedFiles] = useState<FileRow[]>([]);
+  const [sharedFolders, setSharedFolders] = useState<SharedFolderGrant[]>([]);
+  const [sharedFiles, setSharedFiles] = useState<SharedFileGrant[]>([]);
 
   const [files, setFiles] = useState<FileRow[]>([]);
 
@@ -735,6 +743,7 @@ export default function Home() {
     label: string;
   } | null>(null);
   const [shareChecked, setShareChecked] = useState<Set<string>>(new Set());
+  const [shareAllowDownloads, setShareAllowDownloads] = useState(false);
 
   // Delete confirm modal
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -873,23 +882,43 @@ export default function Home() {
     // RLS must allow selecting files the user can access.
     const { data: permRows, error: permErr } = await supabase
       .from("permissions")
-      .select("resource_id")
+      .select("resource_id, access")
       .eq("principal_user_id", userId)
       .eq("resource_type", "file");
 
     if (permErr) throw permErr;
 
-    const fileIds = (permRows ?? []).map((r: any) => r.resource_id as string).filter(Boolean);
+    const bestAccessByFileId = new Map<string, PermissionAccess>();
+    for (const row of permRows ?? []) {
+      const resourceId = (row as any)?.resource_id as string | undefined;
+      const access = ((row as any)?.access ?? "view") as PermissionAccess;
+      if (!resourceId) continue;
 
-    // de-dupe ids (prevents redundant queries)
-    const uniq = Array.from(new Set(fileIds));
-    if (uniq.length === 0) return [] as FileRow[];
+      const cur = bestAccessByFileId.get(resourceId);
+      if (!cur || accessRank(access) > accessRank(cur)) bestAccessByFileId.set(resourceId, access);
+    }
 
-    const { data: fileRows, error: fileErr } = await supabase.from("files").select("*").in("id", uniq);
+    const uniq = Array.from(bestAccessByFileId.keys());
+    if (uniq.length === 0) return [] as SharedFileGrant[];
+
+    const { data: fileRows, error: fileErr } = await supabase
+      .from("files")
+      .select("id, folder_id, name, original_name, storage_key, object_key, mime_type, size_bytes, created_at")
+      .in("id", uniq);
     if (fileErr) throw fileErr;
 
-    const out = (fileRows ?? []) as FileRow[];
-    out.sort((a: any, b: any) => naturalCompare(a.name, b.name));
+    const out = (fileRows ?? []).map((row: any) => ({
+      id: row.id,
+      folder_id: row.folder_id,
+      name: row.name ?? row.original_name ?? "(unnamed)",
+      storage_key: row.storage_key ?? row.object_key,
+      mime_type: row.mime_type ?? null,
+      size_bytes: row.size_bytes ?? null,
+      created_at: row.created_at,
+      access: bestAccessByFileId.get(row.id) ?? "view",
+    })) as SharedFileGrant[];
+
+    out.sort((a, b) => naturalCompare(a.name, b.name));
     return out;
   }
 
@@ -1482,8 +1511,8 @@ export default function Home() {
   }
 
   async function handleDownload(fileId: string) {
-    if (!canDownloadFiles) {
-      setStatus("Downloads are disabled for non-admin accounts. Ask an admin.");
+    if (!canDownloadSpecificFileById(fileId)) {
+      setStatus("Downloads are not enabled for this file.");
       return;
     }
     try {
@@ -1549,8 +1578,8 @@ export default function Home() {
   }
 
   async function handleDownloadFolderAsZip(folderId: string, folderName: string) {
-    if (!canDownloadFiles) {
-      setStatus("Folder downloads are disabled for non-admin accounts. Ask an admin.");
+    if (!canDownloadFolderZip(folderId)) {
+      setStatus("Downloads are not enabled for this folder.");
       return;
     }
 
@@ -1750,6 +1779,7 @@ export default function Home() {
     if (!canShareResources) return;
     setShareTarget({ resourceType: "folder", resourceId: folderId, label });
     setShareChecked(new Set());
+    setShareAllowDownloads(false);
     setShareModalOpen(true);
     refreshPermissions({ resourceType: "folder", resourceId: folderId });
   }
@@ -1759,6 +1789,7 @@ export default function Home() {
     const label = isLinkRow(file) ? linkDisplayNameFromRow(file) : (file as any).name ?? file.id;
     setShareTarget({ resourceType: "file", resourceId: file.id, label: `Share file: ${label}` });
     setShareChecked(new Set());
+    setShareAllowDownloads(false);
     setShareModalOpen(true);
     refreshPermissions({ resourceType: "file", resourceId: file.id });
   }
@@ -1786,7 +1817,7 @@ export default function Home() {
             teacherId,
             resourceType: shareTarget.resourceType,
             resourceId: shareTarget.resourceId,
-            access: "view",
+            access: shareAllowDownloads ? "download" : "view",
             // inherit is only meaningful for folders; for files we force false
             inherit: shareTarget.resourceType === "folder",
           })
@@ -2066,6 +2097,62 @@ export default function Home() {
     return map;
   }, [folders]);
 
+  const sharedFolderAccessById = useMemo(() => {
+    const map = new Map<string, PermissionAccess>();
+    for (const folder of sharedFolders) {
+      const current = map.get(folder.id);
+      if (!current || accessRank(folder.access) > accessRank(current)) map.set(folder.id, folder.access);
+    }
+    return map;
+  }, [sharedFolders]);
+
+  const sharedFileAccessById = useMemo(() => {
+    const map = new Map<string, PermissionAccess>();
+    for (const file of sharedFiles) {
+      const current = map.get(file.id);
+      if (!current || accessRank(file.access) > accessRank(current)) map.set(file.id, file.access);
+    }
+    return map;
+  }, [sharedFiles]);
+
+  function accessAllowsDownload(access: PermissionAccess | null | undefined) {
+    return !!access && accessRank(access) >= accessRank("download");
+  }
+
+  function folderHasDownloadAccess(folderId: string | null | undefined) {
+    if (!folderId) return false;
+    let cursorId: string | null | undefined = folderId;
+
+    while (cursorId) {
+      const access = sharedFolderAccessById.get(cursorId);
+      if (accessAllowsDownload(access)) return true;
+
+      const folder = folderById.get(cursorId);
+      cursorId = folder?.parent_id ?? null;
+    }
+
+    return false;
+  }
+
+  function canDownloadSpecificFile(file: FileRow | SharedFileGrant | null | undefined) {
+    if (!file) return false;
+    if (canDownloadFiles) return true;
+    if (isLinkRow(file as FileRow)) return false;
+    if (accessAllowsDownload(sharedFileAccessById.get(file.id))) return true;
+    return folderHasDownloadAccess((file as FileRow).folder_id);
+  }
+
+  function canDownloadSpecificFileById(fileId: string) {
+    const directShared = sharedFiles.find((f) => f.id === fileId) ?? null;
+    const inFolder = files.find((f) => f.id === fileId) ?? null;
+    return canDownloadSpecificFile(directShared ?? inFolder);
+  }
+
+  function canDownloadFolderZip(folderId: string) {
+    if (canDownloadFiles) return true;
+    return folderHasDownloadAccess(folderId);
+  }
+
   const breadcrumbs = useMemo(() => {
     if (!currentFolderId) return [];
     const chain: Folder[] = [];
@@ -2119,6 +2206,7 @@ export default function Home() {
     setShareModalOpen(false);
     setShareTarget(null);
     setShareChecked(new Set());
+    setShareAllowDownloads(false);
   }
   function closeDeleteModal() {
     setDeleteModalOpen(false);
@@ -2453,15 +2541,25 @@ export default function Home() {
                           <div style={{ fontWeight: 750, overflow: "hidden", textOverflow: "ellipsis" }}>
                             {isLink ? "🔗" : "📄"} {isLink ? linkDisplayNameFromRow(sf) : sf.name}
                           </div>
-                          {isLink ? (
-                            <IconButton title="Open link" onClick={() => openExternalLink(u)} disabled={!u}>
-                              ↗️
-                            </IconButton>
-                          ) : (
-                            <IconButton title="Preview" onClick={() => openPreview(sf)}>
-                              👁️
-                            </IconButton>
-                          )}
+                          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                            <span className="badge badge-pink">{sf.access}</span>
+                            {isLink ? (
+                              <IconButton title="Open link" onClick={() => openExternalLink(u)} disabled={!u}>
+                                ↗️
+                              </IconButton>
+                            ) : (
+                              <>
+                                <IconButton title="Preview" onClick={() => openPreview(sf)}>
+                                  👁️
+                                </IconButton>
+                                {canDownloadSpecificFile(sf) ? (
+                                  <IconButton title="Download file" onClick={() => handleDownload(sf.id)}>
+                                    ⬇️
+                                  </IconButton>
+                                ) : null}
+                              </>
+                            )}
+                          </div>
                         </div>
                       );
                     })
@@ -2592,7 +2690,7 @@ export default function Home() {
                         📁 {folder.name}
                       </button>
 
-                      {/* Admin/Supervisor: full actions; Teacher: no folder actions */}
+                      {/* Admin/Supervisor: full actions; Teacher: limited folder download when explicitly allowed */}
                       {isAdminOrSupervisor ? (
                         <div className="row" style={{ gap: 8 }}>
                           <IconButton title="Rename / move folder" onClick={() => openEditModalForFolder(folder)}>
@@ -2609,6 +2707,12 @@ export default function Home() {
 
                           <IconButton title="Delete folder" onClick={() => openDeleteConfirm({ type: "folder", id: folder.id, name: folder.name })}>
                             🗑️
+                          </IconButton>
+                        </div>
+                      ) : canDownloadFolderZip(folder.id) ? (
+                        <div className="row" style={{ gap: 8 }}>
+                          <IconButton title="Download folder as ZIP" onClick={() => handleDownloadFolderAsZip(folder.id, folder.name)}>
+                            ⬇️
                           </IconButton>
                         </div>
                       ) : null}
@@ -2658,7 +2762,7 @@ export default function Home() {
                           </div>
                         </div>
 
-                        {/* Teacher: open/preview only. Admin/Supervisor: full actions */}
+                        {/* Teacher: preview/open, plus download only when explicitly allowed. Admin/Supervisor: full actions */}
                         {isTeacherAccount ? (
                           <div className="row" style={{ gap: 8 }}>
                             {isLink ? (
@@ -2666,9 +2770,16 @@ export default function Home() {
                                 ↗️
                               </IconButton>
                             ) : (
-                              <IconButton title="Preview" onClick={() => openPreview(f)}>
-                                👁️
-                              </IconButton>
+                              <>
+                                <IconButton title="Preview" onClick={() => openPreview(f)}>
+                                  👁️
+                                </IconButton>
+                                {canDownloadSpecificFile(f) ? (
+                                  <IconButton title="Download file" onClick={() => handleDownload(f.id)}>
+                                    ⬇️
+                                  </IconButton>
+                                ) : null}
+                              </>
                             )}
                           </div>
                         ) : (
@@ -3008,10 +3119,10 @@ export default function Home() {
                     <div style={{ padding: 14, color: "white" }}>
                       No in-app preview for this file type.
                       <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                        {canDownloadFiles ? "You can download it to view." : "Ask an admin if you need this file."}
+                        {canDownloadSpecificFile(previewFile) ? "You can download it to view." : "Ask an admin if you need this file."}
                       </div>
 
-                      {canDownloadFiles ? (
+                      {canDownloadSpecificFile(previewFile) ? (
                         <div style={{ marginTop: 10 }}>
                           <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
                             Download
@@ -3077,6 +3188,19 @@ export default function Home() {
                 </div>
 
                 <div className="hr" />
+
+                <label
+                  className="row"
+                  style={{ gap: 10, alignItems: "center", marginBottom: 14, fontWeight: 750 }}
+                  title="When enabled, the selected employees can download this shared file or folder."
+                >
+                  <input
+                    type="checkbox"
+                    checked={shareAllowDownloads}
+                    onChange={(e) => setShareAllowDownloads(e.target.checked)}
+                  />
+                  <span>Allow Downloads</span>
+                </label>
 
                 <div className="grid-2">
                   <div className="card" style={{ borderRadius: 12 }}>
