@@ -1742,10 +1742,7 @@ function EmployeePerformanceReviewsTab({
       alert("Print is only available for annual evaluations.");
       return;
     }
-    if (!r.published) {
-      alert("Only published annual evaluations can be printed.");
-      return;
-    }
+    // Allow printing annual evaluations whether they are published or still drafts.
 
     const log = (...args: any[]) => console.log("[printAnnual]", ...args);
     const err = (...args: any[]) => console.error("[printAnnual]", ...args);
@@ -1764,10 +1761,6 @@ function EmployeePerformanceReviewsTab({
       if (rerr) throw rerr;
 
       const review = (reviewRow ?? r) as any;
-      if (!review?.published) {
-        alert("Only published annual evaluations can be printed.");
-        return;
-      }
 
       const { data: formRow, error: ferr } = await supabase
         .from("hr_review_forms")
@@ -2565,7 +2558,7 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                   <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
                     Delete
                   </button>
-                  {r.form_type === "annual" && r.published ? (
+                  {r.form_type === "annual" ? (
                     <button className="btn" type="button" onClick={() => void printAnnualEvaluationForReview(r)} style={{ padding: "6px 10px" }}>
                       Print
                     </button>
