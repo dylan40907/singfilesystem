@@ -40,7 +40,7 @@ export default function EmployeePickerDropdown({
   const filtered = employees.filter((e) => {
     if (!search.trim()) return true;
     const name = formatEmployeeName(e).toLowerCase();
-    const nick = (e.nicknames ?? "").toLowerCase();
+    const nick = Array.isArray(e.nicknames) ? e.nicknames.join(" ").toLowerCase() : (e.nicknames ?? "").toLowerCase();
     const q = search.toLowerCase();
     return name.includes(q) || nick.includes(q);
   }).slice(0, 60);
@@ -131,8 +131,8 @@ export default function EmployeePickerDropdown({
               onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
             >
               <div style={{ fontWeight: 700 }}>{formatEmployeeName(emp)}</div>
-              {emp.nicknames && (
-                <div style={{ color: "#9ca3af", fontSize: 12 }}>{emp.nicknames}</div>
+              {emp.nicknames && (Array.isArray(emp.nicknames) ? emp.nicknames.length > 0 : true) && (
+                <div style={{ color: "#9ca3af", fontSize: 12 }}>{Array.isArray(emp.nicknames) ? emp.nicknames.join(", ") : emp.nicknames}</div>
               )}
             </button>
           ))

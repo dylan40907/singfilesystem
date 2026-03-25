@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import {
   ScheduleRoom,
   ScheduleBlock as ScheduleBlockType,
@@ -10,6 +10,7 @@ import {
   minutesToTime,
   generateTimeSlots,
   START_MINUTES,
+  END_MINUTES,
   PX_PER_SLOT,
   TOTAL_SLOTS,
   SLOT_MINUTES,
@@ -25,8 +26,13 @@ interface ScheduleGridProps {
   onCellClick: (roomId: string, columnIndex: number, day: number, time: string) => void;
   onBlockContextMenu: (blockId: string, x: number, y: number) => void;
   onBlockResize: (blockId: string, newStartTime: string, newEndTime: string) => void;
-  onBlockMove: (blockId: string, deltaSlots: number) => void;
+  onBlockMoveToColumn: (blockId: string, newRoomId: string, newColumnIndex: number, deltaSlots: number) => void;
+  onRoomUpdate: (roomId: string, updates: { name?: string; capacity?: number }) => void;
+  onRoomDelete: (roomId: string) => void;
 }
+
+// Shared flag: when a block drag/resize ends, suppress the next cell click
+let suppressNextCellClick = false;
 
 export default function ScheduleGrid({
   rooms,
@@ -37,17 +43,36 @@ export default function ScheduleGrid({
   onCellClick,
   onBlockContextMenu,
   onBlockResize,
-  onBlockMove,
+  onBlockMoveToColumn,
+  onRoomUpdate,
+  onRoomDelete,
 }: ScheduleGridProps) {
   const timeSlots = useMemo(() => generateTimeSlots(), []);
   const gridHeight = TOTAL_SLOTS * PX_PER_SLOT;
 
-  // Build flat columns: [{roomId, columnIndex, roomName}]
+  // Build flat columns
   const columns = useMemo(() => {
-    const cols: { roomId: string; columnIndex: number; roomName: string }[] = [];
+    const cols: {
+      roomId: string;
+      columnIndex: number;
+      roomName: string;
+      capacity: number;
+      isFirstInRoom: boolean;
+      isLastInRoom: boolean;
+      globalIndex: number;
+    }[] = [];
+    let gi = 0;
     for (const room of rooms) {
       for (let c = 0; c < room.capacity; c++) {
-        cols.push({ roomId: room.id, columnIndex: c, roomName: room.name });
+        cols.push({
+          roomId: room.id,
+          columnIndex: c,
+          roomName: room.name,
+          capacity: room.capacity,
+          isFirstInRoom: c === 0,
+          isLastInRoom: c === room.capacity - 1,
+          globalIndex: gi++,
+        });
       }
     }
     return cols;
@@ -66,11 +91,20 @@ export default function ScheduleGrid({
     return m;
   }, [employees]);
 
-  // Time labels to show (every 30 minutes)
-  const timeLabels = useMemo(
-    () => timeSlots.filter((_, i) => i % 6 === 0),
-    [timeSlots]
-  );
+  // Time labels every 30 minutes, plus the final label at END_MINUTES
+  const timeLabels = useMemo(() => {
+    const labels: string[] = [];
+    for (let m = START_MINUTES; m <= END_MINUTES; m += 30) {
+      labels.push(minutesToTime(m));
+    }
+    return labels;
+  }, []);
+
+  // Grid lines every 30 minutes
+  const gridLines = timeLabels;
+
+  const COL_WIDTH = 120;
+  const TIME_COL_WIDTH = 72;
 
   return (
     <div style={{ display: "flex", overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 220px)" }}>
@@ -82,7 +116,7 @@ export default function ScheduleGrid({
           zIndex: 20,
           background: "white",
           borderRight: "1.5px solid #e5e7eb",
-          minWidth: 64,
+          minWidth: TIME_COL_WIDTH,
           flexShrink: 0,
         }}
       >
@@ -94,18 +128,19 @@ export default function ScheduleGrid({
           {timeLabels.map((time) => {
             const mins = timeToMinutes(time);
             const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
+            // First label: align top edge to grid line; others: center on grid line
+            const isFirst = mins === START_MINUTES;
             return (
               <div
                 key={time}
                 style={{
                   position: "absolute",
-                  top,
+                  top: isFirst ? top : top - 6,
                   right: 6,
                   fontSize: 10,
                   color: "#9ca3af",
                   fontWeight: 600,
                   lineHeight: "12px",
-                  transform: "translateY(-6px)",
                   whiteSpace: "nowrap",
                 }}
               >
@@ -117,18 +152,26 @@ export default function ScheduleGrid({
       </div>
 
       {/* Room columns */}
-      {columns.map((col, colIdx) => {
+      {columns.map((col) => {
         const colBlocks = dayBlocks.filter(
           (b) => b.room_id === col.roomId && b.column_index === col.columnIndex
         );
 
+        // Darker border between rooms, lighter between sub-columns
+        const borderRight = col.isLastInRoom
+          ? "2px solid #d1d5db"
+          : "1px solid #e5e7eb";
+
         return (
           <div
             key={`${col.roomId}-${col.columnIndex}`}
+            data-room-id={col.roomId}
+            data-column-index={col.columnIndex}
+            data-global-index={col.globalIndex}
             style={{
-              minWidth: 120,
-              flex: "1 0 120px",
-              borderRight: "1px solid #f3f4f6",
+              minWidth: COL_WIDTH,
+              flex: `1 0 ${COL_WIDTH}px`,
+              borderRight,
               position: "relative",
             }}
           >
@@ -140,18 +183,19 @@ export default function ScheduleGrid({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 11,
-                fontWeight: 700,
-                color: "#6b7280",
+                fontSize: 13,
+                fontWeight: 800,
+                color: "#111827",
                 background: "#f9fafb",
+                cursor: !readOnly && col.isFirstInRoom ? "pointer" : "default",
+              }}
+              onClick={() => {
+                if (!readOnly && col.isFirstInRoom) {
+                  onRoomUpdate(col.roomId, {});
+                }
               }}
             >
-              {col.columnIndex === 0 ? col.roomName : ""}
-              {rooms.find((r) => r.id === col.roomId)!.capacity > 1 && (
-                <span style={{ marginLeft: 4, fontSize: 10, color: "#d1d5db" }}>
-                  #{col.columnIndex + 1}
-                </span>
-              )}
+              {col.isFirstInRoom ? col.roomName : ""}
             </div>
 
             {/* Grid area */}
@@ -159,6 +203,11 @@ export default function ScheduleGrid({
               style={{ position: "relative", height: gridHeight }}
               onClick={(e) => {
                 if (readOnly) return;
+                // Suppress click if it was triggered by a drag ending
+                if (suppressNextCellClick) {
+                  suppressNextCellClick = false;
+                  return;
+                }
                 const rect = e.currentTarget.getBoundingClientRect();
                 const y = e.clientY - rect.top;
                 const slotIndex = Math.floor(y / PX_PER_SLOT);
@@ -166,8 +215,8 @@ export default function ScheduleGrid({
                 onCellClick(col.roomId, col.columnIndex, day, minutesToTime(mins));
               }}
             >
-              {/* Hour lines */}
-              {timeLabels.map((time) => {
+              {/* 30-min grid lines */}
+              {gridLines.map((time) => {
                 const mins = timeToMinutes(time);
                 const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
                 return (
@@ -202,8 +251,35 @@ export default function ScheduleGrid({
                     heightPx={heightPx}
                     readOnly={readOnly}
                     onContextMenu={onBlockContextMenu}
-                    onResizeEnd={onBlockResize}
-                    onMoveEnd={onBlockMove}
+                    onResizeEnd={(blockId, s, e) => {
+                      suppressNextCellClick = true;
+                      onBlockResize(blockId, s, e);
+                    }}
+                    onDragEnd={(blockId, deltaSlots, clientX) => {
+                      suppressNextCellClick = true;
+                      // Determine which column the block was dropped on
+                      const gridContainer = document.querySelector("[data-schedule-grid]");
+                      if (!gridContainer) {
+                        onBlockMoveToColumn(blockId, block.room_id, block.column_index, deltaSlots);
+                        return;
+                      }
+                      const colElements = gridContainer.querySelectorAll<HTMLElement>("[data-room-id]");
+                      let targetRoomId = block.room_id;
+                      let targetColIdx = block.column_index;
+                      for (const colEl of colElements) {
+                        const rect = colEl.getBoundingClientRect();
+                        if (clientX >= rect.left && clientX < rect.right) {
+                          targetRoomId = colEl.dataset.roomId!;
+                          targetColIdx = parseInt(colEl.dataset.columnIndex!, 10);
+                          break;
+                        }
+                      }
+                      onBlockMoveToColumn(blockId, targetRoomId, targetColIdx, deltaSlots);
+                    }}
+                    onDragCancel={() => {
+                      // A pointerup without drag — suppress the cell click that follows
+                      suppressNextCellClick = true;
+                    }}
                   />
                 );
               })}

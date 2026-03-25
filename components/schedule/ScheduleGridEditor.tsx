@@ -19,7 +19,6 @@ import {
   START_MINUTES,
   END_MINUTES,
 } from "@/lib/scheduleUtils";
-import RoomHeader from "./RoomHeader";
 import ScheduleGrid from "./ScheduleGrid";
 import EmployeePickerDropdown from "./EmployeePickerDropdown";
 import BlockContextMenu from "./BlockContextMenu";
@@ -48,6 +47,12 @@ type DuplicateMode = {
   durationMinutes: number;
 } | null;
 
+type RoomEditState = {
+  roomId: string;
+  name: string;
+  capacity: number;
+} | null;
+
 export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridEditorProps) {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [rooms, setRooms] = useState<ScheduleRoom[]>([]);
@@ -68,6 +73,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [labelText, setLabelText] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [roomEdit, setRoomEdit] = useState<RoomEditState>(null);
 
   const readOnly = schedule?.status === "published";
 
@@ -176,6 +182,27 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
   }
 
+  // Room edit triggered by clicking room name in grid header
+  function handleRoomEditTrigger(roomId: string, _updates: { name?: string; capacity?: number }) {
+    // If _updates is empty, it's a click-to-edit trigger
+    const room = rooms.find((r) => r.id === roomId);
+    if (!room) return;
+    if (Object.keys(_updates).length === 0) {
+      setRoomEdit({ roomId: room.id, name: room.name, capacity: room.capacity });
+    } else {
+      updateRoom(roomId, _updates);
+    }
+  }
+
+  async function handleRoomEditSave() {
+    if (!roomEdit) return;
+    await updateRoom(roomEdit.roomId, {
+      name: roomEdit.name.trim() || "Room",
+      capacity: roomEdit.capacity,
+    });
+    setRoomEdit(null);
+  }
+
   // --- Block CRUD ---
   async function createBlock(
     roomId: string,
@@ -252,7 +279,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    // Optimistic update
     setBlocks((prev) =>
       prev.map((b) =>
         b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b
@@ -266,11 +292,17 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
     if (error) {
       setWarning(error.message);
-      fetchData(); // revert
+      fetchData();
     }
   }
 
-  async function handleBlockMove(blockId: string, deltaSlots: number) {
+  // Move block to a new column/room and/or new time
+  async function handleBlockMoveToColumn(
+    blockId: string,
+    newRoomId: string,
+    newColumnIndex: number,
+    deltaSlots: number
+  ) {
     const block = blocks.find((b) => b.id === blockId);
     if (!block) return;
 
@@ -288,6 +320,15 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const newStartTime = minutesToTime(newStartMins);
     const newEndTime = minutesToTime(newEndMins);
 
+    // Check if nothing changed
+    if (
+      newRoomId === block.room_id &&
+      newColumnIndex === block.column_index &&
+      newStartTime === block.start_time
+    ) {
+      return;
+    }
+
     const candidate = {
       id: blockId,
       employee_id: block.employee_id,
@@ -301,15 +342,35 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
+    // Validate target column exists
+    const targetRoom = rooms.find((r) => r.id === newRoomId);
+    if (!targetRoom || newColumnIndex >= targetRoom.capacity) {
+      setWarning("Invalid target column.");
+      return;
+    }
+
     setBlocks((prev) =>
       prev.map((b) =>
-        b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b
+        b.id === blockId
+          ? {
+              ...b,
+              room_id: newRoomId,
+              column_index: newColumnIndex,
+              start_time: newStartTime,
+              end_time: newEndTime,
+            }
+          : b
       )
     );
 
     const { error } = await supabase
       .from("schedule_blocks")
-      .update({ start_time: newStartTime, end_time: newEndTime })
+      .update({
+        room_id: newRoomId,
+        column_index: newColumnIndex,
+        start_time: newStartTime,
+        end_time: newEndTime,
+      })
       .eq("id", blockId);
 
     if (error) {
@@ -428,7 +489,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    // Fetch previous rooms and blocks
     const [prevRoomsRes, prevBlocksRes] = await Promise.all([
       supabase
         .from("schedule_rooms")
@@ -450,7 +510,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    // Delete existing rooms (cascade deletes blocks)
     if (rooms.length > 0) {
       if (!confirm("This will replace all current rooms and blocks. Continue?")) {
         setSaving(false);
@@ -462,7 +521,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         .eq("schedule_id", scheduleId);
     }
 
-    // Insert new rooms
     const { data: newRooms } = await supabase
       .from("schedule_rooms")
       .insert(
@@ -476,7 +534,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       .select();
 
     if (newRooms && prevBlocks.length > 0) {
-      // Map old room IDs to new room IDs (by sort_order)
       const roomMap = new Map<string, string>();
       for (const oldRoom of prevRooms) {
         const newRoom = newRooms.find((r) => r.sort_order === oldRoom.sort_order);
@@ -697,27 +754,75 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         </div>
       )}
 
-      {/* Room headers */}
-      {rooms.length > 0 && (
+      {/* Room edit inline */}
+      {roomEdit && (
         <div
           style={{
+            padding: "10px 16px",
+            background: "#fdf2f8",
+            borderRadius: 10,
+            marginBottom: 12,
             display: "flex",
-            gap: 4,
-            marginBottom: 8,
-            overflowX: "auto",
-            paddingLeft: 64, // align with grid (time column width)
+            alignItems: "center",
+            gap: 10,
+            flexWrap: "wrap",
           }}
         >
-          {rooms.map((room) => (
-            <div key={room.id} style={{ minWidth: 120 * room.capacity, flex: `0 0 ${120 * room.capacity}px` }}>
-              <RoomHeader
-                room={room}
-                onUpdate={updateRoom}
-                onDelete={deleteRoom}
-                readOnly={readOnly}
-              />
-            </div>
-          ))}
+          <span style={{ fontWeight: 700, fontSize: 13 }}>Edit Room:</span>
+          <input
+            type="text"
+            value={roomEdit.name}
+            onChange={(e) => setRoomEdit({ ...roomEdit, name: e.target.value })}
+            placeholder="Room name"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleRoomEditSave();
+              if (e.key === "Escape") setRoomEdit(null);
+            }}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: "1.5px solid #e5e7eb",
+              fontSize: 13,
+              width: 160,
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#6b7280" }}>Capacity:</label>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={roomEdit.capacity}
+              onChange={(e) =>
+                setRoomEdit({ ...roomEdit, capacity: Math.max(1, parseInt(e.target.value) || 1) })
+              }
+              style={{
+                width: 50,
+                padding: "4px 6px",
+                borderRadius: 6,
+                border: "1px solid #e5e7eb",
+                fontSize: 13,
+                textAlign: "center",
+              }}
+            />
+          </div>
+          <button className="btn btn-pink" onClick={handleRoomEditSave} style={{ padding: "6px 14px", fontSize: 13 }}>
+            Save
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              deleteRoom(roomEdit.roomId);
+              setRoomEdit(null);
+            }}
+            style={{ padding: "6px 14px", fontSize: 13, color: "#dc2626", borderColor: "#fca5a5" }}
+          >
+            Delete Room
+          </button>
+          <button className="btn" onClick={() => setRoomEdit(null)} style={{ padding: "6px 14px", fontSize: 13 }}>
+            Cancel
+          </button>
         </div>
       )}
 
@@ -748,7 +853,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       </div>
 
       {/* Grid */}
-      <div style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}>
+      <div
+        data-schedule-grid
+        style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}
+      >
         <ScheduleGrid
           rooms={rooms}
           blocks={blocks}
@@ -760,7 +868,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             if (!readOnly) setContextMenu({ blockId, x, y });
           }}
           onBlockResize={handleBlockResize}
-          onBlockMove={handleBlockMove}
+          onBlockMoveToColumn={handleBlockMoveToColumn}
+          onRoomUpdate={handleRoomEditTrigger}
+          onRoomDelete={deleteRoom}
         />
 
         {/* Employee picker overlay */}

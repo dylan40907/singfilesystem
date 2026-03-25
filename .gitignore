@@ -42,3 +42,8 @@ next-env.d.ts
 
 .vercel
 .env*.local
+
+# claude
+.claude/
+.mcp.json
+CLAUDE.md
