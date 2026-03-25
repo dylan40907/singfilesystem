@@ -4,6 +4,19 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import "@fortune-sheet/react/dist/index.css";
+import {
+  PreviewMode,
+  extOf,
+  isOfficeExt,
+  isPdfExt,
+  isImageExt,
+  isTextExt,
+  isVideoExt,
+  isAudioExt,
+  parseCsv,
+} from "@/lib/fileUtils";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
+import TeacherScheduleView from "@/components/schedule/TeacherScheduleView";
 
 /**
  * app/hr/page.tsx
@@ -144,85 +157,6 @@ async function readJsonSafely(res: Response) {
   }
 }
 
-function extOf(name: string) {
-  const idx = name.lastIndexOf(".");
-  if (idx === -1) return "";
-  return name.slice(idx + 1).toLowerCase();
-}
-
-function isOfficeExt(ext: string) {
-  return ["doc", "docx", "ppt", "pptx", "xls", "xlsx"].includes(ext);
-}
-function isPdfExt(ext: string) {
-  return ext === "pdf";
-}
-function isImageExt(ext: string) {
-  return ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext);
-}
-function isTextExt(ext: string) {
-  return ["txt", "md", "json", "log"].includes(ext);
-}
-function isVideoExt(ext: string) {
-  return ["mp4", "webm", "mov", "m4v"].includes(ext);
-}
-function isAudioExt(ext: string) {
-  return ["mp3", "wav", "m4a", "ogg"].includes(ext);
-}
-
-function parseCsv(text: string) {
-  // lightweight CSV parser for preview (handles commas + quotes enough for admin preview use)
-  const rows: string[][] = [];
-  let cur: string[] = [];
-  let field = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    const next = text[i + 1];
-
-    if (inQuotes) {
-      if (ch === '"' && next === '"') {
-        field += '"';
-        i++;
-        continue;
-      }
-      if (ch === '"') {
-        inQuotes = false;
-        continue;
-      }
-      field += ch;
-      continue;
-    }
-
-    if (ch === '"') {
-      inQuotes = true;
-      continue;
-    }
-
-    if (ch === ",") {
-      cur.push(field);
-      field = "";
-      continue;
-    }
-
-    if (ch === "\n") {
-      cur.push(field);
-      field = "";
-      rows.push(cur);
-      cur = [];
-      continue;
-    }
-
-    if (ch === "\r") continue;
-
-    field += ch;
-  }
-
-  cur.push(field);
-  rows.push(cur);
-  return rows;
-}
-
 /* ===== UI atoms (match admin page styling) ===== */
 
 function FieldLabel({ children }: { children: any }) {
@@ -310,13 +244,6 @@ function TabButton({
   );
 }
 
-// Office preview without extra deps: use Microsoft Office online viewer embed
-function OfficeEmbed({ url }: { url: string }) {
-  const src = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(url)}`;
-  return <iframe src={src} style={{ width: "100%", height: "70vh", border: "none" }} />;
-}
-
-
 /* =========================
    Page
 ========================= */
@@ -332,7 +259,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews";
+  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
 
 
@@ -407,7 +334,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   // Preview modal
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDoc, setPreviewDoc] = useState<HrMeetingDocument | null>(null);
-  const [previewMode, setPreviewMode] = useState<"office" | "pdf" | "image" | "csv" | "text" | "video" | "audio" | "unknown">("unknown");
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("unknown");
   const [previewSignedUrl, setPreviewSignedUrl] = useState<string>("");
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewCsvRows, setPreviewCsvRows] = useState<string[][]>([]);
@@ -1284,15 +1211,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
     }
   }
 
-  // ESC closes preview
-  useEffect(() => {
-    if (!previewOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closePreview();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewOpen, closePreview]);
+  // ESC is handled inside <FilePreviewModal>.
 
   // Auto-load attendance once employee loads
   useEffect(() => {
@@ -1413,6 +1332,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                 Employee Reviews
               </TabButton>
             ) : null}
+            <TabButton active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
+              Schedule
+            </TabButton>
           </div>
 
           {/* Right content */}
@@ -1997,86 +1919,31 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                 </div>
 
                 {/* Preview modal */}
-                {previewOpen && previewDoc ? (
-                  <div
-                    style={{
-                      position: "fixed",
-                      inset: 0,
-                      background: "rgba(0,0,0,0.45)",
-                      display: "grid",
-                      placeItems: "center",
-                      padding: 14,
-                      zIndex: 50,
-                    }}
-                    onMouseDown={(e) => {
-                      if (e.target === e.currentTarget) closePreview();
-                    }}
-                  >
-                    <div style={{ width: "min(1100px, 100%)", background: "white", borderRadius: 16, border: "1px solid #e5e7eb", overflow: "hidden" }}>
-                      <div className="row-between" style={{ padding: 12, borderBottom: "1px solid #e5e7eb", gap: 10 }}>
-                        <div style={{ fontWeight: 900, minWidth: 0, wordBreak: "break-word" }}>{previewDoc.name}</div>
-                        <div className="row" style={{ gap: 10 }}>
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={async () => {
-                              const url = await getSignedMeetingDownloadUrl(previewDoc.id, "attachment");
-                              window.open(url, "_blank", "noopener,noreferrer");
-                            }}
-                          >
-                            Download
-                          </button>
-                          <button type="button" className="btn" onClick={closePreview}>
-                            Close
-                          </button>
-                        </div>
-                      </div>
+                <FilePreviewModal
+                  open={previewOpen && !!previewDoc}
+                  onClose={closePreview}
+                  fileName={previewDoc?.name ?? ""}
+                  mode={previewMode}
+                  signedUrl={previewSignedUrl}
+                  loading={previewLoading}
+                  csvRows={previewCsvRows}
+                  csvError={previewCsvError}
+                  variant="dialog"
+                  onDownload={previewDoc ? async () => {
+                    const url = await getSignedMeetingDownloadUrl(previewDoc.id, "attachment");
+                    window.open(url, "_blank", "noopener,noreferrer");
+                  } : undefined}
+                />
+              </div>
+            ) : null}
 
-                      <div style={{ padding: 12 }}>
-                        {previewLoading ? (
-                          <div className="subtle">Loading preview…</div>
-                        ) : previewMode === "pdf" ? (
-                          <iframe src={previewSignedUrl} style={{ width: "100%", height: "70vh", border: "none" }} />
-                        ) : previewMode === "image" ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={previewSignedUrl} alt={previewDoc.name} style={{ maxWidth: "100%", maxHeight: "70vh", objectFit: "contain" }} />
-                        ) : previewMode === "office" ? (
-                          <div style={{ height: "70vh", overflow: "auto" }}>
-                            <OfficeEmbed url={previewSignedUrl} />
-                          </div>
-                        ) : previewMode === "text" ? (
-                          <iframe src={previewSignedUrl} style={{ width: "100%", height: "70vh", border: "none" }} />
-                        ) : previewMode === "video" ? (
-                          <video src={previewSignedUrl} controls style={{ width: "100%", maxHeight: "70vh" }} />
-                        ) : previewMode === "audio" ? (
-                          <audio src={previewSignedUrl} controls style={{ width: "100%" }} />
-                        ) : previewMode === "csv" ? (
-                          previewCsvError ? (
-                            <div className="subtle">{previewCsvError}</div>
-                          ) : (
-                            <div style={{ maxHeight: "70vh", overflow: "auto" }}>
-                              <table className="table">
-                                <tbody>
-                                  {previewCsvRows.slice(0, 200).map((row, i) => (
-                                    <tr key={i}>
-                                      {row.slice(0, 30).map((cell, j) => (
-                                        <td key={j} style={{ whiteSpace: "nowrap" }}>
-                                          {cell}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )
-                        ) : (
-                          <div className="subtle">No preview available for this file type.</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
+            {activeTab === "schedule" ? (
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                {employee ? (
+                  <TeacherScheduleView employeeId={employee.id} />
+                ) : (
+                  <div className="subtle">Loading employee data…</div>
+                )}
               </div>
             ) : null}
           </div>

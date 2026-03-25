@@ -6,6 +6,18 @@ import { createFolder, fetchFolders, fetchRootFolder, Folder } from "@/lib/folde
 import { fetchActiveTeachers, fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { fetchSharedFoldersDirect } from "@/lib/shared";
 import { createFileRow, fetchFilesInFolder, FileRow } from "@/lib/files";
+import {
+  PreviewMode,
+  extOf,
+  isOfficeExt,
+  isPdfExt,
+  isImageExt,
+  isTextExt,
+  isVideoExt,
+  isAudioExt,
+  parseCsv,
+} from "@/lib/fileUtils";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
 
 async function readJsonSafely(res: Response) {
   const ct = res.headers.get("content-type") || "";
@@ -101,13 +113,6 @@ type EditTarget =
   | { type: "folder"; id: string; name: string; parent_id: string | null }
   | { type: "file"; id: string; name: string; folder_id: string };
 
-type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "link" | "unknown";
-
-function extOf(name: string) {
-  const i = name.lastIndexOf(".");
-  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
-}
-
 // Natural sort helper: keeps alphabetical ordering but treats number runs as numbers
 const _nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
@@ -121,33 +126,6 @@ function naturalCompareById(aName: string | null | undefined, aId: string, bName
 }
 
 
-function isOfficeExt(ext: string) {
-  return ext === "docx" || ext === "pptx" || ext === "xlsx";
-}
-function isPdfExt(ext: string) {
-  return ext === "pdf";
-}
-function isImageExt(ext: string) {
-  return ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "svg";
-}
-function isTextExt(ext: string) {
-  return ext === "txt" || ext === "md" || ext === "csv" || ext === "json" || ext === "log";
-}
-function isVideoExt(ext: string) {
-  return (
-    ext === "mp4" ||
-    ext === "mov" ||
-    ext === "webm" ||
-    ext === "m4v" ||
-    ext === "avi" ||
-    ext === "mkv" ||
-    ext === "mpeg" ||
-    ext === "mpg"
-  );
-}
-function isAudioExt(ext: string) {
-  return ext === "mp3" || ext === "wav" || ext === "m4a" || ext === "aac" || ext === "ogg" || ext === "flac";
-}
 
 function normalizeUrl(raw: string) {
   const s = raw.trim();
@@ -242,415 +220,6 @@ function accessRank(a: PermissionAccess) {
   if (a === "manage") return 3;
   if (a === "download") return 2;
   return 1;
-}
-
-function parseCsv(text: string) {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let i = 0;
-  let inQuotes = false;
-
-  while (i < text.length) {
-    const c = text[i];
-
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i += 2;
-          continue;
-        }
-        inQuotes = false;
-        i += 1;
-        continue;
-      }
-      field += c;
-      i += 1;
-      continue;
-    }
-
-    if (c === '"') {
-      inQuotes = true;
-      i += 1;
-      continue;
-    }
-
-    if (c === ",") {
-      row.push(field);
-      field = "";
-      i += 1;
-      continue;
-    }
-
-    if (c === "\n") {
-      row.push(field);
-      field = "";
-      rows.push(row);
-      row = [];
-      i += 1;
-      continue;
-    }
-
-    if (c === "\r") {
-      // handle CRLF
-      i += 1;
-      if (text[i] === "\n") {
-        row.push(field);
-        field = "";
-        rows.push(row);
-        row = [];
-        i += 1;
-      }
-      continue;
-    }
-
-    field += c;
-    i += 1;
-  }
-
-  row.push(field);
-  rows.push(row);
-
-  // If the file ends in a newline, we may get a trailing empty row.
-  const last = rows[rows.length - 1];
-  if (text.endsWith("\n") && last.length === 1 && last[0] === "") rows.pop();
-
-  return rows;
-}
-
-/**
- * PDF Preview goals:
- * 1) Fit each page fully within the available preview viewport (no "fit-to-width" cropping the height).
- * 2) Render sharp text (avoid CSS scaling blur) by rendering at devicePixelRatio (with a small quality boost).
- * 3) Make links inside PDFs clickable by rendering an annotation overlay layer (external + internal links).
- */
-function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: number }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const [err, setErr] = useState<string>("");
-  const [pdfjs, setPdfjs] = useState<any>(null);
-  const [vp, setVp] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-
-  // Track available viewport size (so we can fit each page fully).
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const update = () => {
-      const w = Math.floor(el.clientWidth);
-      const h = Math.floor(el.clientHeight);
-      setVp((cur) => (cur.w === w && cur.h === h ? cur : { w, h }));
-    };
-
-    update();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => update());
-      ro.observe(el);
-      return () => ro.disconnect();
-    }
-
-    // Fallback
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-
-  // 1) Load pdfjs on the client ONLY (avoids DOMMatrix SSR/module-eval crashes)
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        let mod: any = null;
-
-        // Try a few known entrypoints across pdfjs-dist versions.
-        try {
-          // @ts-ignore - some pdfjs-dist versions don't ship TS types for subpaths
-          mod = await import("pdfjs-dist/build/pdf");
-        } catch {}
-
-        if (!mod) {
-          try {
-            // @ts-ignore
-            mod = await import("pdfjs-dist/build/pdf.mjs");
-          } catch {}
-        }
-
-        if (!mod) {
-          try {
-            // @ts-ignore
-            mod = await import("pdfjs-dist/legacy/build/pdf");
-          } catch {}
-        }
-
-        if (!mod) {
-          throw new Error("PDF.js failed to load (pdfjs-dist). Check installed version / paths.");
-        }
-
-        // Configure worker AFTER module loads (client-side).
-        // Try build worker first, then legacy worker.
-        try {
-          mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
-        } catch {
-          try {
-            mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
-          } catch {
-            // If worker can't be set, pdfjs may still render but slower (falls back).
-          }
-        }
-
-        if (!cancelled) setPdfjs(mod);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message ?? "Failed to load PDF renderer");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // 2) Render whenever url/maxPages/pdfjs/viewport changes
-  useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      if (!pdfjs) return;
-      if (!vp.w || !vp.h) return;
-
-      setErr("");
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      // clear previous renders
-      container.innerHTML = "";
-
-      try {
-        const loadingTask = pdfjs.getDocument({ url });
-        const pdf = await loadingTask.promise;
-
-        const pagesToRender = Math.min(pdf.numPages, maxPages);
-
-        // Leave some breathing room so the page never touches edges.
-        const OUTER_PAD = 16; // px padding inside scroll viewport
-        const INNER_PAD = 12; // px padding around each page
-        const availW = Math.max(1, vp.w - OUTER_PAD * 2 - INNER_PAD * 2);
-        const availH = Math.max(1, vp.h - OUTER_PAD * 2 - INNER_PAD * 2);
-
-        const rawDpr = Math.max(1, (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1);
-        const DPR_CAP = 3; // avoid extreme memory usage on very high DPR devices
-        const QUALITY_BOOST = 1.25; // small oversample to reduce "slightly soft" text vs original
-        const dpr = Math.min(rawDpr, DPR_CAP);
-
-        async function resolveDestToPageNum(dest: any): Promise<number | null> {
-          try {
-            let destArray: any = dest;
-
-            // Named destination -> array
-            if (typeof destArray === "string") {
-              destArray = await pdf.getDestination(destArray);
-            }
-
-            if (!Array.isArray(destArray) || destArray.length === 0) return null;
-
-            const pageRef = destArray[0];
-
-            // Sometimes the first element can be a number, but most commonly it's a reference.
-            if (typeof pageRef === "number") {
-              // Interpret as zero-based page index in some PDFs; clamp defensively.
-              const idx = Math.max(0, Math.min(pdf.numPages - 1, pageRef));
-              return idx + 1;
-            }
-
-            const pageIndex = await pdf.getPageIndex(pageRef);
-            return pageIndex + 1;
-          } catch {
-            return null;
-          }
-        }
-
-        function scrollToPage(pageNum: number) {
-          const c = containerRef.current;
-          if (!c) return;
-
-          const el = c.querySelector(`[data-pdf-page="${pageNum}"]`) as HTMLElement | null;
-          if (!el) return;
-
-          el.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-
-        for (let pageNum = 1; pageNum <= pagesToRender; pageNum++) {
-          if (cancelled) return;
-
-          const page = await pdf.getPage(pageNum);
-
-          // Base viewport to compute natural page size
-          const base = page.getViewport({ scale: 1 });
-
-          // Fit the entire page within the available viewport
-          const fitScale = Math.min(availW / base.width, availH / base.height);
-
-          // CSS size (what the user sees)
-          const cssViewport = page.getViewport({ scale: fitScale });
-
-          // Render size (higher res for crisp text)
-          const renderViewport = page.getViewport({ scale: fitScale * dpr * QUALITY_BOOST });
-
-          const pageCard = document.createElement("div");
-          pageCard.dataset.pdfPage = String(pageNum);
-          pageCard.setAttribute("data-pdf-page", String(pageNum));
-          pageCard.style.display = "flex";
-          pageCard.style.alignItems = "center";
-          pageCard.style.justifyContent = "center";
-          pageCard.style.padding = `${INNER_PAD}px`;
-          pageCard.style.minHeight = `${vp.h - OUTER_PAD * 2}px`;
-          pageCard.style.boxSizing = "border-box";
-
-          // "Stage" is relative so we can overlay clickable link rectangles
-          const stage = document.createElement("div");
-          stage.style.position = "relative";
-          stage.style.width = `${Math.floor(cssViewport.width)}px`;
-          stage.style.height = `${Math.floor(cssViewport.height)}px`;
-          stage.style.borderRadius = "12px";
-          stage.style.boxShadow = "inset 0 0 0 1px var(--border)";
-          stage.style.background = "white";
-          stage.style.overflow = "hidden";
-
-          const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d", { alpha: false });
-          if (!ctx) continue;
-
-          // IMPORTANT: set intrinsic pixel size to renderViewport (already includes dpr),
-          // but set CSS size to cssViewport to avoid browser scaling blur.
-          canvas.width = Math.max(1, Math.floor(renderViewport.width));
-          canvas.height = Math.max(1, Math.floor(renderViewport.height));
-          canvas.style.width = `${Math.floor(cssViewport.width)}px`;
-          canvas.style.height = `${Math.floor(cssViewport.height)}px`;
-          canvas.style.display = "block";
-          canvas.style.background = "white";
-
-          // Overlay for clickable annotations (links)
-          const overlay = document.createElement("div");
-          overlay.style.position = "absolute";
-          overlay.style.left = "0";
-          overlay.style.top = "0";
-          overlay.style.width = `${Math.floor(cssViewport.width)}px`;
-          overlay.style.height = `${Math.floor(cssViewport.height)}px`;
-          overlay.style.pointerEvents = "none"; // allow only anchors to capture clicks
-
-          stage.appendChild(canvas);
-          stage.appendChild(overlay);
-          pageCard.appendChild(stage);
-          container.appendChild(pageCard);
-
-          const renderTask = page.render({
-            canvas,
-            canvasContext: ctx,
-            viewport: renderViewport,
-          } as any);
-
-          await renderTask.promise;
-
-          // --- Annotation layer (clickable links) ---
-          try {
-            const annots = await page.getAnnotations({ intent: "display" });
-
-            for (const a of annots ?? []) {
-              if (cancelled) return;
-              if (!a || a.subtype !== "Link") continue;
-              if (!Array.isArray(a.rect) || a.rect.length !== 4) continue;
-
-              const rect = cssViewport.convertToViewportRectangle(a.rect);
-              const left = Math.min(rect[0], rect[2]);
-              const top = Math.min(rect[1], rect[3]);
-              const width = Math.abs(rect[0] - rect[2]);
-              const height = Math.abs(rect[1] - rect[3]);
-
-              // Ignore tiny/invalid rectangles
-              if (!isFinite(left) || !isFinite(top) || !isFinite(width) || !isFinite(height)) continue;
-              if (width < 1 || height < 1) continue;
-
-              const linkEl = document.createElement("a");
-              linkEl.style.position = "absolute";
-              linkEl.style.left = `${left}px`;
-              linkEl.style.top = `${top}px`;
-              linkEl.style.width = `${width}px`;
-              linkEl.style.height = `${height}px`;
-              linkEl.style.pointerEvents = "auto";
-              linkEl.style.background = "transparent";
-              linkEl.style.cursor = "pointer";
-              linkEl.style.textDecoration = "none";
-
-              // External URL (most common)
-              const href = (a.url ?? a.unsafeUrl ?? "").toString().trim();
-              if (href) {
-                linkEl.href = href;
-                linkEl.target = "_blank";
-                linkEl.rel = "noopener noreferrer";
-                linkEl.title = href;
-              } else if (a.dest) {
-                // Internal "Go To" destination inside the PDF
-                linkEl.href = "#";
-                linkEl.title = "Go to destination";
-                linkEl.addEventListener("click", async (ev) => {
-                  ev.preventDefault();
-                  ev.stopPropagation();
-                  const targetPage = await resolveDestToPageNum(a.dest);
-                  if (targetPage) scrollToPage(targetPage);
-                });
-              } else {
-                // Some PDFs store actions differently; if no url/dest, ignore.
-                continue;
-              }
-
-              overlay.appendChild(linkEl);
-            }
-          } catch {
-            // If annotations fail, keep rendering pages (preview still works).
-          }
-        }
-
-        if (pdf.numPages > pagesToRender) {
-          const note = document.createElement("div");
-          note.style.padding = "12px 16px 18px";
-          note.style.color = "#666";
-          note.style.fontWeight = "700";
-          note.textContent = `Preview truncated: showing ${pagesToRender} of ${pdf.numPages} pages.`;
-          container.appendChild(note);
-        }
-      } catch (e: any) {
-        setErr(e?.message ?? "Failed to render PDF");
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [url, maxPages, pdfjs, vp.w, vp.h]);
-
-  return (
-    <div
-      ref={scrollRef}
-      style={{
-        height: "100%",
-        overflow: "auto",
-        background: "#f6f6f6",
-        padding: 16,
-        boxSizing: "border-box",
-      }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {err ? (
-        <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>PDF preview failed: {err}</div>
-      ) : (
-        <div ref={containerRef} />
-      )}
-    </div>
-  );
 }
 
 type SetupCheckResult =
@@ -1741,16 +1310,7 @@ export default function Home() {
     }
   }
 
-  // ESC closes preview
-  useEffect(() => {
-    if (!previewOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closePreview();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [previewOpen]);
+  // ESC is now handled inside <FilePreviewModal>.
 
   // ---------------------------
   // Sharing (folder + file)
@@ -2219,25 +1779,10 @@ export default function Home() {
     setEditMoveFolderId("");
   }
 
-  // Office viewer URL (iframe)
-  const officeEmbedUrl = useMemo(() => {
-    if (!previewSignedUrl) return "";
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewSignedUrl)}`;
-  }, [previewSignedUrl]);
-
   const isHomeDir = !!rootFolder?.id && !!currentFolderId && currentFolderId === rootFolder.id;
   const showUploadInThisFolder = canUploadFiles && !isHomeDir;
 
-  const csvRenderMeta = useMemo(() => {
-    const rows = previewCsvRows ?? [];
-    const rowCount = rows.length;
-    let maxCols = 0;
-    for (const r of rows) maxCols = Math.max(maxCols, r.length);
-    const colsToShow = Math.min(maxCols, 40);
-    const rowsToShow = Math.min(rowCount, 200);
-    return { rowCount, maxCols, colsToShow, rowsToShow };
-  }, [previewCsvRows]);
-
+  // officeEmbedUrl, csvRenderMeta, and previewTitle are now computed inside <FilePreviewModal>.
   const previewTitle = useMemo(() => {
     if (!previewFile) return "";
     if (previewMode === "link") return linkDisplayNameFromRow(previewFile);
@@ -2913,228 +2458,22 @@ export default function Home() {
             </div>
           ) : null}
 
-          {/* PREVIEW MODAL (FULLSCREEN) */}
-          {previewOpen && previewFile ? (
-            <div
-              role="dialog"
-              aria-modal="true"
-              style={{
-                position: "fixed",
-                inset: 0,
-                background: "rgba(0,0,0,0.55)",
-                zIndex: 120,
-                display: "flex",
-                flexDirection: "column",
-              }}
-              onMouseDown={(e) => {
-                if (e.currentTarget === e.target) closePreview();
-              }}
-            >
-              <div
-                style={{
-                  background: "white",
-                  height: "100%",
-                  width: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                }}
-              >
-                <div
-                  className="row-between"
-                  style={{
-                    padding: 12,
-                    borderBottom: "1px solid var(--border)",
-                    gap: 10,
-                  }}
-                >
-                  <div className="stack" style={{ gap: 2 }}>
-                    <div style={{ fontWeight: 900 }}>{previewTitle}</div>
-                    <div className="subtle">
-                      {previewMode === "office"
-                        ? "Office preview"
-                        : previewMode === "pdf"
-                        ? "PDF preview"
-                        : previewMode === "image"
-                        ? "Image preview"
-                        : previewMode === "csv"
-                        ? "CSV preview"
-                        : previewMode === "text"
-                        ? "Text preview"
-                        : previewMode === "video"
-                        ? "Video preview"
-                        : previewMode === "audio"
-                        ? "Audio preview"
-                        : previewMode === "link"
-                        ? "Link"
-                        : "Preview"}
-                    </div>
-                  </div>
-
-                  <button className="btn" onClick={closePreview} title="Close (Esc)">
-                    ✕
-                  </button>
-                </div>
-
-                <div style={{ flex: 1, minHeight: 0, background: "#111" }}>
-                  {previewLoading ? (
-                    <div style={{ padding: 14, color: "white" }}>Loading preview…</div>
-                  ) : previewMode === "link" ? (
-                    <div style={{ height: "100%", background: "white", padding: 16 }}>
-                      <div style={{ fontWeight: 900, marginBottom: 8 }}>🔗 Link</div>
-                      <div className="subtle" style={{ marginBottom: 12, wordBreak: "break-word" }}>
-                        {previewSignedUrl || "(missing URL)"}
-                      </div>
-                      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                        <button className="btn btn-primary" onClick={() => openExternalLink(previewSignedUrl)} disabled={!previewSignedUrl}>
-                          Open link ↗️
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() => {
-                            if (!previewSignedUrl) return;
-                            navigator.clipboard?.writeText(previewSignedUrl).then(
-                              () => setStatus("✅ Link copied."),
-                              () => setStatus("Copy failed.")
-                            );
-                          }}
-                          disabled={!previewSignedUrl}
-                        >
-                          Copy
-                        </button>
-                      </div>
-                    </div>
-                  ) : previewMode === "office" ? (
-                    previewSignedUrl ? (
-                      <iframe src={officeEmbedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} allowFullScreen />
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>No preview URL.</div>
-                    )
-                  ) : previewMode === "pdf" ? (
-                    previewSignedUrl ? (
-                      <div style={{ width: "100%", height: "100%", background: "white" }}>
-                        <PdfCanvasPreview url={previewSignedUrl} />
-                      </div>
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>PDF preview unavailable.</div>
-                    )
-                  ) : previewMode === "image" ? (
-                    previewSignedUrl ? (
-                      <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
-                        <img
-                          src={previewSignedUrl}
-                          alt={previewFile.name}
-                          style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", background: "white" }}
-                        />
-                      </div>
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>Image preview unavailable.</div>
-                    )
-                  ) : previewMode === "csv" ? (
-                    <div style={{ height: "100%", background: "white", display: "flex", flexDirection: "column" }}>
-                      <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
-                        {previewCsvError ? (
-                          <div className="subtle" style={{ color: "#b00020", fontWeight: 700 }}>
-                            CSV preview failed: {previewCsvError}
-                          </div>
-                        ) : previewCsvRows.length === 0 ? (
-                          <div className="subtle">(No CSV data)</div>
-                        ) : (
-                          <div className="subtle">
-                            Showing up to {csvRenderMeta.rowsToShow} rows and {csvRenderMeta.colsToShow} columns
-                            {csvRenderMeta.rowCount > csvRenderMeta.rowsToShow || csvRenderMeta.maxCols > csvRenderMeta.colsToShow ? " (truncated)" : ""}.
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-                        {!previewCsvError && previewCsvRows.length > 0 ? (
-                          <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
-                            <thead>
-                              <tr>
-                                {previewCsvRows[0].slice(0, csvRenderMeta.colsToShow).map((h, idx) => (
-                                  <th key={idx} style={{ position: "sticky", top: 0, background: "white", zIndex: 1 }}>
-                                    <div style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                      {h || <span className="subtle">(empty)</span>}
-                                    </div>
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {previewCsvRows.slice(1, csvRenderMeta.rowsToShow).map((r, ridx) => (
-                                <tr key={ridx}>
-                                  {r.slice(0, csvRenderMeta.colsToShow).map((cell, cidx) => (
-                                    <td key={cidx}>
-                                      <div
-                                        title={cell}
-                                        style={{
-                                          maxWidth: 260,
-                                          overflow: "hidden",
-                                          textOverflow: "ellipsis",
-                                          whiteSpace: "nowrap",
-                                        }}
-                                      >
-                                        {cell}
-                                      </div>
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : previewMode === "text" ? (
-                    previewSignedUrl ? (
-                      <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>Text preview unavailable.</div>
-                    )
-                  ) : previewMode === "video" ? (
-                    previewSignedUrl ? (
-                      <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
-                        <video
-                          controls
-                          controlsList="nodownload noplaybackrate noremoteplayback"
-                          disablePictureInPicture
-                          disableRemotePlayback
-                          onContextMenu={(e) => e.preventDefault()}
-                          src={previewSignedUrl}
-                          style={{ width: "min(1100px, 100%)", height: "min(700px, 100%)", background: "black" }}
-                        />
-                      </div>
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>Video preview unavailable.</div>
-                    )
-                  ) : previewMode === "audio" ? (
-                    previewSignedUrl ? (
-                      <div style={{ padding: 18, background: "white" }}>
-                        <audio controls src={previewSignedUrl} style={{ width: "100%" }} />
-                      </div>
-                    ) : (
-                      <div style={{ padding: 14, color: "white" }}>Audio preview unavailable.</div>
-                    )
-                  ) : (
-                    <div style={{ padding: 14, color: "white" }}>
-                      No in-app preview for this file type.
-                      <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                        {canDownloadSpecificFile(previewFile) ? "You can download it to view." : "Ask an admin if you need this file."}
-                      </div>
-
-                      {canDownloadSpecificFile(previewFile) ? (
-                        <div style={{ marginTop: 10 }}>
-                          <button className="btn btn-primary" onClick={() => handleDownload(previewFile.id)}>
-                            Download
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : null}
+          {/* PREVIEW MODAL */}
+          <FilePreviewModal
+            open={previewOpen && !!previewFile}
+            onClose={closePreview}
+            fileName={previewTitle}
+            mode={previewMode}
+            signedUrl={previewSignedUrl}
+            loading={previewLoading}
+            csvRows={previewCsvRows}
+            csvError={previewCsvError}
+            variant="fullscreen"
+            canDownload={!!previewFile && canDownloadSpecificFile(previewFile)}
+            onDownload={previewFile ? () => handleDownload(previewFile.id) : undefined}
+            onLinkCopied={() => setStatus("✅ Link copied.")}
+            onLinkCopyFailed={() => setStatus("Copy failed.")}
+          />
 
           {/* SHARE MODAL */}
           {shareModalOpen && shareTarget ? (

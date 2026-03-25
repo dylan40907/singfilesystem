@@ -97,6 +97,7 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/employees" || pathname.startsWith("/admin/hr/employees/")) return "employees";
     if (pathname === "/admin/hr/employee-meetings" || pathname.startsWith("/admin/hr/employee-meetings/"))
       return "employee-meetings";
+    if (pathname === "/admin/hr/schedule" || pathname.startsWith("/admin/hr/schedule/")) return "schedule";
     if (pathname === "/admin/hr/org-chart" || pathname.startsWith("/admin/hr/org-chart/")) return "org-chart";
     return "employees";
   }, [pathname]);
@@ -158,6 +159,7 @@ export default function HrNavbar() {
                       label="Employee Meetings"
                       active={activeTab === "employee-meetings"}
                     />
+                    <NavLink href="/admin/hr/schedule" label="Schedule" active={activeTab === "schedule"} />
                     <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
                   </>
                 ) : (

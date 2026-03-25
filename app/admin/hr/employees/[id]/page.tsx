@@ -6,6 +6,18 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import "@fortune-sheet/react/dist/index.css";
+import {
+  PreviewMode,
+  extOf,
+  isOfficeExt,
+  isPdfExt,
+  isImageExt,
+  isTextExt,
+  isVideoExt,
+  isAudioExt,
+  parseCsv,
+} from "@/lib/fileUtils";
+import { FilePreviewModal } from "@/components/FilePreviewModal";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
@@ -246,8 +258,6 @@ type HrEmployeeDocument = {
   created_at: string;
 };
 
-type PreviewMode = "pdf" | "image" | "text" | "csv" | "office" | "video" | "audio" | "unknown";
-
 type EmployeeLite = {
   id: string;
   legal_first_name: string;
@@ -262,303 +272,7 @@ function formatEmployeeName(e: EmployeeLite) {
   return `${e.legal_first_name} ${e.legal_last_name}`.trim();
 }
 
-function extOf(name: string) {
-  const i = name.lastIndexOf(".");
-  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
-}
-function isOfficeExt(ext: string) {
-  return ext === "docx" || ext === "pptx" || ext === "xlsx";
-}
-function isPdfExt(ext: string) {
-  return ext === "pdf";
-}
-function isImageExt(ext: string) {
-  return ext === "png" || ext === "jpg" || ext === "jpeg" || ext === "gif" || ext === "webp" || ext === "svg";
-}
-function isTextExt(ext: string) {
-  return ext === "txt" || ext === "md" || ext === "csv" || ext === "json" || ext === "log";
-}
-function isVideoExt(ext: string) {
-  return ext === "mp4" || ext === "mov" || ext === "webm" || ext === "m4v" || ext === "avi" || ext === "mkv" || ext === "mpeg" || ext === "mpg";
-}
-function isAudioExt(ext: string) {
-  return ext === "mp3" || ext === "wav" || ext === "m4a" || ext === "aac" || ext === "ogg" || ext === "flac";
-}
-
-function parseCsv(text: string) {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = "";
-  let i = 0;
-  let inQuotes = false;
-
-  while (i < text.length) {
-    const c = text[i];
-
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i += 2;
-          continue;
-        }
-        inQuotes = false;
-        i += 1;
-        continue;
-      }
-      field += c;
-      i += 1;
-      continue;
-    }
-
-    if (c === '"') {
-      inQuotes = true;
-      i += 1;
-      continue;
-    }
-
-    if (c === ",") {
-      row.push(field);
-      field = "";
-      i += 1;
-      continue;
-    }
-
-    if (c === "\n") {
-      row.push(field);
-      field = "";
-      rows.push(row);
-      row = [];
-      i += 1;
-      continue;
-    }
-
-    if (c === "\r") {
-      i += 1;
-      if (text[i] === "\n") {
-        row.push(field);
-        field = "";
-        rows.push(row);
-        row = [];
-        i += 1;
-      }
-      continue;
-    }
-
-    field += c;
-    i += 1;
-  }
-
-  row.push(field);
-  rows.push(row);
-
-  const last = rows[rows.length - 1];
-  if (text.endsWith("\n") && last.length === 1 && last[0] === "") rows.pop();
-
-  return rows;
-}
-
-/**
- * PDF canvas preview.
- */
-function PdfCanvasPreview({ url, maxPages = 50 }: { url: string; maxPages?: number }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  const [err, setErr] = useState<string>("");
-  const [pdfjs, setPdfjs] = useState<any>(null);
-  const [vp, setVp] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    const update = () => {
-      const w = Math.floor(el.clientWidth);
-      const h = Math.floor(el.clientHeight);
-      setVp((cur) => (cur.w === w && cur.h === h ? cur : { w, h }));
-    };
-
-    update();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => update());
-      ro.observe(el);
-      return () => ro.disconnect();
-    }
-
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        let mod: any = null;
-
-        try {
-          // @ts-ignore
-          mod = await import("pdfjs-dist/build/pdf");
-        } catch {}
-
-        if (!mod) {
-          try {
-            // @ts-ignore
-            mod = await import("pdfjs-dist/build/pdf.mjs");
-          } catch {}
-        }
-
-        if (!mod) {
-          try {
-            // @ts-ignore
-            mod = await import("pdfjs-dist/legacy/build/pdf");
-          } catch {}
-        }
-
-        if (!mod) throw new Error("PDF.js failed to load (pdfjs-dist).");
-
-        try {
-          mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
-        } catch {
-          try {
-            mod.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.min.mjs", import.meta.url).toString();
-          } catch {}
-        }
-
-        if (!cancelled) setPdfjs(mod);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message ?? "Failed to load PDF renderer");
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      if (!pdfjs) return;
-      if (!vp.w || !vp.h) return;
-
-      setErr("");
-
-      const container = containerRef.current;
-      if (!container) return;
-
-      container.innerHTML = "";
-
-      try {
-        const loadingTask = pdfjs.getDocument({ url });
-        const pdf = await loadingTask.promise;
-
-        const pagesToRender = Math.min(pdf.numPages, maxPages);
-
-        const OUTER_PAD = 16;
-        const INNER_PAD = 12;
-        const availW = Math.max(1, vp.w - OUTER_PAD * 2 - INNER_PAD * 2);
-        const availH = Math.max(1, vp.h - OUTER_PAD * 2 - INNER_PAD * 2);
-
-        const rawDpr = Math.max(1, (typeof window !== "undefined" ? window.devicePixelRatio : 1) || 1);
-        const DPR_CAP = 3;
-        const QUALITY_BOOST = 1.25;
-        const dpr = Math.min(rawDpr, DPR_CAP);
-
-        for (let pageNum = 1; pageNum <= pagesToRender; pageNum++) {
-          if (cancelled) return;
-
-          const page = await pdf.getPage(pageNum);
-          const base = page.getViewport({ scale: 1 });
-
-          const fitScale = Math.min(availW / base.width, availH / base.height);
-
-          const cssViewport = page.getViewport({ scale: fitScale });
-          const renderViewport = page.getViewport({ scale: fitScale * dpr * QUALITY_BOOST });
-
-          const pageCard = document.createElement("div");
-          pageCard.style.display = "flex";
-          pageCard.style.alignItems = "center";
-          pageCard.style.justifyContent = "center";
-          pageCard.style.padding = `${INNER_PAD}px`;
-          pageCard.style.minHeight = `${vp.h - OUTER_PAD * 2}px`;
-          pageCard.style.boxSizing = "border-box";
-
-          const stage = document.createElement("div");
-          stage.style.position = "relative";
-          stage.style.width = `${Math.floor(cssViewport.width)}px`;
-          stage.style.height = `${Math.floor(cssViewport.height)}px`;
-          stage.style.borderRadius = "12px";
-          stage.style.boxShadow = "inset 0 0 0 1px rgba(0,0,0,0.10)";
-          stage.style.background = "white";
-          stage.style.overflow = "hidden";
-
-          const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d", { alpha: false });
-          if (!ctx) continue;
-
-          canvas.width = Math.max(1, Math.floor(renderViewport.width));
-          canvas.height = Math.max(1, Math.floor(renderViewport.height));
-          canvas.style.width = `${Math.floor(cssViewport.width)}px`;
-          canvas.style.height = `${Math.floor(cssViewport.height)}px`;
-          canvas.style.display = "block";
-          canvas.style.background = "white";
-
-          stage.appendChild(canvas);
-          pageCard.appendChild(stage);
-          container.appendChild(pageCard);
-
-          const renderTask = page.render({
-            canvas,
-            canvasContext: ctx,
-            viewport: renderViewport,
-          } as any);
-
-          await renderTask.promise;
-        }
-
-        if (pdf.numPages > pagesToRender) {
-          const note = document.createElement("div");
-          note.style.padding = "12px 16px 18px";
-          note.style.color = "#666";
-          note.style.fontWeight = "700";
-          note.textContent = `Preview truncated: showing ${pagesToRender} of ${pdf.numPages} pages.`;
-          container.appendChild(note);
-        }
-      } catch (e: any) {
-        setErr(e?.message ?? "Failed to render PDF");
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [url, maxPages, pdfjs, vp.w, vp.h]);
-
-  return (
-    <div
-      ref={scrollRef}
-      style={{
-        height: "100%",
-        overflow: "auto",
-        background: "#f6f6f6",
-        padding: 16,
-        boxSizing: "border-box",
-      }}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {err ? (
-        <div style={{ padding: 14, background: "white", color: "#b00020", fontWeight: 800 }}>PDF preview failed: {err}</div>
-      ) : (
-        <div ref={containerRef} />
-      )}
-    </div>
-  );
-}
+// extOf, isXxxExt, parseCsv, PdfCanvasPreview → now in lib/fileUtils and components/FilePreviewModal.
 
 function IconButton({
   title,
@@ -3532,21 +3246,6 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const [empPreviewCsvRows, setEmpPreviewCsvRows] = useState<string[][]>([]);
   const [empPreviewCsvError, setEmpPreviewCsvError] = useState<string>("");
 
-  const empOfficeEmbedUrl = useMemo(() => {
-    if (!empPreviewSignedUrl) return "";
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(empPreviewSignedUrl)}`;
-  }, [empPreviewSignedUrl]);
-
-  const empCsvRenderMeta = useMemo(() => {
-    const rows = empPreviewCsvRows ?? [];
-    const rowCount = rows.length;
-    let maxCols = 0;
-    for (const r of rows) maxCols = Math.max(maxCols, r.length);
-    const colsToShow = Math.min(maxCols, 40);
-    const rowsToShow = Math.min(rowCount, 200);
-    return { rowCount, maxCols, colsToShow, rowsToShow };
-  }, [empPreviewCsvRows]);
-
   const loadEmployeeDocuments = useCallback(async (empId: string) => {
     if (!empId) {
       setEmployeeDocs([]);
@@ -3769,16 +3468,6 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
     }
   }
 
-  // ESC closes employee preview
-  useEffect(() => {
-    if (!empPreviewOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeEmpPreview();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [empPreviewOpen]);
-
   // Lazy load employee docs when the user opens Documents tab
 useEffect(() => {
   if (!employeeId) return;
@@ -3802,21 +3491,6 @@ useEffect(() => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewCsvRows, setPreviewCsvRows] = useState<string[][]>([]);
   const [previewCsvError, setPreviewCsvError] = useState<string>("");
-
-  const officeEmbedUrl = useMemo(() => {
-    if (!previewSignedUrl) return "";
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(previewSignedUrl)}`;
-  }, [previewSignedUrl]);
-
-  const csvRenderMeta = useMemo(() => {
-    const rows = previewCsvRows ?? [];
-    const rowCount = rows.length;
-    let maxCols = 0;
-    for (const r of rows) maxCols = Math.max(maxCols, r.length);
-    const colsToShow = Math.min(maxCols, 40);
-    const rowsToShow = Math.min(rowCount, 200);
-    return { rowCount, maxCols, colsToShow, rowsToShow };
-  }, [previewCsvRows]);
 
   const meetingTypesSorted = useMemo(() => {
     return [...(meetingTypes ?? [])].sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -4335,16 +4009,6 @@ async function addMeetingType() {
       setMeetingTypesError(e?.message ?? "Failed to delete meeting type.");
     }
   }
-
-  // ESC closes preview
-  useEffect(() => {
-    if (!previewOpen) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closePreview();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewOpen]);
 
   // ESC closes meeting type modal
   useEffect(() => {
@@ -6868,201 +6532,21 @@ async function resetTimeOffHoursToDefault() {
                   ) : null}
 
                   {/* PREVIEW MODAL */}
-                  {previewOpen && previewDoc ? (
-                    <div
-                      role="dialog"
-                      aria-modal="true"
-                      style={{
-                        position: "fixed",
-                        inset: 0,
-                        background: "rgba(0,0,0,0.55)",
-                        zIndex: 120,
-                        display: "flex",
-                        flexDirection: "column",
-                      }}
-                      onMouseDown={(e) => {
-                        if (e.currentTarget === e.target) closePreview();
-                      }}
-                    >
-                      <div
-                        style={{
-                          background: "white",
-                          height: "100%",
-                          width: "100%",
-                          display: "flex",
-                          flexDirection: "column",
-                        }}
-                      >
-                        <div
-                          className="row-between"
-                          style={{
-                            padding: 12,
-                            borderBottom: "1px solid #e5e7eb",
-                            gap: 10,
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: 900 }}>{previewDoc.name}</div>
-                            <div className="subtle">
-                              {previewMode === "office"
-                                ? "Office preview"
-                                : previewMode === "pdf"
-                                ? "PDF preview"
-                                : previewMode === "image"
-                                ? "Image preview"
-                                : previewMode === "csv"
-                                ? "CSV preview"
-                                : previewMode === "text"
-                                ? "Text preview"
-                                : previewMode === "video"
-                                ? "Video preview"
-                                : previewMode === "audio"
-                                ? "Audio preview"
-                                : "Preview"}
-                            </div>
-                          </div>
-
-                          <button type="button" className="btn" onClick={closePreview} title="Close (Esc)">
-                            ✕
-                          </button>
-                        </div>
-
-                        <div style={{ flex: 1, minHeight: 0, background: "#111" }}>
-                          {previewLoading ? (
-                            <div style={{ padding: 14, color: "white" }}>Loading preview…</div>
-                          ) : previewMode === "office" ? (
-                            previewSignedUrl ? (
-                              <iframe src={officeEmbedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} allowFullScreen />
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>No preview URL.</div>
-                            )
-                          ) : previewMode === "pdf" ? (
-                            previewSignedUrl ? (
-                              <div style={{ width: "100%", height: "100%", background: "white" }}>
-                                <PdfCanvasPreview url={previewSignedUrl} />
-                              </div>
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>PDF preview unavailable.</div>
-                            )
-                          ) : previewMode === "image" ? (
-                            previewSignedUrl ? (
-                              <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
-                                <img
-                                  src={previewSignedUrl}
-                                  alt={previewDoc.name}
-                                  style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", background: "white" }}
-                                />
-                              </div>
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>Image preview unavailable.</div>
-                            )
-                          ) : previewMode === "csv" ? (
-                            <div style={{ height: "100%", background: "white", display: "flex", flexDirection: "column" }}>
-                              <div style={{ padding: 12, borderBottom: "1px solid #e5e7eb" }}>
-                                {previewCsvError ? (
-                                  <div className="subtle" style={{ color: "#b00020", fontWeight: 700 }}>
-                                    CSV preview failed: {previewCsvError}
-                                  </div>
-                                ) : previewCsvRows.length === 0 ? (
-                                  <div className="subtle">(No CSV data)</div>
-                                ) : (
-                                  <div className="subtle">
-                                    Showing up to {csvRenderMeta.rowsToShow} rows and {csvRenderMeta.colsToShow} columns
-                                    {csvRenderMeta.rowCount > csvRenderMeta.rowsToShow || csvRenderMeta.maxCols > csvRenderMeta.colsToShow ? " (truncated)" : ""}.
-                                  </div>
-                                )}
-                              </div>
-
-                              <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-                                {!previewCsvError && previewCsvRows.length > 0 ? (
-                                  <table className="table" style={{ width: "100%", borderCollapse: "collapse" }}>
-                                    <thead>
-                                      <tr>
-                                        {previewCsvRows[0].slice(0, csvRenderMeta.colsToShow).map((h, idx) => (
-                                          <th key={idx} style={{ position: "sticky", top: 0, background: "white", zIndex: 1, textAlign: "left", padding: 8, borderBottom: "1px solid #e5e7eb" }}>
-                                            <div style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                              {h || <span className="subtle">(empty)</span>}
-                                            </div>
-                                          </th>
-                                        ))}
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {previewCsvRows.slice(1, csvRenderMeta.rowsToShow).map((r, ridx) => (
-                                        <tr key={ridx}>
-                                          {r.slice(0, csvRenderMeta.colsToShow).map((cell, cidx) => (
-                                            <td key={cidx} style={{ padding: 8, borderBottom: "1px solid #f3f4f6" }}>
-                                              <div title={cell} style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                                {cell}
-                                              </div>
-                                            </td>
-                                          ))}
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                ) : null}
-                              </div>
-                            </div>
-                          ) : previewMode === "text" ? (
-                            previewSignedUrl ? (
-                              <iframe src={previewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>Text preview unavailable.</div>
-                            )
-                          ) : previewMode === "video" ? (
-                            previewSignedUrl ? (
-                              <div style={{ height: "100%", width: "100%", display: "flex", justifyContent: "center", alignItems: "center" }}>
-                                <video
-                                  controls
-                                  controlsList="nodownload noplaybackrate noremoteplayback"
-                                  disablePictureInPicture
-                                  disableRemotePlayback
-                                  onContextMenu={(e) => e.preventDefault()}
-                                  src={previewSignedUrl}
-                                  style={{ width: "min(1100px, 100%)", height: "min(700px, 100%)", background: "black" }}
-                                />
-                              </div>
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>Video preview unavailable.</div>
-                            )
-                          ) : previewMode === "audio" ? (
-                            previewSignedUrl ? (
-                              <div style={{ padding: 18, background: "white" }}>
-                                <audio controls src={previewSignedUrl} style={{ width: "100%" }} />
-                              </div>
-                            ) : (
-                              <div style={{ padding: 14, color: "white" }}>Audio preview unavailable.</div>
-                            )
-                          ) : (
-                            <div style={{ padding: 14, color: "white" }}>
-                              No in-app preview for this file type.
-                              <div className="subtle" style={{ marginTop: 10, color: "rgba(255,255,255,0.8)" }}>
-                                Use Download to view it locally.
-                              </div>
-
-                              <div style={{ marginTop: 10 }}>
-                                <button
-                                  type="button"
-                                  className="btn btn-primary"
-                                  onClick={async () => {
-                                    try {
-                                      const url = await getSignedMeetingDownloadUrl(previewDoc.id, "attachment");
-                                      window.location.href = url;
-                                    } catch (e: any) {
-                                      setMeetingStatus("Download error: " + (e?.message ?? "unknown"));
-                                    }
-                                  }}
-                                >
-                                  Download
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
+                  <FilePreviewModal
+                    open={previewOpen && !!previewDoc}
+                    onClose={closePreview}
+                    fileName={previewDoc?.name ?? ""}
+                    mode={previewMode}
+                    signedUrl={previewSignedUrl}
+                    loading={previewLoading}
+                    csvRows={previewCsvRows}
+                    csvError={previewCsvError}
+                    variant="fullscreen"
+                    onDownload={previewDoc ? async () => {
+                      const url = await getSignedMeetingDownloadUrl(previewDoc.id, "attachment");
+                      window.open(url, "_blank", "noopener,noreferrer");
+                    } : undefined}
+                  />
                 </div>
               )}
               {activeTab === "documents" && (
@@ -7179,148 +6663,22 @@ async function resetTimeOffHoursToDefault() {
               {/* =========================
     EMPLOYEE DOCUMENT PREVIEW MODAL
 ========================= */}
-              {empPreviewOpen ? (
-                <div
-                  role="dialog"
-                  aria-modal="true"
-                  style={{
-                    position: "fixed",
-                    inset: 0,
-                    background: "rgba(0,0,0,0.55)",
-                    zIndex: 300,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 14,
-                  }}
-                  onMouseDown={(e) => {
-                    // click outside closes
-                    if (e.target === e.currentTarget) closeEmpPreview();
-                  }}
-                >
-                  <div
-                    className="card"
-                    style={{
-                      width: "min(1180px, 100%)",
-                      height: "min(860px, 90vh)",
-                      padding: 14,
-                      borderRadius: 16,
-                      display: "grid",
-                      gridTemplateRows: "auto 1fr",
-                      overflow: "hidden",
-                    }}
-                  >
-                    <div className="row-between" style={{ gap: 10, alignItems: "center" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontWeight: 950, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {empPreviewDoc?.name ?? "Document Preview"}
-                        </div>
-                        <div className="subtle" style={{ marginTop: 2, fontSize: 12 }}>
-                          {empPreviewMode.toUpperCase()} preview
-                        </div>
-                      </div>
-
-                      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={async () => {
-                            if (!empPreviewDoc) return;
-                            try {
-                              const url = await getSignedEmployeeDocDownloadUrl(empPreviewDoc.id, "attachment");
-                              window.open(url, "_blank", "noopener,noreferrer");
-                            } catch (e: any) {
-                              setEmployeeDocsStatus("Download error: " + (e?.message ?? "unknown"));
-                            }
-                          }}
-                          disabled={!empPreviewDoc}
-                          style={{ padding: "6px 10px" }}
-                        >
-                          Download
-                        </button>
-
-                        <button type="button" className="btn" onClick={closeEmpPreview} style={{ padding: "6px 10px" }}>
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10, borderRadius: 14, overflow: "hidden", border: "1px solid #e5e7eb", background: "#f6f6f6" }}>
-                      {empPreviewLoading ? (
-                        <div style={{ padding: 14, fontWeight: 800 }}>Loading preview…</div>
-                      ) : !empPreviewSignedUrl ? (
-                        <div style={{ padding: 14, fontWeight: 800, color: "#b00020" }}>Missing signed URL.</div>
-                      ) : empPreviewMode === "office" ? (
-                        <iframe
-                          title="Office preview"
-                          src={empOfficeEmbedUrl}
-                          style={{ width: "100%", height: "100%", border: 0, background: "white" }}
-                          allow="clipboard-read; clipboard-write"
-                        />
-                      ) : empPreviewMode === "pdf" ? (
-                        <div style={{ width: "100%", height: "100%" }}>
-                          <PdfCanvasPreview url={empPreviewSignedUrl} />
-                        </div>
-                      ) : empPreviewMode === "image" ? (
-                        <div style={{ width: "100%", height: "100%", overflow: "auto", padding: 12 }}>
-                          <img
-                            src={empPreviewSignedUrl}
-                            alt={empPreviewDoc?.name ?? "image"}
-                            style={{ maxWidth: "100%", height: "auto", display: "block", borderRadius: 12, background: "white" }}
-                          />
-                        </div>
-                      ) : empPreviewMode === "csv" ? (
-                        <div style={{ width: "100%", height: "100%", overflow: "auto", padding: 12 }}>
-                          {empPreviewCsvError ? (
-                            <div style={{ padding: 12, background: "white", color: "#b00020", fontWeight: 800 }}>
-                              CSV preview failed: {empPreviewCsvError}
-                            </div>
-                          ) : (
-                            <div style={{ background: "white", borderRadius: 12, overflow: "hidden", boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.08)" }}>
-                              <div style={{ padding: 10, borderBottom: "1px solid #eee", fontWeight: 900 }}>
-                                Rows: {empCsvRenderMeta.rowCount.toLocaleString()} • Cols: {empCsvRenderMeta.maxCols.toLocaleString()} (showing up to{" "}
-                                {empCsvRenderMeta.colsToShow}×{empCsvRenderMeta.rowsToShow})
-                              </div>
-                              <div style={{ overflow: "auto" }}>
-                                <table style={{ borderCollapse: "collapse", width: "100%" }}>
-                                  <tbody>
-                                    {(empPreviewCsvRows ?? []).slice(0, empCsvRenderMeta.rowsToShow).map((r, ri) => (
-                                      <tr key={ri}>
-                                        {Array.from({ length: empCsvRenderMeta.colsToShow }).map((_, ci) => (
-                                          <td
-                                            key={ci}
-                                            style={{
-                                              border: "1px solid #eee",
-                                              padding: "6px 8px",
-                                              fontSize: 12,
-                                              whiteSpace: "nowrap",
-                                            }}
-                                          >
-                                            {r?.[ci] ?? ""}
-                                          </td>
-                                        ))}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : empPreviewMode === "video" ? (
-                        <video src={empPreviewSignedUrl} controls style={{ width: "100%", height: "100%", background: "black" }} />
-                      ) : empPreviewMode === "audio" ? (
-                        <div style={{ padding: 14 }}>
-                          <audio src={empPreviewSignedUrl} controls style={{ width: "100%" }} />
-                        </div>
-                      ) : (
-                        // text + unknown fallback: iframe works fine for txt/md/json/log in most browsers
-                        <iframe title="Document preview" src={empPreviewSignedUrl} style={{ width: "100%", height: "100%", border: 0, background: "white" }} />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ) : null}
+              <FilePreviewModal
+                open={empPreviewOpen && !!empPreviewDoc}
+                onClose={closeEmpPreview}
+                fileName={empPreviewDoc?.name ?? ""}
+                mode={empPreviewMode}
+                signedUrl={empPreviewSignedUrl}
+                loading={empPreviewLoading}
+                csvRows={empPreviewCsvRows}
+                csvError={empPreviewCsvError}
+                variant="dialog"
+                zIndex={300}
+                onDownload={empPreviewDoc ? async () => {
+                  const url = await getSignedEmployeeDocDownloadUrl(empPreviewDoc.id, "attachment");
+                  window.open(url, "_blank", "noopener,noreferrer");
+                } : undefined}
+              />
               {/* =========================
                   MANAGE CAMPUSES MODAL
               ========================= */}
