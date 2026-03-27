@@ -29,6 +29,9 @@ interface ScheduleGridProps {
   onBlockMoveToColumn: (blockId: string, newRoomId: string, newColumnIndex: number, deltaSlots: number) => void;
   onRoomUpdate: (roomId: string, updates: { name?: string; capacity?: number }) => void;
   onRoomDelete: (roomId: string) => void;
+  paintMode?: boolean;
+  cellColors?: Record<string, string>; // "roomId:colIdx:timeSlot" -> color
+  onPaintCells?: (cellKeys: string[]) => void;
 }
 
 // Shared flag: when a block drag/resize ends, suppress the next cell click
@@ -46,7 +49,12 @@ export default function ScheduleGrid({
   onBlockMoveToColumn,
   onRoomUpdate,
   onRoomDelete,
+  paintMode,
+  cellColors = {},
+  onPaintCells,
 }: ScheduleGridProps) {
+  const paintingRef = useRef(false);
+  const paintedKeysRef = useRef<Set<string>>(new Set());
   const timeSlots = useMemo(() => generateTimeSlots(), []);
   const gridHeight = TOTAL_SLOTS * PX_PER_SLOT;
 
@@ -91,17 +99,32 @@ export default function ScheduleGrid({
     return m;
   }, [employees]);
 
-  // Time labels every 30 minutes, plus the final label at END_MINUTES
+  // Time labels every 5 minutes
   const timeLabels = useMemo(() => {
     const labels: string[] = [];
-    for (let m = START_MINUTES; m <= END_MINUTES; m += 30) {
+    for (let m = START_MINUTES; m <= END_MINUTES; m += SLOT_MINUTES) {
       labels.push(minutesToTime(m));
     }
     return labels;
   }, []);
 
-  // Grid lines every 30 minutes
-  const gridLines = timeLabels;
+  // Grid lines every 30 minutes (thicker visual separators)
+  const gridLines = useMemo(() => {
+    const lines: string[] = [];
+    for (let m = START_MINUTES; m <= END_MINUTES; m += 30) {
+      lines.push(minutesToTime(m));
+    }
+    return lines;
+  }, []);
+
+  // Grid lines every 5 minutes (lighter)
+  const fineGridLines = useMemo(() => {
+    const lines: string[] = [];
+    for (let m = START_MINUTES; m < END_MINUTES; m += SLOT_MINUTES) {
+      if (m % 30 !== 0) lines.push(minutesToTime(m));
+    }
+    return lines;
+  }, []);
 
   const COL_WIDTH = 120;
   const TIME_COL_WIDTH = 72;
@@ -128,8 +151,8 @@ export default function ScheduleGrid({
           {timeLabels.map((time) => {
             const mins = timeToMinutes(time);
             const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
-            // First label: align top edge to grid line; others: center on grid line
             const isFirst = mins === START_MINUTES;
+            const is30 = mins % 30 === 0;
             return (
               <div
                 key={time}
@@ -137,9 +160,9 @@ export default function ScheduleGrid({
                   position: "absolute",
                   top: isFirst ? top : top - 6,
                   right: 6,
-                  fontSize: 10,
-                  color: "#9ca3af",
-                  fontWeight: 600,
+                  fontSize: is30 ? 11 : 9,
+                  color: is30 ? "#6b7280" : "#c9c9c9",
+                  fontWeight: is30 ? 700 : 500,
                   lineHeight: "12px",
                   whiteSpace: "nowrap",
                 }}
@@ -200,9 +223,10 @@ export default function ScheduleGrid({
 
             {/* Grid area */}
             <div
-              style={{ position: "relative", height: gridHeight }}
+              style={{ position: "relative", height: gridHeight, cursor: paintMode ? "crosshair" : undefined }}
               onClick={(e) => {
                 if (readOnly) return;
+                if (paintMode) return; // handled by pointer events
                 // Suppress click if it was triggered by a drag ending
                 if (suppressNextCellClick) {
                   suppressNextCellClick = false;
@@ -214,8 +238,99 @@ export default function ScheduleGrid({
                 const mins = START_MINUTES + slotIndex * SLOT_MINUTES;
                 onCellClick(col.roomId, col.columnIndex, day, minutesToTime(mins));
               }}
+              onPointerDown={(e) => {
+                if (!paintMode || !onPaintCells) return;
+                e.preventDefault();
+                paintingRef.current = true;
+                paintedKeysRef.current = new Set();
+                const rect = e.currentTarget.getBoundingClientRect();
+                const y = e.clientY - rect.top;
+                const slotIndex = Math.floor(y / PX_PER_SLOT);
+                const mins = START_MINUTES + slotIndex * SLOT_MINUTES;
+                const key = `${col.roomId}:${col.columnIndex}:${minutesToTime(mins)}`;
+                paintedKeysRef.current.add(key);
+                (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (!paintMode || !paintingRef.current || !onPaintCells) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const y = e.clientY - rect.top;
+                const x = e.clientX;
+                // Find which column we're over
+                const gridContainer = document.querySelector("[data-schedule-grid]");
+                if (!gridContainer) return;
+                const colElements = gridContainer.querySelectorAll<HTMLElement>("[data-room-id]");
+                let targetRoomId = col.roomId;
+                let targetColIdx = col.columnIndex;
+                for (const colEl of colElements) {
+                  const r = colEl.getBoundingClientRect();
+                  if (x >= r.left && x < r.right) {
+                    targetRoomId = colEl.dataset.roomId!;
+                    targetColIdx = parseInt(colEl.dataset.columnIndex!, 10);
+                    break;
+                  }
+                }
+                const slotIndex = Math.floor(y / PX_PER_SLOT);
+                const mins = START_MINUTES + slotIndex * SLOT_MINUTES;
+                if (mins < START_MINUTES || mins >= END_MINUTES) return;
+                const key = `${targetRoomId}:${targetColIdx}:${minutesToTime(mins)}`;
+                if (!paintedKeysRef.current.has(key)) {
+                  paintedKeysRef.current.add(key);
+                }
+              }}
+              onPointerUp={() => {
+                if (!paintMode || !paintingRef.current || !onPaintCells) return;
+                paintingRef.current = false;
+                const keys = Array.from(paintedKeysRef.current);
+                paintedKeysRef.current = new Set();
+                if (keys.length > 0) onPaintCells(keys);
+              }}
             >
-              {/* 30-min grid lines */}
+              {/* Cell background colors */}
+              {timeSlots.map((time) => {
+                const key = `${col.roomId}:${col.columnIndex}:${time}`;
+                const color = cellColors[key];
+                if (!color) return null;
+                const mins = timeToMinutes(time);
+                const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
+                return (
+                  <div
+                    key={`bg-${time}`}
+                    style={{
+                      position: "absolute",
+                      top,
+                      left: 0,
+                      right: 0,
+                      height: PX_PER_SLOT,
+                      background: color,
+                      pointerEvents: "none",
+                      zIndex: 0,
+                    }}
+                  />
+                );
+              })}
+
+              {/* 5-min fine grid lines */}
+              {fineGridLines.map((time) => {
+                const mins = timeToMinutes(time);
+                const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
+                return (
+                  <div
+                    key={time}
+                    style={{
+                      position: "absolute",
+                      top,
+                      left: 0,
+                      right: 0,
+                      height: 1,
+                      background: "#f5f5f5",
+                      pointerEvents: "none",
+                      zIndex: 1,
+                    }}
+                  />
+                );
+              })}
+              {/* 30-min grid lines (bolder) */}
               {gridLines.map((time) => {
                 const mins = timeToMinutes(time);
                 const top = ((mins - START_MINUTES) / SLOT_MINUTES) * PX_PER_SLOT;
@@ -228,8 +343,9 @@ export default function ScheduleGrid({
                       left: 0,
                       right: 0,
                       height: 1,
-                      background: "#f3f4f6",
+                      background: "#e5e7eb",
                       pointerEvents: "none",
+                      zIndex: 1,
                     }}
                   />
                 );
@@ -249,7 +365,7 @@ export default function ScheduleGrid({
                     employee={block.employee_id ? empMap.get(block.employee_id) ?? null : null}
                     topPx={topPx}
                     heightPx={heightPx}
-                    readOnly={readOnly}
+                    readOnly={readOnly || paintMode}
                     onContextMenu={onBlockContextMenu}
                     onResizeEnd={(blockId, s, e) => {
                       suppressNextCellClick = true;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   Schedule,
@@ -71,16 +71,27 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     time: string;
   } | null>(null);
   const [labelText, setLabelText] = useState("");
+  const [labelEmployeeId, setLabelEmployeeId] = useState<string | null>(null);
+  const [labelEmployeeSearch, setLabelEmployeeSearch] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [roomEdit, setRoomEdit] = useState<RoomEditState>(null);
+
+  // Paint mode state
+  const [paintMode, setPaintMode] = useState(false);
+  const [paintColor, setPaintColor] = useState("#fde68a"); // default yellow
+  const [paintErase, setPaintErase] = useState(false);
+  // cellColors: Map of "roomId:colIdx:timeSlot" -> color hex, per day
+  const [cellColors, setCellColors] = useState<Record<number, Record<string, string>>>({});
+  const [colorUndoStack, setColorUndoStack] = useState<Record<number, Record<string, string>>[]>([]);
+  const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const readOnly = schedule?.status === "published";
 
   // Fetch all data
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [schedRes, roomsRes, blocksRes, empRes] = await Promise.all([
+    const [schedRes, roomsRes, blocksRes, empRes, colorsRes] = await Promise.all([
       supabase.from("schedules").select("*").eq("id", scheduleId).single(),
       supabase
         .from("schedule_rooms")
@@ -96,18 +107,78 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
         .eq("is_active", true)
         .order("legal_first_name"),
+      supabase
+        .from("schedule_cell_colors")
+        .select("day_of_week, colors")
+        .eq("schedule_id", scheduleId),
     ]);
 
     if (schedRes.data) setSchedule(schedRes.data);
     if (roomsRes.data) setRooms(roomsRes.data);
     if (blocksRes.data) setBlocks(blocksRes.data);
     if (empRes.data) setEmployees(empRes.data);
+    if (colorsRes.data) {
+      const cm: Record<number, Record<string, string>> = {};
+      for (const row of colorsRes.data) {
+        cm[row.day_of_week] = (row.colors as Record<string, string>) ?? {};
+      }
+      setCellColors(cm);
+    }
     setLoading(false);
   }, [scheduleId]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Save cell colors (debounced)
+  function saveCellColors(day: number, colors: Record<string, string>) {
+    if (colorSaveTimeout.current) clearTimeout(colorSaveTimeout.current);
+    colorSaveTimeout.current = setTimeout(async () => {
+      await supabase
+        .from("schedule_cell_colors")
+        .upsert(
+          {
+            schedule_id: scheduleId,
+            day_of_week: day,
+            colors,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "schedule_id,day_of_week" }
+        );
+    }, 300);
+  }
+
+  // Handle paint on cells
+  function handlePaintCells(cellKeys: string[]) {
+    if (!paintMode) return;
+    // Push current state to undo stack
+    setColorUndoStack((prev) => [...prev.slice(-20), JSON.parse(JSON.stringify(cellColors))]);
+
+    setCellColors((prev) => {
+      const dayColors = { ...(prev[activeDay] ?? {}) };
+      for (const key of cellKeys) {
+        if (paintErase) {
+          delete dayColors[key];
+        } else {
+          dayColors[key] = paintColor;
+        }
+      }
+      const next = { ...prev, [activeDay]: dayColors };
+      saveCellColors(activeDay, dayColors);
+      return next;
+    });
+  }
+
+  function handleColorUndo() {
+    if (colorUndoStack.length === 0) return;
+    const prevState = colorUndoStack[colorUndoStack.length - 1];
+    setColorUndoStack((s) => s.slice(0, -1));
+    setCellColors(prevState);
+    // Save the reverted state for active day
+    const dayColors = prevState[activeDay] ?? {};
+    saveCellColors(activeDay, dayColors);
+  }
 
   // Clear warning after 4 seconds
   useEffect(() => {
@@ -383,6 +454,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   function handleCellClick(roomId: string, columnIndex: number, day: number, time: string) {
     if (readOnly) return;
 
+    // If in paint mode, don't open picker (painting handled by ScheduleGrid)
+    if (paintMode) return;
+
     // If in duplicate mode, place block immediately
     if (duplicateMode) {
       const endMins = timeToMinutes(time) + duplicateMode.durationMinutes;
@@ -421,6 +495,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       time: picker.time,
     });
     setLabelText("");
+    setLabelEmployeeId(null);
+    setLabelEmployeeSearch("");
     setPicker(null);
   }
 
@@ -434,11 +510,13 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       labelInput.day,
       labelInput.time,
       endTime,
-      null,
+      labelEmployeeId,
       labelText.trim()
     );
     setLabelInput(null);
     setLabelText("");
+    setLabelEmployeeId(null);
+    setLabelEmployeeSearch("");
   }
 
   // --- Duplicate ---
@@ -723,6 +801,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             display: "flex",
             alignItems: "center",
             gap: 10,
+            flexWrap: "wrap",
           }}
         >
           <span style={{ fontWeight: 700, fontSize: 13 }}>Label:</span>
@@ -741,10 +820,84 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               borderRadius: 8,
               border: "1.5px solid #e5e7eb",
               fontSize: 13,
-              flex: 1,
-              maxWidth: 300,
+              width: 200,
             }}
           />
+          <div style={{ position: "relative" }}>
+            <input
+              type="text"
+              value={labelEmployeeId ? (employees.find((e) => e.id === labelEmployeeId) ? formatEmployeeName(employees.find((e) => e.id === labelEmployeeId)!) : "Selected") : labelEmployeeSearch}
+              onChange={(e) => {
+                setLabelEmployeeSearch(e.target.value);
+                setLabelEmployeeId(null);
+              }}
+              placeholder="Attach employee (optional)"
+              style={{
+                padding: "6px 10px",
+                borderRadius: 8,
+                border: "1.5px solid #e5e7eb",
+                fontSize: 13,
+                width: 200,
+              }}
+            />
+            {labelEmployeeSearch && !labelEmployeeId && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  width: 260,
+                  maxHeight: 180,
+                  overflowY: "auto",
+                  background: "white",
+                  border: "1.5px solid #e5e7eb",
+                  borderRadius: 8,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                  zIndex: 50,
+                }}
+              >
+                {employees
+                  .filter((e) => {
+                    const name = formatEmployeeName(e).toLowerCase();
+                    return name.includes(labelEmployeeSearch.toLowerCase());
+                  })
+                  .slice(0, 10)
+                  .map((emp) => (
+                    <button
+                      key={emp.id}
+                      onClick={() => {
+                        setLabelEmployeeId(emp.id);
+                        setLabelEmployeeSearch("");
+                      }}
+                      style={{
+                        display: "block",
+                        width: "100%",
+                        padding: "6px 10px",
+                        border: "none",
+                        background: "transparent",
+                        cursor: "pointer",
+                        textAlign: "left",
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "#f3f4f6")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      {formatEmployeeName(emp)}
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          {labelEmployeeId && (
+            <button
+              className="btn"
+              onClick={() => { setLabelEmployeeId(null); setLabelEmployeeSearch(""); }}
+              style={{ padding: "4px 8px", fontSize: 11 }}
+            >
+              ✕ Clear employee
+            </button>
+          )}
           <button className="btn btn-pink" onClick={handleLabelSubmit} style={{ padding: "6px 14px", fontSize: 13 }}>
             Add
           </button>
@@ -826,6 +979,92 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         </div>
       )}
 
+      {/* Paint mode toolbar */}
+      {!readOnly && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 8,
+            padding: "8px 12px",
+            background: paintMode ? "#fffbeb" : "#f9fafb",
+            borderRadius: 10,
+            border: paintMode ? "1.5px solid #fbbf24" : "1.5px solid #e5e7eb",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            className={paintMode ? "btn btn-pink" : "btn"}
+            onClick={() => {
+              setPaintMode(!paintMode);
+              setPaintErase(false);
+            }}
+            style={{ padding: "6px 14px", fontSize: 13 }}
+          >
+            {paintMode ? "🎨 Paint ON" : "🎨 Paint"}
+          </button>
+          {paintMode && (
+            <>
+              <input
+                type="color"
+                value={paintColor}
+                onChange={(e) => {
+                  setPaintColor(e.target.value);
+                  setPaintErase(false);
+                }}
+                style={{
+                  width: 32,
+                  height: 28,
+                  border: "1.5px solid #d1d5db",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  padding: 0,
+                }}
+                title="Pick color"
+              />
+              <div style={{ display: "flex", gap: 4 }}>
+                {["#fde68a", "#bbf7d0", "#bfdbfe", "#fecaca", "#e9d5ff", "#fed7aa"].map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => { setPaintColor(c); setPaintErase(false); }}
+                    style={{
+                      width: 24,
+                      height: 24,
+                      borderRadius: 6,
+                      background: c,
+                      border: paintColor === c && !paintErase ? "2px solid #111" : "1px solid #d1d5db",
+                      cursor: "pointer",
+                    }}
+                    title={c}
+                  />
+                ))}
+              </div>
+              <button
+                className="btn"
+                onClick={() => setPaintErase(!paintErase)}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  background: paintErase ? "#fef2f2" : undefined,
+                  borderColor: paintErase ? "#fca5a5" : undefined,
+                }}
+              >
+                {paintErase ? "🧹 Erasing" : "🧹 Erase"}
+              </button>
+              <button
+                className="btn"
+                onClick={handleColorUndo}
+                disabled={colorUndoStack.length === 0}
+                style={{ padding: "6px 12px", fontSize: 12 }}
+              >
+                ↩ Undo
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Day tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
         {DAY_NUMBERS.map((dayNum, idx) => (
@@ -871,6 +1110,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           onBlockMoveToColumn={handleBlockMoveToColumn}
           onRoomUpdate={handleRoomEditTrigger}
           onRoomDelete={deleteRoom}
+          paintMode={paintMode}
+          cellColors={cellColors[activeDay] ?? {}}
+          onPaintCells={handlePaintCells}
         />
 
         {/* Employee picker overlay */}

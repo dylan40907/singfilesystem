@@ -55,6 +55,9 @@ export default function AdminSupervisorsPage() {
   // Admin-only: delete supervisor state
   const [deleteLoading, setDeleteLoading] = useState(false);
 
+  // Admin-only: role change state
+  const [roleChangeLoading, setRoleChangeLoading] = useState(false);
+
   // Admin-only: reset/deactivate state
   const [adminActionLoading, setAdminActionLoading] = useState<{ reset: boolean; active: boolean }>({
     reset: false,
@@ -352,6 +355,70 @@ export default function AdminSupervisorsPage() {
     }
   }
 
+  // ADMIN: demote supervisor to teacher
+  async function demoteSelectedSupervisor() {
+    if (!selectedSupervisorId || !isAdmin) return;
+    const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+    const label = selected ? labelForUser(selected) : selectedSupervisorId;
+
+    const ok = window.confirm(
+      `Demote this supervisor to teacher?\n\n${label}\n\nTheir supervisor-teacher assignments will be removed.`
+    );
+    if (!ok) return;
+
+    setRoleChangeLoading(true);
+    setStatus("Demoting to teacher...");
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-change-user-role", {
+        body: { target_user_id: selectedSupervisorId, new_role: "teacher" },
+      });
+      if (error) {
+        setStatus("Demote error: " + (error.message ?? "unknown"));
+        return;
+      }
+      void data;
+      setStatus("✅ Demoted to teacher.");
+      setSelectedSupervisorId("");
+      setAssigned([]);
+      await refreshLists();
+    } catch (e: any) {
+      setStatus("Demote error: " + (e?.message ?? "unknown"));
+    } finally {
+      setRoleChangeLoading(false);
+    }
+  }
+
+  // ADMIN: promote teacher to supervisor
+  async function promoteTeacher(teacherId: string) {
+    if (!isAdmin) return;
+    const teacher = teachers.find((t) => t.id === teacherId) ?? null;
+    const label = teacher ? labelForUser(teacher) : teacherId;
+
+    const ok = window.confirm(
+      `Promote this teacher to supervisor?\n\n${label}`
+    );
+    if (!ok) return;
+
+    setRoleChangeLoading(true);
+    setStatus("Promoting to supervisor...");
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-change-user-role", {
+        body: { target_user_id: teacherId, new_role: "supervisor" },
+      });
+      if (error) {
+        setStatus("Promote error: " + (error.message ?? "unknown"));
+        return;
+      }
+      void data;
+      setStatus("✅ Promoted to supervisor.");
+      await refreshLists(teacherId);
+    } catch (e: any) {
+      setStatus("Promote error: " + (e?.message ?? "unknown"));
+    } finally {
+      setRoleChangeLoading(false);
+    }
+  }
+
   const assignedIds = useMemo(() => new Set(assigned.map((a) => a.id)), [assigned]);
 
   useEffect(() => {
@@ -431,6 +498,16 @@ export default function AdminSupervisorsPage() {
               title={selectedSupervisorIsActive ? "Deactivate selected supervisor" : "Activate selected supervisor"}
             >
               {adminActionLoading.active ? "Saving..." : selectedSupervisorIsActive ? "Deactivate" : "Activate"}
+            </button>
+
+            <button
+              className="btn"
+              onClick={() => void demoteSelectedSupervisor()}
+              disabled={!selectedSupervisorId || roleChangeLoading}
+              title="Demote selected supervisor to teacher role"
+              style={{ color: "#d97706", borderColor: "#fbbf24" }}
+            >
+              {roleChangeLoading ? "Changing..." : "Demote to Teacher"}
             </button>
 
             <button
@@ -565,9 +642,20 @@ export default function AdminSupervisorsPage() {
                     <div style={{ fontWeight: 800 }}>{labelForUser(t)}</div>
                     <div className="subtle">{t.is_active ? "active" : "inactive"}</div>
                   </div>
-                  <button className="btn" onClick={() => assignTeacher(t.id)} disabled={!selectedSupervisorId || already}>
-                    {already ? "Assigned" : "Assign"}
-                  </button>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="btn" onClick={() => assignTeacher(t.id)} disabled={!selectedSupervisorId || already}>
+                      {already ? "Assigned" : "Assign"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => void promoteTeacher(t.id)}
+                      disabled={roleChangeLoading}
+                      title="Promote to supervisor"
+                      style={{ padding: "6px 8px", fontSize: 11, color: "#059669", borderColor: "#6ee7b7" }}
+                    >
+                      Promote
+                    </button>
+                  </div>
                 </div>
               );
             })}

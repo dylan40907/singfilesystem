@@ -40,8 +40,9 @@ export default function ScheduleBlock({
   // Track whether a drag happened so we can suppress click
   const didInteractRef = useRef(false);
 
-  const isLabel = !block.employee_id;
-  const displayName = isLabel
+  const isLabelOnly = !block.employee_id && !!block.label;
+  const isLabelWithEmployee = !!block.employee_id && !!block.label;
+  const displayName = isLabelOnly
     ? block.label ?? "Label"
     : employee
       ? getDisplayName(employee)
@@ -192,8 +193,8 @@ export default function ScheduleBlock({
         left: 2,
         right: 2,
         height: heightPx,
-        background: isLabel ? "#e0e7ff" : "#fce7f3",
-        border: isLabel ? "1px solid #a5b4fc" : "1px solid #f9a8d4",
+        background: "rgba(255,255,255,0.85)",
+        border: "1px solid #d1d5db",
         borderRadius: 6,
         padding: "2px 4px",
         overflow: "hidden",
@@ -227,16 +228,18 @@ export default function ScheduleBlock({
       {/* Block content */}
       <div
         style={{
-          fontWeight: 700,
+          fontWeight: 800,
+          fontSize: 12,
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
           pointerEvents: "none",
+          color: "#111827",
         }}
       >
         {displayName}
       </div>
-      {heightPx > 20 && (
+      {heightPx > 28 && (
         <div
           style={{
             fontSize: 10,
@@ -248,6 +251,22 @@ export default function ScheduleBlock({
           }}
         >
           {timeLabel}
+        </div>
+      )}
+      {isLabelWithEmployee && heightPx > 42 && (
+        <div
+          style={{
+            fontSize: 10,
+            color: "#4f46e5",
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            pointerEvents: "none",
+            marginTop: 1,
+          }}
+        >
+          {block.label}
         </div>
       )}
 

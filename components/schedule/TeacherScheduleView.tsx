@@ -153,10 +153,8 @@ export default function TeacherScheduleView({ employeeId }: TeacherScheduleViewP
                           alignItems: "center",
                           gap: 12,
                           padding: "10px 14px",
-                          background: block.label ? "#e0e7ff" : "#fce7f3",
-                          border: block.label
-                            ? "1px solid #a5b4fc"
-                            : "1px solid #f9a8d4",
+                          background: "white",
+                          border: "1px solid #d1d5db",
                           borderRadius: 10,
                         }}
                       >
@@ -171,12 +169,12 @@ export default function TeacherScheduleView({ employeeId }: TeacherScheduleViewP
                         </div>
                         <div style={{ fontSize: 13, color: "#6b7280" }}>
                           {room ? room.name : ""}
-                          {block.label && (
-                            <span style={{ marginLeft: 8, fontWeight: 600, color: "#4f46e5" }}>
-                              {block.label}
-                            </span>
-                          )}
                         </div>
+                        {block.label && (
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#4f46e5" }}>
+                            {block.label}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

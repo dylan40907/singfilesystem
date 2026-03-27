@@ -52,7 +52,7 @@ export const SLOT_MINUTES = 5;
 export const START_MINUTES = START_HOUR * 60 + START_MINUTE; // 440
 export const END_MINUTES = END_HOUR * 60 + END_MINUTE; // 1080
 export const TOTAL_SLOTS = (END_MINUTES - START_MINUTES) / SLOT_MINUTES; // 128
-export const PX_PER_SLOT = 4; // pixels per 5-minute slot
+export const PX_PER_SLOT = 24; // pixels per 5-minute slot (matches old 30-min row height)
 
 export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
 export const DAY_NUMBERS = [1, 2, 3, 4, 5] as const;

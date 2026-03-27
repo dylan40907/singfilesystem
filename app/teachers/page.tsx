@@ -505,6 +505,9 @@ export default function TeachersPage() {
     active: false,
   });
 
+  // Admin-only: role change state
+  const [roleChangeLoading, setRoleChangeLoading] = useState(false);
+
   // permissions
   const [teacherPerms, setTeacherPerms] = useState<UserFolderPermissionRow[]>([]);
   const [teacherPermsLoading, setTeacherPermsLoading] = useState(false);
@@ -1007,6 +1010,42 @@ async function exitTextFullscreen() {
       setStatus("Delete teacher error: " + (e?.message ?? "unknown"));
     } finally {
       setDeleteLoading(false);
+    }
+  }
+
+  // ADMIN: promote teacher to supervisor
+  async function promoteSelectedTeacher() {
+    if (!selectedTeacherId || !isAdmin) return;
+    const label = selectedTeacher
+      ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
+      : selectedTeacherId;
+
+    const ok = window.confirm(
+      `Promote this teacher to supervisor?\n\n${label}\n\nThey will appear in the Supervisors page and gain supervisor permissions.`
+    );
+    if (!ok) return;
+
+    setRoleChangeLoading(true);
+    setStatus("Promoting to supervisor...");
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-change-user-role", {
+        body: { target_user_id: selectedTeacherId, new_role: "supervisor" },
+      });
+      if (error) {
+        setStatus("Promote error: " + (error.message ?? "unknown"));
+        return;
+      }
+      void data;
+      setStatus("✅ Promoted to supervisor.");
+      setSelectedTeacherId("");
+      setSelectedPlanId("");
+      setPlanDetail(null);
+      setComments([]);
+      await refreshTeacherList(undefined, me);
+    } catch (e: any) {
+      setStatus("Promote error: " + (e?.message ?? "unknown"));
+    } finally {
+      setRoleChangeLoading(false);
     }
   }
 
@@ -1597,6 +1636,16 @@ setWorkbookKey(`${planId}:${Date.now()}`);
                   title={selectedTeacherIsActive ? "Deactivate selected teacher" : "Activate selected teacher"}
                 >
                   {adminActionLoading.active ? "Saving..." : selectedTeacherIsActive ? "Deactivate" : "Activate"}
+                </button>
+
+                <button
+                  className="btn"
+                  onClick={() => void promoteSelectedTeacher()}
+                  disabled={!selectedTeacherId || roleChangeLoading}
+                  title="Promote selected teacher to supervisor role"
+                  style={{ color: "#059669", borderColor: "#6ee7b7" }}
+                >
+                  {roleChangeLoading ? "Changing..." : "Promote to Supervisor"}
                 </button>
 
                 <button
