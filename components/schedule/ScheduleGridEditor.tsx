@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   Schedule,
@@ -15,7 +15,6 @@ import {
   minutesToTime,
   snapMinutes,
   detectConflicts,
-  calculatePaidMinutes,
   DAY_LABELS,
   DAY_NUMBERS,
   SLOT_MINUTES,
@@ -173,6 +172,84 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     saveCellColors(activeDay, prevState[activeDay] ?? {});
   }
 
+  // Compute per-block warnings. Overtime takes priority: if overtime exists for an
+  // employee on a given day, only the overtime warning is shown (5h / break warnings suppressed).
+  const blockWarnings = useMemo((): Map<string, string[]> => {
+    const warnings = new Map<string, string[]>();
+    const fmt = (m: number) => {
+      const h = Math.floor(m / 60);
+      const min = m % 60;
+      return min === 0 ? `${h}h` : `${h}h ${min}m`;
+    };
+
+    // Group by employee+day for multi-block checks
+    const grouped = new Map<string, ScheduleBlockType[]>();
+    for (const b of blocks) {
+      if (!b.employee_id) continue;
+      const key = `${b.employee_id}:${b.day_of_week}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(b);
+    }
+
+    // Track which block IDs have overtime so we can suppress lower-priority warnings
+    const overtimeBlockIds = new Set<string>();
+
+    for (const empBlocks of grouped.values()) {
+      const day = empBlocks[0].day_of_week;
+      const emp = employees.find((e) => e.id === empBlocks[0].employee_id);
+      const name = emp ? getDisplayName(emp) : "Employee";
+      const dayLabel = DAY_LABELS[day - 1];
+
+      // Overtime: total paid (shift + break, not lunch) > 8h
+      const paidMins = empBlocks
+        .filter((b) => b.block_type !== "lunch_break")
+        .reduce((s, b) => s + timeToMinutes(b.end_time) - timeToMinutes(b.start_time), 0);
+      if (paidMins > 480) {
+        const msg = `Overtime: ${name} has ${fmt(paidMins)} paid time on ${dayLabel} (over 8h).`;
+        for (const b of empBlocks.filter((b) => b.block_type !== "lunch_break")) {
+          const arr = warnings.get(b.id) ?? [];
+          arr.push(msg);
+          warnings.set(b.id, arr);
+          overtimeBlockIds.add(b.id);
+        }
+        continue; // skip lower-priority checks for this employee+day
+      }
+
+      // 5h+ straight shift (single block >= 5h)
+      for (const b of empBlocks.filter((b) => b.block_type === "shift")) {
+        const dur = timeToMinutes(b.end_time) - timeToMinutes(b.start_time);
+        if (dur >= 300) {
+          const arr = warnings.get(b.id) ?? [];
+          arr.push(`Shift is ${fmt(dur)} long — a lunch break should be inserted.`);
+          warnings.set(b.id, arr);
+        }
+      }
+
+      // 6h+ shift time with < 2 qualifying breaks
+      const shiftMins = empBlocks
+        .filter((b) => b.block_type === "shift")
+        .reduce((s, b) => s + timeToMinutes(b.end_time) - timeToMinutes(b.start_time), 0);
+      if (shiftMins >= 360) {
+        const qualBreaks = empBlocks.filter(
+          (b) =>
+            b.block_type === "break" &&
+            timeToMinutes(b.end_time) - timeToMinutes(b.start_time) >= 10
+        );
+        if (qualBreaks.length < 2) {
+          const cnt = qualBreaks.length;
+          const msg = `${name} has ${fmt(shiftMins)} of shifts on ${dayLabel} but only ${cnt} qualifying break${cnt !== 1 ? "s" : ""} — needs 2 × 10 min breaks.`;
+          for (const b of empBlocks.filter((b) => b.block_type === "shift")) {
+            const arr = warnings.get(b.id) ?? [];
+            arr.push(msg);
+            warnings.set(b.id, arr);
+          }
+        }
+      }
+    }
+
+    return warnings;
+  }, [blocks, employees]);
+
   // Clear warning after 4s
   useEffect(() => {
     if (!warning) return;
@@ -239,34 +316,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     setRoomEdit(null);
   }
 
-  // --- 8-hour paid time check ---
-  function checkEightHourLimit(
-    employeeId: string,
-    day: number,
-    blockType: BlockType,
-    durationMinutes: number,
-    excludeBlockId?: string
-  ): string | null {
-    if (blockType === "lunch_break") return null;
-    // existing = all paid blocks except the one being changed (for resize/edit)
-    const existing = calculatePaidMinutes(blocks, employeeId, day, excludeBlockId);
-    const total = existing + durationMinutes;
-    if (total > 480) {
-      const emp = employees.find((e) => e.id === employeeId);
-      const name = emp ? getDisplayName(emp) : "Employee";
-      const fmt = (m: number) => `${Math.floor(m / 60)}h ${m % 60}m`;
-      // For resize/edit: add back the current block's existing duration so the
-      // "currently at" figure reflects the real schedule before this change
-      const currentBlock = excludeBlockId ? blocks.find((b) => b.id === excludeBlockId) : null;
-      const currentBlockDuration = currentBlock
-        ? timeToMinutes(currentBlock.end_time) - timeToMinutes(currentBlock.start_time)
-        : 0;
-      const currentTotal = existing + currentBlockDuration;
-      return `Cannot save: ${name} would have ${fmt(total)} of paid time on ${DAY_LABELS[day - 1]} (max 8h). Currently at ${fmt(currentTotal)} (lunch breaks excluded).`;
-    }
-    return null;
-  }
-
   // --- Block CRUD ---
   async function createBlock(
     roomId: string,
@@ -284,12 +333,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       const emp = employees.find((e) => e.id === employeeId);
       setWarning(`Conflict: ${emp ? getDisplayName(emp) : "Employee"} already has a block at this time on this day.`);
       return;
-    }
-
-    if (employeeId) {
-      const duration = timeToMinutes(endTime) - timeToMinutes(startTime);
-      const limitMsg = checkEightHourLimit(employeeId, day, blockType, duration);
-      if (limitMsg) { setWarning(limitMsg); return; }
     }
 
     setSaving(true);
@@ -312,12 +355,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     if (conflicts.length > 0) {
       setWarning("Conflict: Employee already has a block at this time on this day.");
       return;
-    }
-
-    if (employeeId) {
-      const duration = timeToMinutes(block.end_time) - timeToMinutes(block.start_time);
-      const limitMsg = checkEightHourLimit(employeeId, block.day_of_week, block.block_type, duration, blockId);
-      if (limitMsg) { setWarning(limitMsg); return; }
     }
 
     setSaving(true);
@@ -349,12 +386,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     if (conflicts.length > 0) {
       setWarning("Conflict: This resize would overlap with another block for the same employee.");
       return;
-    }
-
-    if (block.employee_id) {
-      const duration = timeToMinutes(newEndTime) - timeToMinutes(newStartTime);
-      const limitMsg = checkEightHourLimit(block.employee_id, block.day_of_week, block.block_type, duration, blockId);
-      if (limitMsg) { setWarning(limitMsg); return; }
     }
 
     setBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b)));
@@ -742,7 +773,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 title="Pick color"
               />
               <div style={{ display: "flex", gap: 4 }}>
-                {["#fde68a", "#bbf7d0", "#bfdbfe", "#fecaca", "#e9d5ff", "#fed7aa"].map((c) => (
+                {["#fde68a", "#bbf7d0", "#bfdbfe", "#fecaca", "#e9d5ff", "#fed7aa", "#f2f2f2", "#dce3eb", "#a5f8e8", "#fff0ee"].map((c) => (
                   <button
                     key={c}
                     onClick={() => { setPaintColor(c); setPaintErase(false); }}
@@ -802,6 +833,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           paintMode={paintMode}
           cellColors={cellColors[activeDay] ?? {}}
           onPaintCells={handlePaintCells}
+          blockWarnings={blockWarnings}
         />
       </div>
 

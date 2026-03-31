@@ -32,6 +32,7 @@ interface ScheduleGridProps {
   paintMode?: boolean;
   cellColors?: Record<string, string>; // "roomId:colIdx:timeSlot" -> color
   onPaintCells?: (cellKeys: string[]) => void;
+  blockWarnings?: Map<string, string[]>;
 }
 
 // Shared flag: when a block drag/resize ends, suppress the next cell click
@@ -52,6 +53,7 @@ export default function ScheduleGrid({
   paintMode,
   cellColors = {},
   onPaintCells,
+  blockWarnings = new Map(),
 }: ScheduleGridProps) {
   const paintingRef = useRef(false);
   const paintedKeysRef = useRef<Set<string>>(new Set());
@@ -144,7 +146,7 @@ export default function ScheduleGrid({
         }}
       >
         {/* Header spacer */}
-        <div style={{ height: 36, borderBottom: "1.5px solid #e5e7eb" }} />
+        <div style={{ height: 36, borderBottom: "1.5px solid #e5e7eb", position: "sticky", top: 0, zIndex: 21, background: "white" }} />
 
         {/* Time labels */}
         <div style={{ position: "relative", height: gridHeight }}>
@@ -212,6 +214,9 @@ export default function ScheduleGrid({
                 color: "#111827",
                 background: "#f9fafb",
                 cursor: !readOnly && col.isFirstInRoom ? "pointer" : "default",
+                position: "sticky",
+                top: 0,
+                zIndex: 15,
               }}
               onClick={() => {
                 if (!readOnly && col.isFirstInRoom) {
@@ -367,6 +372,7 @@ export default function ScheduleGrid({
                     topPx={topPx}
                     heightPx={heightPx}
                     readOnly={readOnly || paintMode}
+                    warnings={blockWarnings.get(block.id)}
                     onContextMenu={onBlockContextMenu}
                     onResizeEnd={(blockId, s, e) => {
                       suppressNextCellClick = true;

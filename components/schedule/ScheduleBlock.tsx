@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useState } from "react";
 import {
   ScheduleBlock as ScheduleBlockType,
   EmployeeLite,
@@ -23,6 +23,7 @@ interface ScheduleBlockProps {
   onResizeEnd: (blockId: string, newStartTime: string, newEndTime: string) => void;
   onDragEnd: (blockId: string, deltaSlots: number, clientX: number) => void;
   onDragCancel: () => void;
+  warnings?: string[];
 }
 
 export default function ScheduleBlock({
@@ -35,10 +36,11 @@ export default function ScheduleBlock({
   onResizeEnd,
   onDragEnd,
   onDragCancel,
+  warnings,
 }: ScheduleBlockProps) {
   const elRef = useRef<HTMLDivElement>(null);
-  // Track whether a drag happened so we can suppress click
   const didInteractRef = useRef(false);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
   const isLabelOnly = !block.employee_id && !!block.label;
   const isLabelWithEmployee = !!block.employee_id && !!block.label;
@@ -194,15 +196,18 @@ export default function ScheduleBlock({
           onContextMenu(block.id, e.clientX, e.clientY);
         }
       }}
+      onMouseEnter={(e) => { if (warnings?.length) setTooltipPos({ x: e.clientX, y: e.clientY }); }}
+      onMouseMove={(e) => { if (warnings?.length) setTooltipPos({ x: e.clientX, y: e.clientY }); }}
+      onMouseLeave={() => setTooltipPos(null)}
       style={{
         position: "absolute",
         top: topPx,
         left: 2,
         right: 2,
         height: heightPx,
-        background: "rgba(255,255,255,0.85)",
-        border: "1px solid #d1d5db",
-        borderLeft: `3px solid ${leftBorderColor}`,
+        background: warnings && warnings.length > 0 ? "rgba(254,226,226,0.92)" : "rgba(255,255,255,0.85)",
+        border: warnings && warnings.length > 0 ? "1px solid #fca5a5" : "1px solid #d1d5db",
+        borderLeft: `3px solid ${warnings && warnings.length > 0 ? "#ef4444" : leftBorderColor}`,
         borderRadius: 6,
         padding: "3px 5px",
         overflow: "hidden",
@@ -276,6 +281,32 @@ export default function ScheduleBlock({
           }}
         >
           {block.label}
+        </div>
+      )}
+
+
+      {/* Warning tooltip */}
+      {tooltipPos && warnings && warnings.length > 0 && (
+        <div
+          style={{
+            position: "fixed",
+            left: tooltipPos.x + 14,
+            top: tooltipPos.y - 12,
+            zIndex: 1000,
+            background: "#1e293b",
+            color: "white",
+            borderRadius: 8,
+            padding: "8px 12px",
+            fontSize: 12,
+            fontWeight: 500,
+            maxWidth: 300,
+            whiteSpace: "pre-line",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            pointerEvents: "none",
+            lineHeight: 1.5,
+          }}
+        >
+          {warnings.join("\n\n")}
         </div>
       )}
 
