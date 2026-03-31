@@ -19,6 +19,8 @@ export interface ScheduleRoom {
   created_at: string;
 }
 
+export type BlockType = "shift" | "lunch_break" | "break";
+
 export interface ScheduleBlock {
   id: string;
   schedule_id: string;
@@ -29,6 +31,7 @@ export interface ScheduleBlock {
   end_time: string;
   column_index: number;
   label: string | null;
+  block_type: BlockType;
   created_at: string;
   updated_at: string;
 }
@@ -38,7 +41,7 @@ export interface EmployeeLite {
   legal_first_name: string | null;
   legal_middle_name: string | null;
   legal_last_name: string | null;
-  nicknames: string | null;
+  nicknames: string | string[] | null;
   is_active: boolean;
   profile_id: string | null;
 }
@@ -164,6 +167,28 @@ export function timeOverlaps(
   return s1 < e2 && s2 < e1;
 }
 
+/** Calculate total paid minutes for an employee on a given day.
+ *  Only 'shift' and 'break' count — 'lunch_break' is excluded. */
+export function calculatePaidMinutes(
+  blocks: ScheduleBlock[],
+  employeeId: string,
+  dayOfWeek: number,
+  excludeBlockId?: string
+): number {
+  return blocks
+    .filter(
+      (b) =>
+        b.employee_id === employeeId &&
+        b.day_of_week === dayOfWeek &&
+        b.block_type !== "lunch_break" &&
+        (!excludeBlockId || b.id !== excludeBlockId)
+    )
+    .reduce(
+      (sum, b) => sum + timeToMinutes(b.end_time) - timeToMinutes(b.start_time),
+      0
+    );
+}
+
 /** Find blocks that conflict with a candidate block (same employee, same day, overlapping times) */
 export function detectConflicts(
   blocks: ScheduleBlock[],
@@ -194,7 +219,11 @@ export function formatEmployeeName(emp: EmployeeLite): string {
 
 /** Get display name: nickname if available, else legal name */
 export function getDisplayName(emp: EmployeeLite): string {
-  if (emp.nicknames) return emp.nicknames;
+  // nicknames may be stored as an array or string in the DB
+  const nick = Array.isArray(emp.nicknames)
+    ? (emp.nicknames as string[]).join(", ")
+    : emp.nicknames;
+  if (nick && nick.trim()) return nick.trim();
   return formatEmployeeName(emp);
 }
 

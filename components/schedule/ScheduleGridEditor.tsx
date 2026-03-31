@@ -7,12 +7,15 @@ import {
   ScheduleRoom,
   ScheduleBlock as ScheduleBlockType,
   EmployeeLite,
+  BlockType,
   formatWeekRange,
   formatEmployeeName,
+  getDisplayName,
   timeToMinutes,
   minutesToTime,
   snapMinutes,
   detectConflicts,
+  calculatePaidMinutes,
   DAY_LABELS,
   DAY_NUMBERS,
   SLOT_MINUTES,
@@ -20,20 +23,12 @@ import {
   END_MINUTES,
 } from "@/lib/scheduleUtils";
 import ScheduleGrid from "./ScheduleGrid";
-import EmployeePickerDropdown from "./EmployeePickerDropdown";
 import BlockContextMenu from "./BlockContextMenu";
 
 interface ScheduleGridEditorProps {
   scheduleId: string;
   onBack: () => void;
 }
-
-type PickerState = {
-  roomId: string;
-  columnIndex: number;
-  day: number;
-  time: string;
-} | null;
 
 type ContextMenuState = {
   blockId: string;
@@ -45,12 +40,35 @@ type DuplicateMode = {
   employeeId: string | null;
   label: string | null;
   durationMinutes: number;
+  blockType: BlockType;
 } | null;
 
 type RoomEditState = {
   roomId: string;
   name: string;
   capacity: number;
+} | null;
+
+// State for the 3-option type picker popup
+type TypePickerState = {
+  x: number;
+  y: number;
+  roomId: string;
+  columnIndex: number;
+  day: number;
+  time: string;
+} | null;
+
+// State for the block creation/edit form popup
+type BlockFormState = {
+  x: number;
+  y: number;
+  roomId: string;
+  columnIndex: number;
+  day: number;
+  time: string;
+  blockType: BlockType;
+  editBlockId?: string; // set when editing existing block
 } | null;
 
 export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridEditorProps) {
@@ -61,56 +79,46 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [loading, setLoading] = useState(true);
 
   const [activeDay, setActiveDay] = useState<number>(1);
-  const [picker, setPicker] = useState<PickerState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>(null);
-  const [labelInput, setLabelInput] = useState<{
-    roomId: string;
-    columnIndex: number;
-    day: number;
-    time: string;
-  } | null>(null);
-  const [labelText, setLabelText] = useState("");
-  const [labelEmployeeId, setLabelEmployeeId] = useState<string | null>(null);
-  const [labelEmployeeSearch, setLabelEmployeeSearch] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [roomEdit, setRoomEdit] = useState<RoomEditState>(null);
 
+  // Type picker + block form
+  const [typePicker, setTypePicker] = useState<TypePickerState>(null);
+  const [blockForm, setBlockForm] = useState<BlockFormState>(null);
+  const [blockFormEmployeeId, setBlockFormEmployeeId] = useState<string | null>(null);
+  const [blockFormEmployeeSearch, setBlockFormEmployeeSearch] = useState("");
+  const [blockFormNotes, setBlockFormNotes] = useState("");
+  const [blockFormEmpOpen, setBlockFormEmpOpen] = useState(false);
+
+
   // Paint mode state
   const [paintMode, setPaintMode] = useState(false);
-  const [paintColor, setPaintColor] = useState("#fde68a"); // default yellow
+  const [paintColor, setPaintColor] = useState("#fde68a");
   const [paintErase, setPaintErase] = useState(false);
-  // cellColors: Map of "roomId:colIdx:timeSlot" -> color hex, per day
   const [cellColors, setCellColors] = useState<Record<number, Record<string, string>>>({});
   const [colorUndoStack, setColorUndoStack] = useState<Record<number, Record<string, string>>[]>([]);
   const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const readOnly = schedule?.status === "published";
 
+  // No document listener needed — outside clicks handled by backdrop divs
+
   // Fetch all data
   const fetchData = useCallback(async () => {
     setLoading(true);
     const [schedRes, roomsRes, blocksRes, empRes, colorsRes] = await Promise.all([
       supabase.from("schedules").select("*").eq("id", scheduleId).single(),
-      supabase
-        .from("schedule_rooms")
-        .select("*")
-        .eq("schedule_id", scheduleId)
-        .order("sort_order"),
-      supabase
-        .from("schedule_blocks")
-        .select("*")
-        .eq("schedule_id", scheduleId),
+      supabase.from("schedule_rooms").select("*").eq("schedule_id", scheduleId).order("sort_order"),
+      supabase.from("schedule_blocks").select("*").eq("schedule_id", scheduleId),
       supabase
         .from("hr_employees")
         .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
         .eq("is_active", true)
         .order("legal_first_name"),
-      supabase
-        .from("schedule_cell_colors")
-        .select("day_of_week, colors")
-        .eq("schedule_id", scheduleId),
+      supabase.from("schedule_cell_colors").select("day_of_week, colors").eq("schedule_id", scheduleId),
     ]);
 
     if (schedRes.data) setSchedule(schedRes.data);
@@ -135,34 +143,21 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   function saveCellColors(day: number, colors: Record<string, string>) {
     if (colorSaveTimeout.current) clearTimeout(colorSaveTimeout.current);
     colorSaveTimeout.current = setTimeout(async () => {
-      await supabase
-        .from("schedule_cell_colors")
-        .upsert(
-          {
-            schedule_id: scheduleId,
-            day_of_week: day,
-            colors,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "schedule_id,day_of_week" }
-        );
+      await supabase.from("schedule_cell_colors").upsert(
+        { schedule_id: scheduleId, day_of_week: day, colors, updated_at: new Date().toISOString() },
+        { onConflict: "schedule_id,day_of_week" }
+      );
     }, 300);
   }
 
-  // Handle paint on cells
   function handlePaintCells(cellKeys: string[]) {
     if (!paintMode) return;
-    // Push current state to undo stack
     setColorUndoStack((prev) => [...prev.slice(-20), JSON.parse(JSON.stringify(cellColors))]);
-
     setCellColors((prev) => {
       const dayColors = { ...(prev[activeDay] ?? {}) };
       for (const key of cellKeys) {
-        if (paintErase) {
-          delete dayColors[key];
-        } else {
-          dayColors[key] = paintColor;
-        }
+        if (paintErase) delete dayColors[key];
+        else dayColors[key] = paintColor;
       }
       const next = { ...prev, [activeDay]: dayColors };
       saveCellColors(activeDay, dayColors);
@@ -175,12 +170,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const prevState = colorUndoStack[colorUndoStack.length - 1];
     setColorUndoStack((s) => s.slice(0, -1));
     setCellColors(prevState);
-    // Save the reverted state for active day
-    const dayColors = prevState[activeDay] ?? {};
-    saveCellColors(activeDay, dayColors);
+    saveCellColors(activeDay, prevState[activeDay] ?? {});
   }
 
-  // Clear warning after 4 seconds
+  // Clear warning after 4s
   useEffect(() => {
     if (!warning) return;
     const t = setTimeout(() => setWarning(null), 4000);
@@ -192,12 +185,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const nextOrder = rooms.length > 0 ? Math.max(...rooms.map((r) => r.sort_order)) + 1 : 0;
     const { data, error } = await supabase
       .from("schedule_rooms")
-      .insert({
-        schedule_id: scheduleId,
-        name: `Room ${rooms.length + 1}`,
-        capacity: 2,
-        sort_order: nextOrder,
-      })
+      .insert({ schedule_id: scheduleId, name: `Room ${rooms.length + 1}`, capacity: 2, sort_order: nextOrder })
       .select()
       .single();
     if (data) setRooms((prev) => [...prev, data]);
@@ -205,29 +193,16 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   }
 
   async function updateRoom(roomId: string, updates: { name?: string; capacity?: number }) {
-    const { error } = await supabase
-      .from("schedule_rooms")
-      .update(updates)
-      .eq("id", roomId);
+    const { error } = await supabase.from("schedule_rooms").update(updates).eq("id", roomId);
     if (!error) {
-      setRooms((prev) =>
-        prev.map((r) => (r.id === roomId ? { ...r, ...updates } : r))
-      );
-      // If capacity decreased, remove blocks in columns beyond new capacity
+      setRooms((prev) => prev.map((r) => (r.id === roomId ? { ...r, ...updates } : r)));
       if (updates.capacity !== undefined) {
         const room = rooms.find((r) => r.id === roomId);
         if (room && updates.capacity < room.capacity) {
-          const toDelete = blocks.filter(
-            (b) => b.room_id === roomId && b.column_index >= updates.capacity!
-          );
+          const toDelete = blocks.filter((b) => b.room_id === roomId && b.column_index >= updates.capacity!);
           if (toDelete.length > 0) {
-            await supabase
-              .from("schedule_blocks")
-              .delete()
-              .in("id", toDelete.map((b) => b.id));
-            setBlocks((prev) =>
-              prev.filter((b) => !toDelete.some((d) => d.id === b.id))
-            );
+            await supabase.from("schedule_blocks").delete().in("id", toDelete.map((b) => b.id));
+            setBlocks((prev) => prev.filter((b) => !toDelete.some((d) => d.id === b.id)));
           }
         }
       }
@@ -238,13 +213,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   async function deleteRoom(roomId: string) {
     const roomBlocks = blocks.filter((b) => b.room_id === roomId);
-    if (roomBlocks.length > 0 && !confirm(`Delete this room and its ${roomBlocks.length} blocks?`)) {
-      return;
-    }
-    const { error } = await supabase
-      .from("schedule_rooms")
-      .delete()
-      .eq("id", roomId);
+    if (roomBlocks.length > 0 && !confirm(`Delete this room and its ${roomBlocks.length} blocks?`)) return;
+    const { error } = await supabase.from("schedule_rooms").delete().eq("id", roomId);
     if (!error) {
       setRooms((prev) => prev.filter((r) => r.id !== roomId));
       setBlocks((prev) => prev.filter((b) => b.room_id !== roomId));
@@ -253,9 +223,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
   }
 
-  // Room edit triggered by clicking room name in grid header
   function handleRoomEditTrigger(roomId: string, _updates: { name?: string; capacity?: number }) {
-    // If _updates is empty, it's a click-to-edit trigger
     const room = rooms.find((r) => r.id === roomId);
     if (!room) return;
     if (Object.keys(_updates).length === 0) {
@@ -267,11 +235,36 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   async function handleRoomEditSave() {
     if (!roomEdit) return;
-    await updateRoom(roomEdit.roomId, {
-      name: roomEdit.name.trim() || "Room",
-      capacity: roomEdit.capacity,
-    });
+    await updateRoom(roomEdit.roomId, { name: roomEdit.name.trim() || "Room", capacity: roomEdit.capacity });
     setRoomEdit(null);
+  }
+
+  // --- 8-hour paid time check ---
+  function checkEightHourLimit(
+    employeeId: string,
+    day: number,
+    blockType: BlockType,
+    durationMinutes: number,
+    excludeBlockId?: string
+  ): string | null {
+    if (blockType === "lunch_break") return null;
+    // existing = all paid blocks except the one being changed (for resize/edit)
+    const existing = calculatePaidMinutes(blocks, employeeId, day, excludeBlockId);
+    const total = existing + durationMinutes;
+    if (total > 480) {
+      const emp = employees.find((e) => e.id === employeeId);
+      const name = emp ? getDisplayName(emp) : "Employee";
+      const fmt = (m: number) => `${Math.floor(m / 60)}h ${m % 60}m`;
+      // For resize/edit: add back the current block's existing duration so the
+      // "currently at" figure reflects the real schedule before this change
+      const currentBlock = excludeBlockId ? blocks.find((b) => b.id === excludeBlockId) : null;
+      const currentBlockDuration = currentBlock
+        ? timeToMinutes(currentBlock.end_time) - timeToMinutes(currentBlock.start_time)
+        : 0;
+      const currentTotal = existing + currentBlockDuration;
+      return `Cannot save: ${name} would have ${fmt(total)} of paid time on ${DAY_LABELS[day - 1]} (max 8h). Currently at ${fmt(currentTotal)} (lunch breaks excluded).`;
+    }
+    return null;
   }
 
   // --- Block CRUD ---
@@ -282,54 +275,68 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     startTime: string,
     endTime: string,
     employeeId: string | null,
-    label: string | null
+    label: string | null,
+    blockType: BlockType
   ) {
-    const candidate = {
-      employee_id: employeeId,
-      day_of_week: day,
-      start_time: startTime,
-      end_time: endTime,
-    };
+    const candidate = { employee_id: employeeId, day_of_week: day, start_time: startTime, end_time: endTime };
     const conflicts = detectConflicts(blocks, candidate);
     if (conflicts.length > 0) {
-      const empName = employees.find((e) => e.id === employeeId);
-      setWarning(
-        `Conflict: ${empName ? formatEmployeeName(empName) : "Employee"} already has a block at this time on this day.`
-      );
+      const emp = employees.find((e) => e.id === employeeId);
+      setWarning(`Conflict: ${emp ? getDisplayName(emp) : "Employee"} already has a block at this time on this day.`);
       return;
+    }
+
+    if (employeeId) {
+      const duration = timeToMinutes(endTime) - timeToMinutes(startTime);
+      const limitMsg = checkEightHourLimit(employeeId, day, blockType, duration);
+      if (limitMsg) { setWarning(limitMsg); return; }
     }
 
     setSaving(true);
     const { data, error } = await supabase
       .from("schedule_blocks")
-      .insert({
-        schedule_id: scheduleId,
-        room_id: roomId,
-        column_index: columnIndex,
-        day_of_week: day,
-        start_time: startTime,
-        end_time: endTime,
-        employee_id: employeeId,
-        label: label,
-      })
+      .insert({ schedule_id: scheduleId, room_id: roomId, column_index: columnIndex, day_of_week: day, start_time: startTime, end_time: endTime, employee_id: employeeId, label, block_type: blockType })
       .select()
       .single();
-
     if (data) setBlocks((prev) => [...prev, data]);
     if (error) setWarning(error.message);
     setSaving(false);
   }
 
-  async function deleteBlock(blockId: string) {
+  async function updateBlock(blockId: string, employeeId: string | null, label: string | null) {
+    const block = blocks.find((b) => b.id === blockId);
+    if (!block) return;
+
+    const candidate = { id: blockId, employee_id: employeeId, day_of_week: block.day_of_week, start_time: block.start_time, end_time: block.end_time };
+    const conflicts = detectConflicts(blocks, candidate);
+    if (conflicts.length > 0) {
+      setWarning("Conflict: Employee already has a block at this time on this day.");
+      return;
+    }
+
+    if (employeeId) {
+      const duration = timeToMinutes(block.end_time) - timeToMinutes(block.start_time);
+      const limitMsg = checkEightHourLimit(employeeId, block.day_of_week, block.block_type, duration, blockId);
+      if (limitMsg) { setWarning(limitMsg); return; }
+    }
+
+    setSaving(true);
     const { error } = await supabase
       .from("schedule_blocks")
-      .delete()
+      .update({ employee_id: employeeId, label })
       .eq("id", blockId);
     if (!error) {
-      setBlocks((prev) => prev.filter((b) => b.id !== blockId));
+      setBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, employee_id: employeeId, label } : b)));
     } else {
       setWarning(error.message);
     }
+    setSaving(false);
+  }
+
+  async function deleteBlock(blockId: string) {
+    const { error } = await supabase.from("schedule_blocks").delete().eq("id", blockId);
+    if (!error) setBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    else setWarning(error.message);
     setContextMenu(null);
   }
 
@@ -337,43 +344,25 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const block = blocks.find((b) => b.id === blockId);
     if (!block) return;
 
-    const candidate = {
-      id: blockId,
-      employee_id: block.employee_id,
-      day_of_week: block.day_of_week,
-      start_time: newStartTime,
-      end_time: newEndTime,
-    };
+    const candidate = { id: blockId, employee_id: block.employee_id, day_of_week: block.day_of_week, start_time: newStartTime, end_time: newEndTime };
     const conflicts = detectConflicts(blocks, candidate);
     if (conflicts.length > 0) {
       setWarning("Conflict: This resize would overlap with another block for the same employee.");
       return;
     }
 
-    setBlocks((prev) =>
-      prev.map((b) =>
-        b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b
-      )
-    );
-
-    const { error } = await supabase
-      .from("schedule_blocks")
-      .update({ start_time: newStartTime, end_time: newEndTime })
-      .eq("id", blockId);
-
-    if (error) {
-      setWarning(error.message);
-      fetchData();
+    if (block.employee_id) {
+      const duration = timeToMinutes(newEndTime) - timeToMinutes(newStartTime);
+      const limitMsg = checkEightHourLimit(block.employee_id, block.day_of_week, block.block_type, duration, blockId);
+      if (limitMsg) { setWarning(limitMsg); return; }
     }
+
+    setBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b)));
+    const { error } = await supabase.from("schedule_blocks").update({ start_time: newStartTime, end_time: newEndTime }).eq("id", blockId);
+    if (error) { setWarning(error.message); fetchData(); }
   }
 
-  // Move block to a new column/room and/or new time
-  async function handleBlockMoveToColumn(
-    blockId: string,
-    newRoomId: string,
-    newColumnIndex: number,
-    deltaSlots: number
-  ) {
+  async function handleBlockMoveToColumn(blockId: string, newRoomId: string, newColumnIndex: number, deltaSlots: number) {
     const block = blocks.find((b) => b.id === blockId);
     if (!block) return;
 
@@ -391,132 +380,104 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const newStartTime = minutesToTime(newStartMins);
     const newEndTime = minutesToTime(newEndMins);
 
-    // Check if nothing changed
-    if (
-      newRoomId === block.room_id &&
-      newColumnIndex === block.column_index &&
-      newStartTime === block.start_time
-    ) {
-      return;
-    }
+    if (newRoomId === block.room_id && newColumnIndex === block.column_index && newStartTime === block.start_time) return;
 
-    const candidate = {
-      id: blockId,
-      employee_id: block.employee_id,
-      day_of_week: block.day_of_week,
-      start_time: newStartTime,
-      end_time: newEndTime,
-    };
+    const candidate = { id: blockId, employee_id: block.employee_id, day_of_week: block.day_of_week, start_time: newStartTime, end_time: newEndTime };
     const conflicts = detectConflicts(blocks, candidate);
     if (conflicts.length > 0) {
       setWarning("Conflict: This move would overlap with another block for the same employee.");
       return;
     }
 
-    // Validate target column exists
     const targetRoom = rooms.find((r) => r.id === newRoomId);
-    if (!targetRoom || newColumnIndex >= targetRoom.capacity) {
-      setWarning("Invalid target column.");
-      return;
-    }
+    if (!targetRoom || newColumnIndex >= targetRoom.capacity) { setWarning("Invalid target column."); return; }
 
     setBlocks((prev) =>
       prev.map((b) =>
-        b.id === blockId
-          ? {
-              ...b,
-              room_id: newRoomId,
-              column_index: newColumnIndex,
-              start_time: newStartTime,
-              end_time: newEndTime,
-            }
-          : b
+        b.id === blockId ? { ...b, room_id: newRoomId, column_index: newColumnIndex, start_time: newStartTime, end_time: newEndTime } : b
       )
     );
 
-    const { error } = await supabase
-      .from("schedule_blocks")
-      .update({
-        room_id: newRoomId,
-        column_index: newColumnIndex,
-        start_time: newStartTime,
-        end_time: newEndTime,
-      })
-      .eq("id", blockId);
-
-    if (error) {
-      setWarning(error.message);
-      fetchData();
-    }
+    const { error } = await supabase.from("schedule_blocks").update({ room_id: newRoomId, column_index: newColumnIndex, start_time: newStartTime, end_time: newEndTime }).eq("id", blockId);
+    if (error) { setWarning(error.message); fetchData(); }
   }
 
-  // --- Cell click handler ---
-  function handleCellClick(roomId: string, columnIndex: number, day: number, time: string) {
-    if (readOnly) return;
+  // --- Cell click → type picker ---
+  function handleCellClick(roomId: string, columnIndex: number, day: number, time: string, clientX: number, clientY: number) {
+    if (readOnly || paintMode) return;
 
-    // If in paint mode, don't open picker (painting handled by ScheduleGrid)
-    if (paintMode) return;
-
-    // If in duplicate mode, place block immediately
     if (duplicateMode) {
       const endMins = timeToMinutes(time) + duplicateMode.durationMinutes;
       const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
-      createBlock(
-        roomId,
-        columnIndex,
-        day,
-        time,
-        endTime,
-        duplicateMode.employeeId,
-        duplicateMode.label
-      );
+      createBlock(roomId, columnIndex, day, time, endTime, duplicateMode.employeeId, duplicateMode.label, duplicateMode.blockType);
       setDuplicateMode(null);
       return;
     }
 
-    setPicker({ roomId, columnIndex, day, time });
+    setTypePicker({ x: clientX, y: clientY, roomId, columnIndex, day, time });
   }
 
-  // --- Employee selection from picker ---
-  function handleSelectEmployee(emp: EmployeeLite) {
-    if (!picker) return;
-    const endMins = timeToMinutes(picker.time) + 30; // default 30 min
-    const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
-    createBlock(picker.roomId, picker.columnIndex, picker.day, picker.time, endTime, emp.id, null);
-    setPicker(null);
+  // Open block form from type picker
+  function openBlockForm(blockType: BlockType) {
+    if (!typePicker) return;
+    setBlockForm({ ...typePicker, blockType });
+    setBlockFormEmployeeId(null);
+    setBlockFormEmployeeSearch("");
+    setBlockFormNotes("");
+    setBlockFormEmpOpen(false);
+    setTypePicker(null);
   }
 
-  function handleSelectLabel() {
-    if (!picker) return;
-    setLabelInput({
-      roomId: picker.roomId,
-      columnIndex: picker.columnIndex,
-      day: picker.day,
-      time: picker.time,
+  // Open block form for editing an existing block
+  function handleEditBlock() {
+    if (!contextMenu) return;
+    const block = blocks.find((b) => b.id === contextMenu.blockId);
+    if (!block) return;
+    setBlockForm({
+      x: contextMenu.x,
+      y: contextMenu.y,
+      roomId: block.room_id,
+      columnIndex: block.column_index,
+      day: block.day_of_week,
+      time: block.start_time,
+      blockType: block.block_type,
+      editBlockId: block.id,
     });
-    setLabelText("");
-    setLabelEmployeeId(null);
-    setLabelEmployeeSearch("");
-    setPicker(null);
+    setBlockFormEmployeeId(block.employee_id);
+    setBlockFormEmployeeSearch(block.employee_id ? "" : "");
+    setBlockFormNotes(block.block_type === "shift" ? (block.label ?? "") : "");
+    setBlockFormEmpOpen(false);
+    setContextMenu(null);
   }
 
-  function handleLabelSubmit() {
-    if (!labelInput || !labelText.trim()) return;
-    const endMins = timeToMinutes(labelInput.time) + 30;
-    const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
-    createBlock(
-      labelInput.roomId,
-      labelInput.columnIndex,
-      labelInput.day,
-      labelInput.time,
-      endTime,
-      labelEmployeeId,
-      labelText.trim()
-    );
-    setLabelInput(null);
-    setLabelText("");
-    setLabelEmployeeId(null);
-    setLabelEmployeeSearch("");
+  async function handleBlockFormSubmit() {
+    if (!blockForm) return;
+
+    if (!blockFormEmployeeId) {
+      setWarning("Please select an employee before saving.");
+      return;
+    }
+
+    if (blockForm.editBlockId) {
+      let label: string | null = null;
+      if (blockForm.blockType === "lunch_break") label = "Lunch Break";
+      else if (blockForm.blockType === "break") label = "Break";
+      else label = blockFormNotes.trim() || null;
+      await updateBlock(blockForm.editBlockId, blockFormEmployeeId, label);
+    } else {
+      const endMins = timeToMinutes(blockForm.time) + 10; // 10-minute default
+      const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
+      let label: string | null = null;
+      if (blockForm.blockType === "lunch_break") label = "Lunch Break";
+      else if (blockForm.blockType === "break") label = "Break";
+      else label = blockFormNotes.trim() || null;
+      await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, blockFormEmployeeId, label, blockForm.blockType);
+    }
+
+    setBlockForm(null);
+    setBlockFormEmployeeId(null);
+    setBlockFormEmployeeSearch("");
+    setBlockFormNotes("");
   }
 
   // --- Duplicate ---
@@ -525,11 +486,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const block = blocks.find((b) => b.id === contextMenu.blockId);
     if (!block) return;
     const duration = timeToMinutes(block.end_time) - timeToMinutes(block.start_time);
-    setDuplicateMode({
-      employeeId: block.employee_id,
-      label: block.label,
-      durationMinutes: duration,
-    });
+    setDuplicateMode({ employeeId: block.employee_id, label: block.label, durationMinutes: duration, blockType: block.block_type });
     setContextMenu(null);
   }
 
@@ -537,18 +494,12 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   async function togglePublish() {
     if (!schedule) return;
     const newStatus = schedule.status === "published" ? "draft" : "published";
-    const { error } = await supabase
-      .from("schedules")
-      .update({ status: newStatus })
-      .eq("id", schedule.id);
-    if (!error) {
-      setSchedule((prev) => (prev ? { ...prev, status: newStatus } : prev));
-    } else {
-      setWarning(error.message);
-    }
+    const { error } = await supabase.from("schedules").update({ status: newStatus }).eq("id", schedule.id);
+    if (!error) setSchedule((prev) => (prev ? { ...prev, status: newStatus } : prev));
+    else setWarning(error.message);
   }
 
-  // --- Copy Previous Week ---
+  // --- Copy Previous Week (includes rooms, blocks, and cell colors) ---
   async function copyPreviousWeek() {
     if (!schedule) return;
     setSaving(true);
@@ -567,20 +518,15 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    const [prevRoomsRes, prevBlocksRes] = await Promise.all([
-      supabase
-        .from("schedule_rooms")
-        .select("*")
-        .eq("schedule_id", prevSchedule.id)
-        .order("sort_order"),
-      supabase
-        .from("schedule_blocks")
-        .select("*")
-        .eq("schedule_id", prevSchedule.id),
+    const [prevRoomsRes, prevBlocksRes, prevColorsRes] = await Promise.all([
+      supabase.from("schedule_rooms").select("*").eq("schedule_id", prevSchedule.id).order("sort_order"),
+      supabase.from("schedule_blocks").select("*").eq("schedule_id", prevSchedule.id),
+      supabase.from("schedule_cell_colors").select("*").eq("schedule_id", prevSchedule.id),
     ]);
 
     const prevRooms = prevRoomsRes.data ?? [];
     const prevBlocks = prevBlocksRes.data ?? [];
+    const prevColors = prevColorsRes.data ?? [];
 
     if (prevRooms.length === 0) {
       setWarning("Previous schedule has no rooms to copy.");
@@ -589,26 +535,19 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
 
     if (rooms.length > 0) {
-      if (!confirm("This will replace all current rooms and blocks. Continue?")) {
+      if (!confirm("This will replace all current rooms, blocks, and colors. Continue?")) {
         setSaving(false);
         return;
       }
-      await supabase
-        .from("schedule_rooms")
-        .delete()
-        .eq("schedule_id", scheduleId);
+      await supabase.from("schedule_rooms").delete().eq("schedule_id", scheduleId);
     }
+
+    // Always clear existing colors
+    await supabase.from("schedule_cell_colors").delete().eq("schedule_id", scheduleId);
 
     const { data: newRooms } = await supabase
       .from("schedule_rooms")
-      .insert(
-        prevRooms.map((r) => ({
-          schedule_id: scheduleId,
-          name: r.name,
-          capacity: r.capacity,
-          sort_order: r.sort_order,
-        }))
-      )
+      .insert(prevRooms.map((r) => ({ schedule_id: scheduleId, name: r.name, capacity: r.capacity, sort_order: r.sort_order })))
       .select();
 
     if (newRooms && prevBlocks.length > 0) {
@@ -629,11 +568,42 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           end_time: b.end_time,
           column_index: b.column_index,
           label: b.label,
+          block_type: b.block_type ?? "shift",
         }));
 
       if (newBlocks.length > 0) {
         await supabase.from("schedule_blocks").insert(newBlocks);
       }
+    }
+
+    // Copy cell colors — remap old room IDs in color keys to new room IDs
+    if (newRooms && prevColors.length > 0) {
+      const roomMap2 = new Map<string, string>();
+      for (const oldRoom of prevRooms) {
+        const newRoom = newRooms.find((r) => r.sort_order === oldRoom.sort_order);
+        if (newRoom) roomMap2.set(oldRoom.id, newRoom.id);
+      }
+
+      await supabase.from("schedule_cell_colors").insert(
+        prevColors.map((c) => {
+          const oldColors = c.colors as Record<string, string>;
+          const remapped: Record<string, string> = {};
+          for (const [key, color] of Object.entries(oldColors)) {
+            // key format: "roomId:colIdx:timeSlot"
+            const firstColon = key.indexOf(":");
+            const oldRoomId = key.slice(0, firstColon);
+            const rest = key.slice(firstColon); // ":colIdx:timeSlot"
+            const newRoomId = roomMap2.get(oldRoomId);
+            if (newRoomId) remapped[newRoomId + rest] = color;
+          }
+          return {
+            schedule_id: scheduleId,
+            day_of_week: c.day_of_week,
+            colors: remapped,
+            updated_at: new Date().toISOString(),
+          };
+        })
+      );
     }
 
     await fetchData();
@@ -645,66 +615,54 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     if (!schedule) return;
     if (!confirm("Delete this schedule and all its rooms and blocks?")) return;
     const { error } = await supabase.from("schedules").delete().eq("id", schedule.id);
-    if (!error) {
-      onBack();
-    } else {
-      setWarning(error.message);
-    }
+    if (!error) onBack();
+    else setWarning(error.message);
   }
 
+  // Employee search helpers for block form
+  const blockFormEmpResults = employees.filter((e) => {
+    if (!blockFormEmployeeSearch.trim()) return true;
+    const name = formatEmployeeName(e).toLowerCase();
+    const nick = Array.isArray(e.nicknames) ? e.nicknames.join(" ").toLowerCase() : (e.nicknames ?? "").toLowerCase();
+    const q = blockFormEmployeeSearch.toLowerCase();
+    return name.includes(q) || nick.includes(q);
+  }).slice(0, 12);
+
+  const selectedEmpName = blockFormEmployeeId
+    ? (() => { const e = employees.find((emp) => emp.id === blockFormEmployeeId); return e ? getDisplayName(e) : ""; })()
+    : "";
+
   if (loading) {
-    return (
-      <div style={{ padding: 24 }}>
-        <div style={{ fontWeight: 800 }}>Loading schedule…</div>
-      </div>
-    );
+    return <div style={{ padding: 24 }}><div style={{ fontWeight: 800 }}>Loading schedule…</div></div>;
   }
 
   if (!schedule) {
     return (
       <div style={{ padding: 24 }}>
         <div style={{ fontWeight: 800, color: "#dc2626" }}>Schedule not found.</div>
-        <button className="btn" onClick={onBack} style={{ marginTop: 12 }}>
-          Back to list
-        </button>
+        <button className="btn" onClick={onBack} style={{ marginTop: 12 }}>Back to list</button>
       </div>
     );
+  }
+
+  const blockTypeLabel = (t: BlockType) =>
+    t === "lunch_break" ? "Lunch Break" : t === "break" ? "Break" : "Shift";
+
+  // Smart popup position: offset from cursor, clamped
+  function popupPos(x: number, y: number, w = 260, h = 200) {
+    const maxX = typeof window !== "undefined" ? window.innerWidth - w - 8 : x;
+    const maxY = typeof window !== "undefined" ? window.innerHeight - h - 8 : y;
+    return { left: Math.min(x + 8, maxX), top: Math.min(y + 8, maxY) };
   }
 
   return (
     <div>
       {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "16px 0",
-          flexWrap: "wrap",
-          gap: 12,
-        }}
-      >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 0", flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button
-            className="btn"
-            onClick={onBack}
-            style={{ padding: "6px 14px", fontSize: 13 }}
-          >
-            &larr; Back
-          </button>
-          <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>
-            {formatWeekRange(schedule.week_start)}
-          </h2>
-          <span
-            style={{
-              padding: "4px 12px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 700,
-              background: schedule.status === "published" ? "#dcfce7" : "#fef3c7",
-              color: schedule.status === "published" ? "#16a34a" : "#d97706",
-            }}
-          >
+          <button className="btn" onClick={onBack} style={{ padding: "6px 14px", fontSize: 13 }}>&larr; Back</button>
+          <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>{formatWeekRange(schedule.week_start)}</h2>
+          <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, background: schedule.status === "published" ? "#dcfce7" : "#fef3c7", color: schedule.status === "published" ? "#16a34a" : "#d97706" }}>
             {schedule.status === "published" ? "Published" : "Draft"}
           </span>
         </div>
@@ -712,215 +670,35 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!readOnly && (
             <>
-              <button className="btn" onClick={copyPreviousWeek} disabled={saving}>
-                Copy Previous Week
-              </button>
-              <button className="btn" onClick={addRoom}>
-                + Add Room
-              </button>
+              <button className="btn" onClick={copyPreviousWeek} disabled={saving}>Copy Previous Week</button>
+              <button className="btn" onClick={addRoom}>+ Add Room</button>
             </>
           )}
-          <button
-            className="btn btn-pink"
-            onClick={togglePublish}
-          >
+          <button className="btn btn-pink" onClick={togglePublish}>
             {schedule.status === "published" ? "Unpublish" : "Publish"}
           </button>
-          <button
-            className="btn"
-            onClick={handleDeleteSchedule}
-            style={{ color: "#dc2626", borderColor: "#fca5a5" }}
-          >
-            Delete
-          </button>
+          <button className="btn" onClick={handleDeleteSchedule} style={{ color: "#dc2626", borderColor: "#fca5a5" }}>Delete</button>
         </div>
       </div>
 
       {/* Warning banner */}
       {warning && (
-        <div
-          style={{
-            padding: "10px 16px",
-            background: "#fef2f2",
-            color: "#dc2626",
-            borderRadius: 10,
-            marginBottom: 12,
-            fontSize: 13,
-            fontWeight: 600,
-          }}
-        >
+        <div style={{ padding: "10px 16px", background: "#fef2f2", color: "#dc2626", borderRadius: 10, marginBottom: 12, fontSize: 13, fontWeight: 600 }}>
           {warning}
         </div>
       )}
 
       {/* Duplicate mode banner */}
       {duplicateMode && (
-        <div
-          style={{
-            padding: "10px 16px",
-            background: "#eff6ff",
-            color: "#2563eb",
-            borderRadius: 10,
-            marginBottom: 12,
-            fontSize: 13,
-            fontWeight: 600,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-          }}
-        >
-          <span>
-            Duplicate mode: Click a cell to place a{" "}
-            {duplicateMode.durationMinutes}-min block.
-          </span>
-          <button
-            onClick={() => setDuplicateMode(null)}
-            style={{
-              border: "none",
-              background: "#dbeafe",
-              padding: "4px 10px",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 700,
-            }}
-          >
-            Cancel
-          </button>
+        <div style={{ padding: "10px 16px", background: "#eff6ff", color: "#2563eb", borderRadius: 10, marginBottom: 12, fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>Duplicate mode: Click a cell to place a {duplicateMode.durationMinutes}-min {blockTypeLabel(duplicateMode.blockType)} block.</span>
+          <button onClick={() => setDuplicateMode(null)} style={{ border: "none", background: "#dbeafe", padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>Cancel</button>
         </div>
       )}
 
-      {/* Label input modal */}
-      {labelInput && (
-        <div
-          style={{
-            padding: "10px 16px",
-            background: "#f0f9ff",
-            borderRadius: 10,
-            marginBottom: 12,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-          }}
-        >
-          <span style={{ fontWeight: 700, fontSize: 13 }}>Label:</span>
-          <input
-            type="text"
-            value={labelText}
-            onChange={(e) => setLabelText(e.target.value)}
-            placeholder="e.g., Lunch, Break, Office"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleLabelSubmit();
-              if (e.key === "Escape") setLabelInput(null);
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1.5px solid #e5e7eb",
-              fontSize: 13,
-              width: 200,
-            }}
-          />
-          <div style={{ position: "relative" }}>
-            <input
-              type="text"
-              value={labelEmployeeId ? (employees.find((e) => e.id === labelEmployeeId) ? formatEmployeeName(employees.find((e) => e.id === labelEmployeeId)!) : "Selected") : labelEmployeeSearch}
-              onChange={(e) => {
-                setLabelEmployeeSearch(e.target.value);
-                setLabelEmployeeId(null);
-              }}
-              placeholder="Attach employee (optional)"
-              style={{
-                padding: "6px 10px",
-                borderRadius: 8,
-                border: "1.5px solid #e5e7eb",
-                fontSize: 13,
-                width: 200,
-              }}
-            />
-            {labelEmployeeSearch && !labelEmployeeId && (
-              <div
-                style={{
-                  position: "absolute",
-                  top: "100%",
-                  left: 0,
-                  width: 260,
-                  maxHeight: 180,
-                  overflowY: "auto",
-                  background: "white",
-                  border: "1.5px solid #e5e7eb",
-                  borderRadius: 8,
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-                  zIndex: 50,
-                }}
-              >
-                {employees
-                  .filter((e) => {
-                    const name = formatEmployeeName(e).toLowerCase();
-                    return name.includes(labelEmployeeSearch.toLowerCase());
-                  })
-                  .slice(0, 10)
-                  .map((emp) => (
-                    <button
-                      key={emp.id}
-                      onClick={() => {
-                        setLabelEmployeeId(emp.id);
-                        setLabelEmployeeSearch("");
-                      }}
-                      style={{
-                        display: "block",
-                        width: "100%",
-                        padding: "6px 10px",
-                        border: "none",
-                        background: "transparent",
-                        cursor: "pointer",
-                        textAlign: "left",
-                        fontSize: 12,
-                        fontWeight: 600,
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = "#f3f4f6")}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                    >
-                      {formatEmployeeName(emp)}
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
-          {labelEmployeeId && (
-            <button
-              className="btn"
-              onClick={() => { setLabelEmployeeId(null); setLabelEmployeeSearch(""); }}
-              style={{ padding: "4px 8px", fontSize: 11 }}
-            >
-              ✕ Clear employee
-            </button>
-          )}
-          <button className="btn btn-pink" onClick={handleLabelSubmit} style={{ padding: "6px 14px", fontSize: 13 }}>
-            Add
-          </button>
-          <button className="btn" onClick={() => setLabelInput(null)} style={{ padding: "6px 14px", fontSize: 13 }}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {/* Room edit inline */}
+      {/* Room edit panel */}
       {roomEdit && (
-        <div
-          style={{
-            padding: "10px 16px",
-            background: "#fdf2f8",
-            borderRadius: 10,
-            marginBottom: 12,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ padding: "10px 16px", background: "#fdf2f8", borderRadius: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontWeight: 700, fontSize: 13 }}>Edit Room:</span>
           <input
             type="text"
@@ -928,78 +706,29 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             onChange={(e) => setRoomEdit({ ...roomEdit, name: e.target.value })}
             placeholder="Room name"
             autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleRoomEditSave();
-              if (e.key === "Escape") setRoomEdit(null);
-            }}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 8,
-              border: "1.5px solid #e5e7eb",
-              fontSize: 13,
-              width: 160,
-            }}
+            onKeyDown={(e) => { if (e.key === "Enter") handleRoomEditSave(); if (e.key === "Escape") setRoomEdit(null); }}
+            style={{ padding: "6px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, width: 160 }}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <label style={{ fontSize: 12, fontWeight: 600, color: "#6b7280" }}>Capacity:</label>
             <input
-              type="number"
-              min={1}
-              max={10}
-              value={roomEdit.capacity}
-              onChange={(e) =>
-                setRoomEdit({ ...roomEdit, capacity: Math.max(1, parseInt(e.target.value) || 1) })
-              }
-              style={{
-                width: 50,
-                padding: "4px 6px",
-                borderRadius: 6,
-                border: "1px solid #e5e7eb",
-                fontSize: 13,
-                textAlign: "center",
-              }}
+              type="number" min={1} max={10} value={roomEdit.capacity}
+              onChange={(e) => setRoomEdit({ ...roomEdit, capacity: Math.max(1, parseInt(e.target.value) || 1) })}
+              style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 13, textAlign: "center" }}
             />
           </div>
-          <button className="btn btn-pink" onClick={handleRoomEditSave} style={{ padding: "6px 14px", fontSize: 13 }}>
-            Save
-          </button>
-          <button
-            className="btn"
-            onClick={() => {
-              deleteRoom(roomEdit.roomId);
-              setRoomEdit(null);
-            }}
-            style={{ padding: "6px 14px", fontSize: 13, color: "#dc2626", borderColor: "#fca5a5" }}
-          >
-            Delete Room
-          </button>
-          <button className="btn" onClick={() => setRoomEdit(null)} style={{ padding: "6px 14px", fontSize: 13 }}>
-            Cancel
-          </button>
+          <button className="btn btn-pink" onClick={handleRoomEditSave} style={{ padding: "6px 14px", fontSize: 13 }}>Save</button>
+          <button className="btn" onClick={() => { deleteRoom(roomEdit.roomId); setRoomEdit(null); }} style={{ padding: "6px 14px", fontSize: 13, color: "#dc2626", borderColor: "#fca5a5" }}>Delete Room</button>
+          <button className="btn" onClick={() => setRoomEdit(null)} style={{ padding: "6px 14px", fontSize: 13 }}>Cancel</button>
         </div>
       )}
 
       {/* Paint mode toolbar */}
       {!readOnly && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            marginBottom: 8,
-            padding: "8px 12px",
-            background: paintMode ? "#fffbeb" : "#f9fafb",
-            borderRadius: 10,
-            border: paintMode ? "1.5px solid #fbbf24" : "1.5px solid #e5e7eb",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "8px 12px", background: paintMode ? "#fffbeb" : "#f9fafb", borderRadius: 10, border: paintMode ? "1.5px solid #fbbf24" : "1.5px solid #e5e7eb", flexWrap: "wrap" }}>
           <button
             className={paintMode ? "btn btn-pink" : "btn"}
-            onClick={() => {
-              setPaintMode(!paintMode);
-              setPaintErase(false);
-            }}
+            onClick={() => { setPaintMode(!paintMode); setPaintErase(false); }}
             style={{ padding: "6px 14px", fontSize: 13 }}
           >
             {paintMode ? "🎨 Paint ON" : "🎨 Paint"}
@@ -1007,20 +736,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           {paintMode && (
             <>
               <input
-                type="color"
-                value={paintColor}
-                onChange={(e) => {
-                  setPaintColor(e.target.value);
-                  setPaintErase(false);
-                }}
-                style={{
-                  width: 32,
-                  height: 28,
-                  border: "1.5px solid #d1d5db",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  padding: 0,
-                }}
+                type="color" value={paintColor}
+                onChange={(e) => { setPaintColor(e.target.value); setPaintErase(false); }}
+                style={{ width: 32, height: 28, border: "1.5px solid #d1d5db", borderRadius: 6, cursor: "pointer", padding: 0 }}
                 title="Pick color"
               />
               <div style={{ display: "flex", gap: 4 }}>
@@ -1028,14 +746,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                   <button
                     key={c}
                     onClick={() => { setPaintColor(c); setPaintErase(false); }}
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: 6,
-                      background: c,
-                      border: paintColor === c && !paintErase ? "2px solid #111" : "1px solid #d1d5db",
-                      cursor: "pointer",
-                    }}
+                    style={{ width: 24, height: 24, borderRadius: 6, background: c, border: paintColor === c && !paintErase ? "2px solid #111" : "1px solid #d1d5db", cursor: "pointer" }}
                     title={c}
                   />
                 ))}
@@ -1043,21 +754,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               <button
                 className="btn"
                 onClick={() => setPaintErase(!paintErase)}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  background: paintErase ? "#fef2f2" : undefined,
-                  borderColor: paintErase ? "#fca5a5" : undefined,
-                }}
+                style={{ padding: "6px 12px", fontSize: 12, background: paintErase ? "#fef2f2" : undefined, borderColor: paintErase ? "#fca5a5" : undefined }}
               >
                 {paintErase ? "🧹 Erasing" : "🧹 Erase"}
               </button>
-              <button
-                className="btn"
-                onClick={handleColorUndo}
-                disabled={colorUndoStack.length === 0}
-                style={{ padding: "6px 12px", fontSize: 12 }}
-              >
+              <button className="btn" onClick={handleColorUndo} disabled={colorUndoStack.length === 0} style={{ padding: "6px 12px", fontSize: 12 }}>
                 ↩ Undo
               </button>
             </>
@@ -1072,18 +773,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             key={dayNum}
             onClick={() => setActiveDay(dayNum)}
             style={{
-              padding: "8px 16px",
-              borderRadius: 10,
-              border:
-                activeDay === dayNum
-                  ? "1.5px solid rgba(230,23,141,0.35)"
-                  : "1.5px solid #e5e7eb",
-              background:
-                activeDay === dayNum ? "rgba(230,23,141,0.06)" : "white",
+              padding: "8px 16px", borderRadius: 10,
+              border: activeDay === dayNum ? "1.5px solid rgba(230,23,141,0.35)" : "1.5px solid #e5e7eb",
+              background: activeDay === dayNum ? "rgba(230,23,141,0.06)" : "white",
               color: activeDay === dayNum ? "#e6178d" : "#111827",
-              fontWeight: 700,
-              fontSize: 13,
-              cursor: "pointer",
+              fontWeight: 700, fontSize: 13, cursor: "pointer",
             }}
           >
             {DAY_LABELS[idx]}
@@ -1092,10 +786,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       </div>
 
       {/* Grid */}
-      <div
-        data-schedule-grid
-        style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, overflow: "hidden" }}
-      >
+      <div data-schedule-grid style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
         <ScheduleGrid
           rooms={rooms}
           blocks={blocks}
@@ -1103,9 +794,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           day={activeDay}
           readOnly={readOnly}
           onCellClick={handleCellClick}
-          onBlockContextMenu={(blockId, x, y) => {
-            if (!readOnly) setContextMenu({ blockId, x, y });
-          }}
+          onBlockContextMenu={(blockId, x, y) => { if (!readOnly) setContextMenu({ blockId, x, y }); }}
           onBlockResize={handleBlockResize}
           onBlockMoveToColumn={handleBlockMoveToColumn}
           onRoomUpdate={handleRoomEditTrigger}
@@ -1114,24 +803,158 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           cellColors={cellColors[activeDay] ?? {}}
           onPaintCells={handlePaintCells}
         />
-
-        {/* Employee picker overlay */}
-        {picker && (
-          <EmployeePickerDropdown
-            employees={employees}
-            onSelect={handleSelectEmployee}
-            onSelectLabel={handleSelectLabel}
-            onClose={() => setPicker(null)}
-            style={{ top: 80, left: 100 }}
-          />
-        )}
       </div>
+
+      {/* Type picker popup */}
+      {typePicker && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 59 }}
+            onMouseDown={() => setTypePicker(null)}
+          />
+          <div
+            style={{
+              position: "fixed",
+              ...popupPos(typePicker.x, typePicker.y, 200, 130),
+              zIndex: 60,
+              background: "white",
+              border: "1.5px solid #e5e7eb",
+              borderRadius: 10,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
+              overflow: "hidden",
+              minWidth: 190,
+            }}
+          >
+            {(
+              [
+                { type: "shift" as BlockType, icon: "👤", label: "Add Shift", color: "#6366f1" },
+                { type: "lunch_break" as BlockType, icon: "🥗", label: "Add Lunch Break", color: "#f97316" },
+                { type: "break" as BlockType, icon: "☕", label: "Add Break", color: "#22c55e" },
+              ] as const
+            ).map(({ type, icon, label, color }) => (
+              <button
+                key={type}
+                onClick={() => openBlockForm(type)}
+                style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 14px", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 13, fontWeight: 700, color }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              >
+                {icon} {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Block form popup */}
+      {blockForm && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 59 }}
+            onMouseDown={() => setBlockForm(null)}
+          />
+          <div
+            style={{
+              position: "fixed",
+              ...popupPos(blockForm.x, blockForm.y, 280, blockForm.blockType === "shift" ? 260 : 200),
+              zIndex: 60,
+              background: "white",
+              border: "1.5px solid #e5e7eb",
+              borderRadius: 12,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+              padding: 16,
+              width: 280,
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 12, color: blockForm.blockType === "lunch_break" ? "#f97316" : blockForm.blockType === "break" ? "#22c55e" : "#6366f1" }}>
+              {blockForm.editBlockId ? "Edit" : "Add"} {blockTypeLabel(blockForm.blockType)}
+            </div>
+
+            {/* Employee search */}
+            <div style={{ marginBottom: 10, position: "relative" }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Employee</label>
+              <input
+                type="text"
+                placeholder="Search employee…"
+                value={blockFormEmployeeId ? selectedEmpName : blockFormEmployeeSearch}
+                onChange={(e) => {
+                  setBlockFormEmployeeSearch(e.target.value);
+                  setBlockFormEmployeeId(null);
+                  setBlockFormEmpOpen(true);
+                }}
+                onFocus={() => setBlockFormEmpOpen(true)}
+                autoFocus
+                style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }}
+              />
+              {blockFormEmployeeId && (
+                <button
+                  onClick={() => { setBlockFormEmployeeId(null); setBlockFormEmployeeSearch(""); setBlockFormEmpOpen(true); }}
+                  style={{ position: "absolute", right: 8, top: 26, border: "none", background: "none", cursor: "pointer", color: "#9ca3af", fontSize: 14 }}
+                >✕</button>
+              )}
+              {blockFormEmpOpen && !blockFormEmployeeId && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "white", border: "1.5px solid #e5e7eb", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)", zIndex: 70, maxHeight: 180, overflowY: "auto" }}>
+                  {blockFormEmpResults.length === 0 ? (
+                    <div style={{ padding: "10px 12px", color: "#9ca3af", fontSize: 12 }}>No employees found</div>
+                  ) : (
+                    blockFormEmpResults.map((emp) => (
+                      <button
+                        key={emp.id}
+                        onMouseDown={(e) => { e.preventDefault(); setBlockFormEmployeeId(emp.id); setBlockFormEmployeeSearch(""); setBlockFormEmpOpen(false); }}
+                        style={{ display: "block", width: "100%", padding: "7px 12px", border: "none", background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 13, fontWeight: 600 }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        {getDisplayName(emp)}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Notes field (shift only) */}
+            {blockForm.blockType === "shift" && (
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Notes / Label (optional)</label>
+                <input
+                  type="text"
+                  placeholder="e.g., Front desk, Tutoring…"
+                  value={blockFormNotes}
+                  onChange={(e) => setBlockFormNotes(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleBlockFormSubmit(); if (e.key === "Escape") setBlockForm(null); }}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }}
+                />
+              </div>
+            )}
+
+            {!blockFormEmployeeId && (
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>
+                Select an employee to continue.
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn btn-pink"
+                onClick={handleBlockFormSubmit}
+                disabled={!blockFormEmployeeId}
+                style={{ flex: 1, padding: "7px 0", fontSize: 13, opacity: blockFormEmployeeId ? 1 : 0.4 }}
+              >
+                {blockForm.editBlockId ? "Save" : "Add"}
+              </button>
+              <button className="btn" onClick={() => setBlockForm(null)} style={{ padding: "7px 14px", fontSize: 13 }}>Cancel</button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Context menu */}
       {contextMenu && (
         <BlockContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          onEdit={handleEditBlock}
           onDuplicate={handleDuplicate}
           onDelete={() => deleteBlock(contextMenu.blockId)}
           onClose={() => setContextMenu(null)}
@@ -1140,21 +963,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
       {/* Saving indicator */}
       {saving && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 20,
-            right: 20,
-            padding: "8px 16px",
-            background: "#fdf2f8",
-            border: "1px solid #f9a8d4",
-            borderRadius: 10,
-            fontSize: 13,
-            fontWeight: 700,
-            color: "#e6178d",
-            zIndex: 50,
-          }}
-        >
+        <div style={{ position: "fixed", bottom: 20, right: 20, padding: "8px 16px", background: "#fdf2f8", border: "1px solid #f9a8d4", borderRadius: 10, fontSize: 13, fontWeight: 700, color: "#e6178d", zIndex: 50 }}>
           Saving…
         </div>
       )}

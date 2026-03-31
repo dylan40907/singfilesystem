@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 interface BlockContextMenuProps {
   x: number;
   y: number;
+  onEdit: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
   onClose: () => void;
@@ -13,6 +14,7 @@ interface BlockContextMenuProps {
 export default function BlockContextMenu({
   x,
   y,
+  onEdit,
   onDuplicate,
   onDelete,
   onClose,
@@ -57,6 +59,14 @@ export default function BlockContextMenu({
         minWidth: 140,
       }}
     >
+      <button
+        style={btnStyle}
+        onClick={onEdit}
+        onMouseEnter={(e) => (e.currentTarget.style.background = "#f0f9ff")}
+        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+      >
+        ✏️ Edit
+      </button>
       <button
         style={btnStyle}
         onClick={onDuplicate}

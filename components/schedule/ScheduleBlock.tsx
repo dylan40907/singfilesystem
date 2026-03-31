@@ -42,6 +42,13 @@ export default function ScheduleBlock({
 
   const isLabelOnly = !block.employee_id && !!block.label;
   const isLabelWithEmployee = !!block.employee_id && !!block.label;
+
+  const leftBorderColor =
+    block.block_type === "lunch_break"
+      ? "#f97316" // orange
+      : block.block_type === "break"
+      ? "#22c55e" // green
+      : "#6366f1"; // indigo for shift
   const displayName = isLabelOnly
     ? block.label ?? "Label"
     : employee
@@ -195,12 +202,11 @@ export default function ScheduleBlock({
         height: heightPx,
         background: "rgba(255,255,255,0.85)",
         border: "1px solid #d1d5db",
+        borderLeft: `3px solid ${leftBorderColor}`,
         borderRadius: 6,
-        padding: "2px 4px",
+        padding: "3px 5px",
         overflow: "hidden",
         cursor: readOnly ? "default" : "grab",
-        fontSize: 11,
-        lineHeight: "14px",
         userSelect: "none",
         zIndex: 10,
         touchAction: "none",
@@ -228,42 +234,45 @@ export default function ScheduleBlock({
       {/* Block content */}
       <div
         style={{
-          fontWeight: 800,
-          fontSize: 12,
+          fontWeight: 900,
+          fontSize: 13,
           whiteSpace: "nowrap",
           overflow: "hidden",
           textOverflow: "ellipsis",
           pointerEvents: "none",
-          color: "#111827",
+          color: "#1e293b",
+          lineHeight: "16px",
         }}
       >
         {displayName}
       </div>
-      {heightPx > 28 && (
+      {heightPx > 32 && (
         <div
           style={{
-            fontSize: 10,
+            fontSize: 11,
             color: "#6b7280",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
             pointerEvents: "none",
+            marginTop: 2,
+            lineHeight: "14px",
           }}
         >
           {timeLabel}
         </div>
       )}
-      {isLabelWithEmployee && heightPx > 42 && (
+      {isLabelWithEmployee && heightPx > 50 && (
         <div
           style={{
-            fontSize: 10,
+            fontSize: 11,
             color: "#4f46e5",
-            fontWeight: 600,
+            fontWeight: 700,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
             pointerEvents: "none",
-            marginTop: 1,
+            marginTop: 2,
           }}
         >
           {block.label}

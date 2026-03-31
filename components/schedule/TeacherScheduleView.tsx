@@ -155,25 +155,30 @@ export default function TeacherScheduleView({ employeeId }: TeacherScheduleViewP
                           padding: "10px 14px",
                           background: "white",
                           border: "1px solid #d1d5db",
+                          borderLeft: `4px solid ${
+                            block.block_type === "lunch_break"
+                              ? "#f97316"
+                              : block.block_type === "break"
+                              ? "#22c55e"
+                              : "#6366f1"
+                          }`,
                           borderRadius: 10,
                         }}
                       >
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: 14,
-                            minWidth: 150,
-                          }}
-                        >
+                        <div style={{ fontWeight: 700, fontSize: 14, minWidth: 150 }}>
                           {formatTimeRange(block.start_time, block.end_time)}
                         </div>
                         <div style={{ fontSize: 13, color: "#6b7280" }}>
                           {room ? room.name : ""}
                         </div>
-                        {block.label && (
-                          <div style={{ fontWeight: 700, fontSize: 13, color: "#4f46e5" }}>
-                            {block.label}
-                          </div>
+                        {block.block_type === "lunch_break" && (
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#f97316" }}>Lunch Break</div>
+                        )}
+                        {block.block_type === "break" && (
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#22c55e" }}>Break</div>
+                        )}
+                        {block.block_type === "shift" && block.label && (
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#4f46e5" }}>{block.label}</div>
                         )}
                       </div>
                     );

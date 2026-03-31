@@ -23,7 +23,7 @@ interface ScheduleGridProps {
   employees: EmployeeLite[];
   day: number; // 1-5
   readOnly?: boolean;
-  onCellClick: (roomId: string, columnIndex: number, day: number, time: string) => void;
+  onCellClick: (roomId: string, columnIndex: number, day: number, time: string, clientX: number, clientY: number) => void;
   onBlockContextMenu: (blockId: string, x: number, y: number) => void;
   onBlockResize: (blockId: string, newStartTime: string, newEndTime: string) => void;
   onBlockMoveToColumn: (blockId: string, newRoomId: string, newColumnIndex: number, deltaSlots: number) => void;
@@ -130,7 +130,7 @@ export default function ScheduleGrid({
   const TIME_COL_WIDTH = 72;
 
   return (
-    <div style={{ display: "flex", overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 220px)" }}>
+    <div style={{ display: "flex", overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 280px)", alignItems: "stretch" }}>
       {/* Time column */}
       <div
         style={{
@@ -196,6 +196,7 @@ export default function ScheduleGrid({
               flex: `1 0 ${COL_WIDTH}px`,
               borderRight,
               position: "relative",
+              minHeight: gridHeight + 36,
             }}
           >
             {/* Column header */}
@@ -236,7 +237,7 @@ export default function ScheduleGrid({
                 const y = e.clientY - rect.top;
                 const slotIndex = Math.floor(y / PX_PER_SLOT);
                 const mins = START_MINUTES + slotIndex * SLOT_MINUTES;
-                onCellClick(col.roomId, col.columnIndex, day, minutesToTime(mins));
+                onCellClick(col.roomId, col.columnIndex, day, minutesToTime(mins), e.clientX, e.clientY);
               }}
               onPointerDown={(e) => {
                 if (!paintMode || !onPaintCells) return;
