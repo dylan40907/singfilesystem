@@ -159,12 +159,13 @@ export function snapMinutes(minutes: number): number {
   return Math.max(START_MINUTES, Math.min(END_MINUTES, snapped));
 }
 
-/** Check if two time ranges overlap */
+/** Check if two time ranges overlap.
+ *  Uses minute-based comparison to avoid "HH:mm" vs "HH:mm:ss" string issues. */
 export function timeOverlaps(
   s1: string, e1: string,
   s2: string, e2: string
 ): boolean {
-  return s1 < e2 && s2 < e1;
+  return timeToMinutes(s1) < timeToMinutes(e2) && timeToMinutes(s2) < timeToMinutes(e1);
 }
 
 /** Calculate total paid minutes for an employee on a given day.
