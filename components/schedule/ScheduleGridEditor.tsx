@@ -20,6 +20,7 @@ import {
   SLOT_MINUTES,
   START_MINUTES,
   END_MINUTES,
+  calculatePaidMinutes,
 } from "@/lib/scheduleUtils";
 import ScheduleGrid from "./ScheduleGrid";
 import BlockContextMenu from "./BlockContextMenu";
@@ -101,6 +102,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [colorUndoStack, setColorUndoStack] = useState<Record<number, Record<string, string>>[]>([]);
   const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Color legend labels: maps hex color → label text
+  const [colorLabels, setColorLabels] = useState<Record<string, string>>({});
+  const colorLabelsSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Weekly hours view
+  const [showHoursView, setShowHoursView] = useState(false);
+  const [hoursSearch, setHoursSearch] = useState("");
+
   const readOnly = schedule?.status === "published";
 
   // No document listener needed — outside clicks handled by backdrop divs
@@ -120,7 +129,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       supabase.from("schedule_cell_colors").select("day_of_week, colors").eq("schedule_id", scheduleId),
     ]);
 
-    if (schedRes.data) setSchedule(schedRes.data);
+    if (schedRes.data) {
+      setSchedule(schedRes.data);
+      setColorLabels((schedRes.data.color_labels as Record<string, string>) ?? {});
+    }
     if (roomsRes.data) setRooms(roomsRes.data);
     if (blocksRes.data) setBlocks(blocksRes.data);
     if (empRes.data) setEmployees(empRes.data);
@@ -171,6 +183,47 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     setCellColors(prevState);
     saveCellColors(activeDay, prevState[activeDay] ?? {});
   }
+
+  // Save color labels (debounced)
+  function saveColorLabels(labels: Record<string, string>) {
+    if (colorLabelsSaveTimeout.current) clearTimeout(colorLabelsSaveTimeout.current);
+    colorLabelsSaveTimeout.current = setTimeout(async () => {
+      await supabase.from("schedules").update({ color_labels: labels }).eq("id", scheduleId);
+    }, 400);
+  }
+
+  function handleColorLabelChange(color: string, label: string) {
+    const next = { ...colorLabels, [color]: label };
+    setColorLabels(next);
+    saveColorLabels(next);
+  }
+
+  // Colors actually used across all days in this schedule
+  const usedColors = useMemo(() => {
+    const colorSet = new Set<string>();
+    for (const dayColors of Object.values(cellColors)) {
+      for (const c of Object.values(dayColors)) {
+        colorSet.add(c);
+      }
+    }
+    return [...colorSet].sort();
+  }, [cellColors]);
+
+  // Weekly hours: all employees with blocks, total paid minutes per employee
+  const weeklyHours = useMemo(() => {
+    const paidByEmp = new Map<string, number>();
+    for (const b of blocks) {
+      if (!b.employee_id || b.block_type === "lunch_break") continue;
+      const dur = timeToMinutes(b.end_time) - timeToMinutes(b.start_time);
+      paidByEmp.set(b.employee_id, (paidByEmp.get(b.employee_id) ?? 0) + dur);
+    }
+    return [...paidByEmp.entries()]
+      .map(([empId, mins]) => {
+        const emp = employees.find((e) => e.id === empId);
+        return { empId, name: emp ? getDisplayName(emp) : empId, mins };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [blocks, employees]);
 
   // Compute per-block warnings. Overtime takes priority: if overtime exists for an
   // employee on a given day, only the overtime warning is shown (5h / break warnings suppressed).
@@ -705,6 +758,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               <button className="btn" onClick={addRoom}>+ Add Room</button>
             </>
           )}
+          <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>
           <button className="btn btn-pink" onClick={togglePublish}>
             {schedule.status === "published" ? "Unpublish" : "Publish"}
           </button>
@@ -794,6 +848,25 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               </button>
             </>
           )}
+        </div>
+      )}
+
+      {/* Color legend */}
+      {usedColors.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 12px", background: "#f9fafb", borderRadius: 10, border: "1.5px solid #e5e7eb", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", marginRight: 4 }}>Legend:</span>
+          {usedColors.map((color) => (
+            <div key={color} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div style={{ width: 18, height: 18, borderRadius: 4, background: color, border: "1px solid #d1d5db", flexShrink: 0 }} />
+              <input
+                type="text"
+                value={colorLabels[color] ?? ""}
+                onChange={(e) => handleColorLabelChange(color, e.target.value)}
+                placeholder="Label…"
+                style={{ width: 90, padding: "2px 6px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 12, fontWeight: 500, color: "#374151", background: "white" }}
+              />
+            </div>
+          ))}
         </div>
       )}
 
@@ -991,6 +1064,79 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           onDelete={() => deleteBlock(contextMenu.blockId)}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {/* Weekly hours modal */}
+      {showHoursView && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }}
+            onMouseDown={() => setShowHoursView(false)}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 81,
+              background: "white",
+              borderRadius: 14,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.18)",
+              padding: 24,
+              width: 380,
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Weekly Paid Hours</div>
+              <button onClick={() => setShowHoursView(false)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 18, color: "#9ca3af", lineHeight: 1 }}>✕</button>
+            </div>
+            <input
+              type="text"
+              placeholder="Search employee…"
+              value={hoursSearch}
+              onChange={(e) => setHoursSearch(e.target.value)}
+              autoFocus
+              style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, marginBottom: 12, boxSizing: "border-box" }}
+            />
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {(() => {
+                const q = hoursSearch.toLowerCase().trim();
+                const filtered = weeklyHours.filter((r) => !q || r.name.toLowerCase().includes(q));
+                if (filtered.length === 0) {
+                  return <div style={{ color: "#9ca3af", fontSize: 13, padding: "10px 0" }}>No employees found.</div>;
+                }
+                return filtered.map(({ empId, name, mins }) => {
+                  const h = Math.floor(mins / 60);
+                  const m = mins % 60;
+                  const label = m === 0 ? `${h}h` : `${h}h ${m}m`;
+                  return (
+                    <div
+                      key={empId}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "9px 4px",
+                        borderBottom: "1px solid #f3f4f6",
+                      }}
+                    >
+                      <span style={{ fontSize: 14, fontWeight: 600, color: "#1e293b" }}>{name}</span>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: "#374151" }}>{label}</span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
+              Paid time = shifts + breaks, excluding lunch breaks.
+            </div>
+          </div>
+        </>
       )}
 
       {/* Saving indicator */}

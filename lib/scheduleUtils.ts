@@ -228,6 +228,15 @@ export function getDisplayName(emp: EmployeeLite): string {
   return formatEmployeeName(emp);
 }
 
+/** Get short first name for compact block display: first nickname word, or legal first name */
+export function getFirstName(emp: EmployeeLite): string {
+  const nick = Array.isArray(emp.nicknames)
+    ? (emp.nicknames as string[])[0]
+    : emp.nicknames;
+  if (nick && nick.trim()) return nick.trim().split(" ")[0];
+  return emp.legal_first_name?.trim() || formatEmployeeName(emp);
+}
+
 /** Generate week options starting from a given Monday, going forward N weeks */
 export function generateWeekOptions(fromDate: Date, count: number): string[] {
   const monday = getMonday(fromDate);

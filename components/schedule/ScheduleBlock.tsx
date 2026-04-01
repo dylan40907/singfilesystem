@@ -5,7 +5,7 @@ import {
   ScheduleBlock as ScheduleBlockType,
   EmployeeLite,
   formatTime,
-  getDisplayName,
+  getFirstName,
   timeToMinutes,
   minutesToTime,
   snapMinutes,
@@ -54,7 +54,7 @@ export default function ScheduleBlock({
   const displayName = isLabelOnly
     ? block.label ?? "Label"
     : employee
-      ? getDisplayName(employee)
+      ? getFirstName(employee)
       : "Unknown";
 
   const timeLabel = `${formatTime(block.start_time)} - ${formatTime(block.end_time)}`;
