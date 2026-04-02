@@ -244,7 +244,6 @@ export default function ScheduleBlock({
           fontSize: 13,
           whiteSpace: "nowrap",
           overflow: "hidden",
-          textOverflow: "ellipsis",
           pointerEvents: "none",
           color: "#1e293b",
           lineHeight: "16px",
@@ -264,11 +263,9 @@ export default function ScheduleBlock({
             fontSize: 11,
             color: "#4f46e5",
             fontWeight: 700,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
             pointerEvents: "none",
             marginTop: 2,
+            wordBreak: "break-word",
           }}
         >
           {block.label}

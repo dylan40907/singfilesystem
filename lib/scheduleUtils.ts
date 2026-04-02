@@ -121,9 +121,8 @@ export function formatTime(time: string): string {
   const mins = timeToMinutes(time);
   const h24 = Math.floor(mins / 60);
   const m = mins % 60;
-  const ampm = h24 >= 12 ? "PM" : "AM";
   const h12 = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
-  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+  return `${h12}:${String(m).padStart(2, "0")}`;
 }
 
 /** Format a time range like "8:15 AM - 8:40 AM" */
