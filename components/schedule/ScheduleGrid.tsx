@@ -128,7 +128,7 @@ export default function ScheduleGrid({
     return lines;
   }, []);
 
-  const COL_WIDTH = 120;
+  const COL_WIDTH = 96;
   const TIME_COL_WIDTH = 72;
 
   return (

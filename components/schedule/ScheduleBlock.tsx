@@ -57,7 +57,8 @@ export default function ScheduleBlock({
       ? getFirstName(employee)
       : "Unknown";
 
-  const timeLabel = `${formatTime(block.start_time)} - ${formatTime(block.end_time)}`;
+  const timeStart = formatTime(block.start_time);
+  const timeEnd = formatTime(block.end_time);
 
   // --- MOVE: pointer down on the block body ---
   const handleMoveDown = useCallback(
@@ -252,19 +253,9 @@ export default function ScheduleBlock({
         {displayName}
       </div>
       {heightPx > 32 && (
-        <div
-          style={{
-            fontSize: 11,
-            color: "#6b7280",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            pointerEvents: "none",
-            marginTop: 2,
-            lineHeight: "14px",
-          }}
-        >
-          {timeLabel}
+        <div style={{ pointerEvents: "none", marginTop: 2, lineHeight: "14px" }}>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeStart} –</div>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeEnd}</div>
         </div>
       )}
       {isLabelWithEmployee && heightPx > 50 && (

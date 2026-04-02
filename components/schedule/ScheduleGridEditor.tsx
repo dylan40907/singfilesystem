@@ -602,10 +602,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    const [prevRoomsRes, prevBlocksRes, prevColorsRes] = await Promise.all([
+    const [prevRoomsRes, prevBlocksRes, prevColorsRes, prevSchedRes] = await Promise.all([
       supabase.from("schedule_rooms").select("*").eq("schedule_id", prevSchedule.id).order("sort_order"),
       supabase.from("schedule_blocks").select("*").eq("schedule_id", prevSchedule.id),
       supabase.from("schedule_cell_colors").select("*").eq("schedule_id", prevSchedule.id),
+      supabase.from("schedules").select("color_labels").eq("id", prevSchedule.id).single(),
     ]);
 
     const prevRooms = prevRoomsRes.data ?? [];
@@ -688,6 +689,12 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           };
         })
       );
+    }
+
+    // Copy color labels from previous schedule
+    if (prevSchedRes.data?.color_labels) {
+      const labels = prevSchedRes.data.color_labels as Record<string, string>;
+      await supabase.from("schedules").update({ color_labels: labels }).eq("id", scheduleId);
     }
 
     await fetchData();
