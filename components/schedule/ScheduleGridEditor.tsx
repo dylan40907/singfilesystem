@@ -529,7 +529,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     });
     setBlockFormEmployeeId(block.employee_id);
     setBlockFormEmployeeSearch(block.employee_id ? "" : "");
-    setBlockFormNotes(block.block_type === "shift" ? (block.label ?? "") : "");
+    setBlockFormNotes(block.block_type === "shift" && block.label !== "Unassigned" ? (block.label ?? "") : "");
     setBlockFormEmpOpen(false);
     setContextMenu(null);
   }
@@ -537,25 +537,23 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   async function handleBlockFormSubmit() {
     if (!blockForm) return;
 
-    if (!blockFormEmployeeId) {
-      setWarning("Please select an employee before saving.");
-      return;
-    }
+    // "__unassigned__" sentinel → null in DB
+    const empId = blockFormEmployeeId === "__unassigned__" ? null : blockFormEmployeeId;
 
     if (blockForm.editBlockId) {
       let label: string | null = null;
       if (blockForm.blockType === "lunch_break") label = "Lunch Break";
       else if (blockForm.blockType === "break") label = "Break";
       else label = blockFormNotes.trim() || null;
-      await updateBlock(blockForm.editBlockId, blockFormEmployeeId, label);
+      await updateBlock(blockForm.editBlockId, empId, label);
     } else {
       const endMins = timeToMinutes(blockForm.time) + 10; // 10-minute default
       const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
       let label: string | null = null;
       if (blockForm.blockType === "lunch_break") label = "Lunch Break";
       else if (blockForm.blockType === "break") label = "Break";
-      else label = blockFormNotes.trim() || null;
-      await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, blockFormEmployeeId, label, blockForm.blockType);
+      else label = blockFormNotes.trim() || (empId === null ? "Unassigned" : null);
+      await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, empId, label, blockForm.blockType);
     }
 
     setBlockForm(null);
@@ -719,9 +717,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     return name.includes(q) || nick.includes(q);
   }).slice(0, 12);
 
-  const selectedEmpName = blockFormEmployeeId
-    ? (() => { const e = employees.find((emp) => emp.id === blockFormEmployeeId); return e ? getDisplayName(e) : ""; })()
-    : "";
+  const selectedEmpName = blockFormEmployeeId === "__unassigned__"
+    ? "Unassigned"
+    : blockFormEmployeeId
+      ? (() => { const e = employees.find((emp) => emp.id === blockFormEmployeeId); return e ? getDisplayName(e) : ""; })()
+      : "";
 
   if (loading) {
     return <div style={{ padding: 24 }}><div style={{ fontWeight: 800 }}>Loading schedule…</div></div>;
@@ -1007,6 +1007,15 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               )}
               {blockFormEmpOpen && !blockFormEmployeeId && (
                 <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "white", border: "1.5px solid #e5e7eb", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)", zIndex: 70, maxHeight: 180, overflowY: "auto" }}>
+                  {/* Unassigned option always at top */}
+                  <button
+                    onMouseDown={(e) => { e.preventDefault(); setBlockFormEmployeeId("__unassigned__"); setBlockFormEmployeeSearch(""); setBlockFormEmpOpen(false); }}
+                    style={{ display: "block", width: "100%", padding: "7px 12px", border: "none", borderBottom: "1px solid #f3f4f6", background: "transparent", cursor: "pointer", textAlign: "left", fontSize: 13, fontWeight: 700, color: "#f97316" }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#fff7ed")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                  >
+                    — Unassigned
+                  </button>
                   {blockFormEmpResults.length === 0 ? (
                     <div style={{ padding: "10px 12px", color: "#9ca3af", fontSize: 12 }}>No employees found</div>
                   ) : (
@@ -1041,17 +1050,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               </div>
             )}
 
-            {!blockFormEmployeeId && (
-              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 8 }}>
-                Select an employee to continue.
-              </div>
-            )}
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 className="btn btn-pink"
                 onClick={handleBlockFormSubmit}
-                disabled={!blockFormEmployeeId}
-                style={{ flex: 1, padding: "7px 0", fontSize: 13, opacity: blockFormEmployeeId ? 1 : 0.4 }}
+                style={{ flex: 1, padding: "7px 0", fontSize: 13 }}
               >
                 {blockForm.editBlockId ? "Save" : "Add"}
               </button>
