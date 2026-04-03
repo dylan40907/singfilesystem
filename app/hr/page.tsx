@@ -261,6 +261,7 @@ export default function HrPage() {
 
   type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
+  const [pinRevealed, setPinRevealed] = useState(false);
 
 
 
@@ -377,7 +378,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
         const empRes = await supabase
           .from("hr_employees")
-          .select("id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points,attendance_score,profile_id")
+          .select("id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points,attendance_score,profile_id,hours_pin")
           .eq("profile_id", userId)
           .single();
 
@@ -1308,9 +1309,30 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             </div>
           </div>
 
-          <button className="btn" type="button" onClick={() => void supabase.auth.signOut()}>
-            Sign out
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {(employee as any)?.hours_pin && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                padding: "6px 14px", background: "#f9fafb",
+                borderRadius: 10, border: "1.5px solid #e5e7eb",
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280" }}>Hours PIN:</span>
+                <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: 4, fontVariantNumeric: "tabular-nums", color: "#111827" }}>
+                  {pinRevealed ? (employee as any).hours_pin : "••••"}
+                </span>
+                <button
+                  onClick={() => setPinRevealed((v) => !v)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2 }}
+                  title={pinRevealed ? "Hide PIN" : "Reveal PIN"}
+                >
+                  {pinRevealed ? "🙈" : "👁️"}
+                </button>
+              </div>
+            )}
+            <button className="btn" type="button" onClick={() => void supabase.auth.signOut()}>
+              Sign out
+            </button>
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>

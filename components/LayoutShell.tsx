@@ -7,6 +7,12 @@ import HrNavbar from "@/components/HrNavbar";
 
 export default function LayoutShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+
+  // Clock page: no navbar, no page wrapper — full-screen standalone UI
+  if (pathname === "/clock" || pathname.startsWith("/clock/")) {
+    return <>{children}</>;
+  }
+
   const isHr = pathname === "/admin/hr" || pathname.startsWith("/admin/hr/");
 
   return (

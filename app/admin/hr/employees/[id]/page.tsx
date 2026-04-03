@@ -583,6 +583,7 @@ async function fetchEmployeeData(employeeId: string) {
       time_off_days_requested,
       created_at,
       updated_at,
+      hours_pin,
       job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name),
       campus:hr_campuses!hr_employees_campus_id_fkey(id,name)
     `
@@ -3123,6 +3124,7 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   // left-nav (sections)
   const [activeTab, setActiveTab] =
   useState<"general" | "milestones" | "attendance" | "meetings" | "reviews" | "documents">("general");
+  const [pinRevealed, setPinRevealed] = useState(false);
   // form state (mirrors your modal)
   const [legalFirst, setLegalFirst] = useState("");
   const [legalMiddle, setLegalMiddle] = useState("");
@@ -4922,6 +4924,21 @@ async function resetTimeOffHoursToDefault() {
               • Attendance score: <span style={{ fontWeight: 900, color: scoreColor(attPoints) }}>{attPoints}</span>
             </span>
             {meetingStatus ? <span style={{ marginLeft: 10 }}>• <span style={{ fontWeight: 800 }}>{meetingStatus}</span></span> : null}
+            {(employee as any)?.hours_pin && (
+              <span style={{ marginLeft: 10, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                • Hours PIN:{" "}
+                <span style={{ fontWeight: 900, letterSpacing: 3, fontVariantNumeric: "tabular-nums" }}>
+                  {pinRevealed ? (employee as any).hours_pin : "••••"}
+                </span>
+                <button
+                  onClick={() => setPinRevealed((v) => !v)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px" }}
+                  title={pinRevealed ? "Hide PIN" : "Reveal PIN"}
+                >
+                  {pinRevealed ? "🙈" : "👁️"}
+                </button>
+              </span>
+            )}
           </div>
         </div>
 

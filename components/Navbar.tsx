@@ -101,6 +101,10 @@ export default function Navbar() {
     try {
       const p = await fetchMyProfile();
       setProfile(p);
+      // Redirect hours_manager to the clock page immediately
+      if (p?.role === "hours_manager" && pathnameRef.current !== "/clock") {
+        router.replace("/clock");
+      }
     } catch {
       setProfile(null);
     }
