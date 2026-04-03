@@ -376,7 +376,21 @@ export default function ClockPage() {
       justifyContent: "center",
       padding: 24,
       fontFamily: "system-ui, sans-serif",
+      position: "relative",
     }}>
+      {/* Sign out */}
+      <button
+        onClick={async () => { await supabase.auth.signOut(); router.replace("/"); }}
+        style={{
+          position: "absolute", top: 16, right: 16,
+          background: "none", border: "1px solid #e5e7eb",
+          borderRadius: 8, padding: "6px 12px",
+          fontSize: 12, fontWeight: 600, color: "#9ca3af",
+          cursor: "pointer",
+        }}
+      >
+        Sign out
+      </button>
 
       {/* ── SUCCESS SCREEN ── */}
       {screen === "success" && (

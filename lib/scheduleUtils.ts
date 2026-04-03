@@ -49,7 +49,7 @@ export interface EmployeeLite {
 // Time constants
 export const START_HOUR = 7;
 export const START_MINUTE = 0;
-export const END_HOUR = 18;
+export const END_HOUR = 24;
 export const END_MINUTE = 0;
 export const SLOT_MINUTES = 5;
 export const START_MINUTES = START_HOUR * 60 + START_MINUTE; // 440
