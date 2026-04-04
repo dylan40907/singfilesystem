@@ -20,7 +20,6 @@ import {
   SLOT_MINUTES,
   START_MINUTES,
   END_MINUTES,
-  calculatePaidMinutes,
 } from "@/lib/scheduleUtils";
 import ScheduleGrid from "./ScheduleGrid";
 import BlockContextMenu from "./BlockContextMenu";
@@ -544,7 +543,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       let label: string | null = null;
       if (blockForm.blockType === "lunch_break") label = "Lunch Break";
       else if (blockForm.blockType === "break") label = "Break";
-      else label = blockFormNotes.trim() || null;
+      else label = blockFormNotes.trim() || (empId === null ? "Unassigned" : null);
       await updateBlock(blockForm.editBlockId, empId, label);
     } else {
       const endMins = timeToMinutes(blockForm.time) + 10; // 10-minute default

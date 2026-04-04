@@ -42,8 +42,15 @@ export default function ScheduleBlock({
   const didInteractRef = useRef(false);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
-  const isLabelOnly = !block.employee_id && !!block.label;
+  const isUnassigned = !block.employee_id;
   const isLabelWithEmployee = !!block.employee_id && !!block.label;
+  // For unassigned blocks, show "Unassigned" as the name; show the label as a note only if it's not the sentinel
+  const displayName = isUnassigned
+    ? "Unassigned"
+    : employee
+      ? getFirstName(employee)
+      : "Unknown";
+  const unassignedNote = isUnassigned && block.label && block.label !== "Unassigned" ? block.label : null;
 
   const leftBorderColor =
     block.block_type === "lunch_break"
@@ -51,11 +58,6 @@ export default function ScheduleBlock({
       : block.block_type === "break"
       ? "#22c55e" // green
       : "#6366f1"; // indigo for shift
-  const displayName = isLabelOnly
-    ? block.label ?? "Label"
-    : employee
-      ? getFirstName(employee)
-      : "Unknown";
 
   const timeStart = formatTime(block.start_time);
   const timeEnd = formatTime(block.end_time);
@@ -257,7 +259,7 @@ export default function ScheduleBlock({
           <div style={{ fontSize: 11, color: "#6b7280" }}>{timeEnd}</div>
         </div>
       )}
-      {isLabelWithEmployee && heightPx > 50 && (
+      {(isLabelWithEmployee || unassignedNote) && heightPx > 50 && (
         <div
           style={{
             fontSize: 11,
@@ -268,7 +270,7 @@ export default function ScheduleBlock({
             wordBreak: "break-word",
           }}
         >
-          {block.label}
+          {unassignedNote ?? block.label}
         </div>
       )}
 
