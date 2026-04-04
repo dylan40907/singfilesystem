@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useDialog } from "@/components/ui/useDialog";
 
 type HrSettingsRow = {
   id: true;
@@ -83,6 +84,7 @@ function isValidEmail(email: string) {
 }
 
 export default function HrSettingsPage() {
+  const { confirm, modal: dialogModal } = useDialog();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +211,7 @@ export default function HrSettingsPage() {
   }
 
   async function deleteRecipient(id: string) {
-    if (!confirm("Delete this recipient?")) return;
+    if (!await confirm("Delete this recipient?", { title: "Delete Recipient", confirmLabel: "Delete", danger: true })) return;
 
     setRecipientsBusyId(id);
     setError(null);
@@ -264,6 +266,8 @@ export default function HrSettingsPage() {
           {error}
         </div>
       )}
+
+      {dialogModal}
 
       {/* Recipients */}
       <div style={{ marginTop: 14, border: "1px solid #e5e7eb", borderRadius: 16, overflow: "hidden" }}>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { useDialog } from "@/components/ui/useDialog";
 
 type CampusRow = { id: string; name: string };
 type JobLevelRow = { id: string; name: string };
@@ -30,6 +31,7 @@ function displayName(e: EmployeeListRow) {
 }
 
 export default function EmployeesPage() {
+  const { alert, modal: dialogModal } = useDialog();
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -111,11 +113,11 @@ export default function EmployeesPage() {
 
   async function exportByJobRoleByMonth() {
     if (!exportJobLevelId) {
-      alert("Select a job role.");
+      await alert("Select a job role.");
       return;
     }
     if (!exportYear || !exportMonth) {
-      alert("Select a month and year.");
+      await alert("Select a month and year.");
       return;
     }
 
@@ -138,7 +140,7 @@ export default function EmployeesPage() {
       if (eerr) throw eerr;
       const employees = (emps || []) as any[];
       if (!employees.length) {
-        alert("No active employees found for that job role.");
+        await alert("No active employees found for that job role.");
         return;
       }
 
@@ -160,12 +162,12 @@ export default function EmployeesPage() {
       // Validate single form_id among reviews that exist
       const formIds = Array.from(new Set(reviews.map((r) => String(r.form_id ?? "")))).filter(Boolean);
       if (formIds.length > 1) {
-        alert("Cannot export: multiple monthly forms were used for this job role in the selected month.");
+        await alert("Cannot export: multiple monthly forms were used for this job role in the selected month.");
         return;
       }
       const formId = formIds[0] || null;
       if (!formId) {
-        alert("No published monthly reviews found for that job role/month.");
+        await alert("No published monthly reviews found for that job role/month.");
         return;
       }
 
@@ -180,7 +182,7 @@ export default function EmployeesPage() {
       if (qerr) throw qerr;
       const questions = ((qs || []) as any[]).filter((q) => (q.kind ?? "question") !== "section");
       if (!questions.length) {
-        alert("No questions found for that monthly form.");
+        await alert("No questions found for that monthly form.");
         return;
       }
 
@@ -293,7 +295,7 @@ export default function EmployeesPage() {
       downloadBlob(`Job Role By Month - ${jlName} - ${monthLabel}.xlsx`, blob);
       setExportOpen(false);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to export.");
+      await alert(e?.message ?? "Failed to export.");
     } finally {
       setExportBusy(false);
     }
@@ -467,6 +469,8 @@ export default function EmployeesPage() {
       </div>
 
 
+
+      {dialogModal}
 
       {exportOpen ? (
         <div

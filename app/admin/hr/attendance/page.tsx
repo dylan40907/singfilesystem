@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { useDialog } from "@/components/ui/useDialog";
 
 type EmployeeRow = {
   id: string;
@@ -103,6 +104,7 @@ function cmp(a: any, b: any) {
 }
 
 export default function AttendancePage() {
+  const { confirm, modal: dialogModal } = useDialog();
   // Access gate (admin OR supervisor)
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<string>("Loading...");
@@ -362,7 +364,7 @@ export default function AttendancePage() {
   }
 
   async function deleteAttendanceType(id: string) {
-    const ok = confirm("Delete this attendance type? (If attendance records still use it, deletion will fail.)");
+    const ok = await confirm("Delete this attendance type? (If attendance records still use it, deletion will fail.)", { title: "Delete Attendance Type", confirmLabel: "Delete", danger: true });
     if (!ok) return;
 
     setError(null);
@@ -412,7 +414,7 @@ export default function AttendancePage() {
 
   async function deleteAttendanceRecord(id: string) {
     if (!selectedEmployee) return;
-    const ok = confirm("Delete this attendance record? (This will restore points automatically.)");
+    const ok = await confirm("Delete this attendance record? (This will restore points automatically.)", { title: "Delete Record", confirmLabel: "Delete", danger: true });
     if (!ok) return;
 
     setError(null);
@@ -642,6 +644,8 @@ export default function AttendancePage() {
           </div>
         </div>
       )}
+
+      {dialogModal}
 
       {showAttendanceModal && selectedEmployee && (
         <div

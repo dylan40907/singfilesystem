@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { useDialog } from "@/components/ui/useDialog";
 
 type PersonRow = {
   id: string;
@@ -36,6 +37,7 @@ function isValidUsername(username: string) {
 export default function AdminSupervisorsPage() {
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
+  const { confirm, modal: dialogModal } = useDialog();
 
   const [supervisors, setSupervisors] = useState<PersonRow[]>([]);
   const [teachers, setTeachers] = useState<PersonRow[]>([]);
@@ -204,9 +206,7 @@ export default function AdminSupervisorsPage() {
     const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
     const label = selected ? labelForUser(selected) : selectedSupervisorId;
 
-    const ok = window.confirm(
-      `Reset password for this supervisor?\n\n${label}\n\nThey will need to use "Set up an account" again.`
-    );
+    const ok = await confirm(`Reset password for this supervisor?\n\n${label}\n\nThey will need to use "Set up an account" again.`, { title: "Reset Password", confirmLabel: "Reset" });
     if (!ok) return;
 
     setAdminActionLoading((s) => ({ ...s, reset: true }));
@@ -237,13 +237,7 @@ export default function AdminSupervisorsPage() {
     const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
     const label = selected ? labelForUser(selected) : selectedSupervisorId;
 
-    const ok = window.confirm(
-      `${nextActive ? "Activate" : "Deactivate"} this supervisor?\n\n${label}\n\n${
-        nextActive
-          ? "They will be able to log in again."
-          : "They will be signed out and won't be able to log in."
-      }`
-    );
+    const ok = await confirm(`${nextActive ? "Activate" : "Deactivate"} this supervisor?\n\n${label}\n\n${nextActive ? "They will be able to log in again." : "They will be signed out and won't be able to log in."}`, { title: nextActive ? "Activate Supervisor" : "Deactivate Supervisor", confirmLabel: nextActive ? "Activate" : "Deactivate", danger: !nextActive });
     if (!ok) return;
 
     setAdminActionLoading((s) => ({ ...s, active: true }));
@@ -325,7 +319,7 @@ export default function AdminSupervisorsPage() {
 
     const label = selected ? labelForUser(selected) : selectedSupervisorId;
 
-    const ok = window.confirm(`Delete this supervisor?\n\n${label}\n\nThis cannot be undone.`);
+    const ok = await confirm(`Delete this supervisor?\n\n${label}\n\nThis cannot be undone.`, { title: "Delete Supervisor", danger: true, confirmLabel: "Delete" });
     if (!ok) return;
 
     setDeleteLoading(true);
@@ -361,9 +355,7 @@ export default function AdminSupervisorsPage() {
     const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
     const label = selected ? labelForUser(selected) : selectedSupervisorId;
 
-    const ok = window.confirm(
-      `Demote this supervisor to teacher?\n\n${label}\n\nTheir supervisor-teacher assignments will be removed.`
-    );
+    const ok = await confirm(`Demote this supervisor to teacher?\n\n${label}\n\nTheir supervisor-teacher assignments will be removed.`, { title: "Demote to Teacher", danger: true, confirmLabel: "Demote" });
     if (!ok) return;
 
     setRoleChangeLoading(true);
@@ -394,9 +386,7 @@ export default function AdminSupervisorsPage() {
     const teacher = teachers.find((t) => t.id === teacherId) ?? null;
     const label = teacher ? labelForUser(teacher) : teacherId;
 
-    const ok = window.confirm(
-      `Promote this teacher to supervisor?\n\n${label}`
-    );
+    const ok = await confirm(`Promote this teacher to supervisor?\n\n${label}`, { title: "Promote to Supervisor", confirmLabel: "Promote" });
     if (!ok) return;
 
     setRoleChangeLoading(true);
@@ -454,6 +444,8 @@ export default function AdminSupervisorsPage() {
   const selectedSupervisorIsActive = selectedSupervisor ? !!selectedSupervisor.is_active : true;
 
   return (
+    <>
+    {dialogModal}
     <main className="stack">
       <div className="row-between">
         <div className="stack" style={{ gap: 6 }}>
@@ -663,5 +655,6 @@ export default function AdminSupervisorsPage() {
         </div>
       </div>
     </main>
+    </>
   );
 }

@@ -6,6 +6,7 @@ import { fetchMyProfile, TeacherProfile, fetchActiveTeachers } from "@/lib/teach
 import "@fortune-sheet/react/dist/index.css";
 import SheetPlanEditor, { SheetPlanEditorHandle } from "@/components/SheetPlanEditor";
 import { useDebouncedAutosave } from "@/lib/useDebouncedAutosave";
+import { useDialog } from "@/components/ui/useDialog";
 
 // TipTap (Rich Text)
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -473,6 +474,7 @@ function isValidUsername(username: string) {
 
 export default function TeachersPage() {
   const AUTOSAVE_ENABLED = false; // TEMP: disable autosave (manual save only)
+  const { confirm, alert, modal: dialogModal } = useDialog();
 
   const DEFAULT_SHEET_DOC = [{ name: "Sheet 1", row: 30, column: 20, celldata: [], config: {} }];
 
@@ -859,7 +861,7 @@ async function exitTextFullscreen() {
       ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
-    const ok = window.confirm(`Reset password for this teacher?\n\n${label}\n\nThey will need to use "Set up an account" again.`);
+    const ok = await confirm(`Reset password for this teacher?\n\n${label}\n\nThey will need to use "Set up an account" again.`);
     if (!ok) return;
 
     setAdminActionLoading((s) => ({ ...s, reset: true }));
@@ -891,7 +893,7 @@ async function exitTextFullscreen() {
       ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
-    const ok = window.confirm(
+    const ok = await confirm(
       `${nextActive ? "Activate" : "Deactivate"} this teacher?\n\n${label}\n\n${
         nextActive
           ? "They will be able to log in again."
@@ -980,7 +982,7 @@ async function exitTextFullscreen() {
       ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
-    const ok = window.confirm(`Delete this teacher?\n\n${label}\n\nThis cannot be undone.`);
+    const ok = await confirm(`Delete this teacher?\n\n${label}\n\nThis cannot be undone.`, { danger: true });
     if (!ok) return;
 
     setDeleteLoading(true);
@@ -1020,7 +1022,7 @@ async function exitTextFullscreen() {
       ? labelForUser({ id: selectedTeacher.id, username: selectedTeacher.username, full_name: selectedTeacher.full_name })
       : selectedTeacherId;
 
-    const ok = window.confirm(
+    const ok = await confirm(
       `Promote this teacher to supervisor?\n\n${label}\n\nThey will appear in the Supervisors page and gain supervisor permissions.`
     );
     if (!ok) return;
@@ -2224,6 +2226,7 @@ setWorkbookKey(`${planId}:${Date.now()}`);
           </div>
         </div>
       ) : null}
+      {dialogModal}
     </main>
   );
 }

@@ -10,6 +10,7 @@ import {
   BlockType,
   formatWeekRange,
   formatEmployeeName,
+  formatTime,
   getDisplayName,
   timeToMinutes,
   minutesToTime,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/scheduleUtils";
 import ScheduleGrid from "./ScheduleGrid";
 import BlockContextMenu from "./BlockContextMenu";
+import { useDialog } from "@/components/ui/useDialog";
 
 interface ScheduleGridEditorProps {
   scheduleId: string;
@@ -109,6 +111,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [showHoursView, setShowHoursView] = useState(false);
   const [hoursSearch, setHoursSearch] = useState("");
 
+  // Unassigned blocks publish alert
+  type UnassignedItem = { day: string; room: string; start: string; end: string; label: string | null };
+  const [unassignedAlert, setUnassignedAlert] = useState<UnassignedItem[] | null>(null);
+
+  const { confirm, modal: dialogModal } = useDialog();
   const readOnly = schedule?.status === "published";
 
   // No document listener needed — outside clicks handled by backdrop divs
@@ -342,7 +349,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   async function deleteRoom(roomId: string) {
     const roomBlocks = blocks.filter((b) => b.room_id === roomId);
-    if (roomBlocks.length > 0 && !confirm(`Delete this room and its ${roomBlocks.length} blocks?`)) return;
+    if (roomBlocks.length > 0 && !await confirm(`Delete this room and its ${roomBlocks.length} block${roomBlocks.length !== 1 ? "s" : ""}?`, { title: "Delete Room", danger: true, confirmLabel: "Delete" })) return;
     const { error } = await supabase.from("schedule_rooms").delete().eq("id", roomId);
     if (!error) {
       setRooms((prev) => prev.filter((r) => r.id !== roomId));
@@ -574,6 +581,26 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   // --- Publish / Unpublish ---
   async function togglePublish() {
     if (!schedule) return;
+
+    // When publishing, block if any unassigned blocks exist
+    if (schedule.status !== "published") {
+      const unassigned = blocks.filter((b) => !b.employee_id);
+      if (unassigned.length > 0) {
+        const items: UnassignedItem[] = unassigned.map((b) => {
+          const room = rooms.find((r) => r.id === b.room_id);
+          return {
+            day: DAY_LABELS[b.day_of_week - 1] ?? `Day ${b.day_of_week}`,
+            room: room?.name ?? "Unknown Room",
+            start: b.start_time,
+            end: b.end_time,
+            label: b.label,
+          };
+        });
+        setUnassignedAlert(items);
+        return;
+      }
+    }
+
     const newStatus = schedule.status === "published" ? "draft" : "published";
     const { error } = await supabase.from("schedules").update({ status: newStatus }).eq("id", schedule.id);
     if (!error) setSchedule((prev) => (prev ? { ...prev, status: newStatus } : prev));
@@ -617,7 +644,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
 
     if (rooms.length > 0) {
-      if (!confirm("This will replace all current rooms, blocks, and colors. Continue?")) {
+      if (!await confirm("This will remove all current rooms, blocks, and paint colors for this week and replace them with the previous week's data. Continue?", { title: "Copy Previous Week", confirmLabel: "Yes, replace" })) {
         setSaving(false);
         return;
       }
@@ -701,7 +728,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   // --- Delete Schedule ---
   async function handleDeleteSchedule() {
     if (!schedule) return;
-    if (!confirm("Delete this schedule and all its rooms and blocks?")) return;
+    if (!await confirm("Delete this schedule and all its rooms and blocks? This cannot be undone.", { title: "Delete Schedule", danger: true, confirmLabel: "Delete" })) return;
     const { error } = await supabase.from("schedules").delete().eq("id", schedule.id);
     if (!error) onBack();
     else setWarning(error.message);
@@ -1075,6 +1102,55 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         />
       )}
 
+      {/* Unassigned blocks publish alert */}
+      {unassignedAlert && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }}
+            onMouseDown={() => setUnassignedAlert(null)}
+          />
+          <div
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+              zIndex: 81, background: "white", borderRadius: 14,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.18)", padding: 24,
+              width: 420, maxHeight: "80vh", display: "flex", flexDirection: "column",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+              <span style={{ fontSize: 22 }}>🚫</span>
+              <div style={{ fontWeight: 800, fontSize: 16, color: "#dc2626" }}>Cannot Publish</div>
+            </div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 14 }}>
+              The schedule has <b>{unassignedAlert.length}</b> unassigned block{unassignedAlert.length !== 1 ? "s" : ""}. Assign all blocks before publishing.
+            </div>
+            <div style={{ overflowY: "auto", flex: 1, borderRadius: 8, border: "1.5px solid #fee2e2", background: "#fef2f2" }}>
+              {unassignedAlert.map((item, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i < unassignedAlert.length - 1 ? "1px solid #fecaca" : "none" }}>
+                  <div style={{ width: 3, flexShrink: 0, alignSelf: "stretch", background: "#f97316", borderRadius: 2 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>
+                      {item.day} · {item.room}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      {formatTime(item.start)} – {formatTime(item.end)}{item.label && item.label !== "Unassigned" ? ` · ${item.label}` : ""}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              className="btn"
+              onClick={() => setUnassignedAlert(null)}
+              style={{ marginTop: 16, padding: "9px 0", fontWeight: 700 }}
+            >
+              Got it
+            </button>
+          </div>
+        </>
+      )}
+
       {/* Weekly hours modal */}
       {showHoursView && (
         <>
@@ -1147,6 +1223,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           </div>
         </>
       )}
+
+      {dialogModal}
 
       {/* Saving indicator */}
       {saving && (

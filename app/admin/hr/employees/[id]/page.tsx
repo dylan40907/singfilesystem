@@ -18,6 +18,7 @@ import {
   parseCsv,
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
+import { useDialog } from "@/components/ui/useDialog";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
@@ -1267,7 +1268,7 @@ function EmployeePerformanceReviewsTab({
       const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
       if (toDelete.length > 0) {
-        const ok = confirm(
+        const ok = await confirm(
           `Delete ${toDelete.length} question(s) from "${form.title}"? This will also delete any saved answers for those questions.`
         );
         if (!ok) {
@@ -1454,7 +1455,7 @@ function EmployeePerformanceReviewsTab({
     if (!canPrint) return;
 
     if (!r || r.form_type !== "annual") {
-      alert("Print is only available for annual evaluations.");
+      await alert("Print is only available for annual evaluations.");
       return;
     }
     // Allow printing annual evaluations whether they are published or still drafts.
@@ -1588,7 +1589,7 @@ function EmployeePerformanceReviewsTab({
       document.body.appendChild(iframe);
     } catch (e: any) {
       err("error", e);
-      alert(e?.message ?? "Failed to print annual evaluation.");
+      await alert(e?.message ?? "Failed to print annual evaluation.");
     }
   }
 
@@ -1612,7 +1613,7 @@ function EmployeePerformanceReviewsTab({
       setExportMonthlyYear(yrs.length ? yrs[0] : null);
       setExportMonthlyOpen(true);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to load monthly review years.");
+      await alert(e?.message ?? "Failed to load monthly review years.");
     } finally {
       setExportMonthlyBusy(false);
     }
@@ -1641,7 +1642,7 @@ function EmployeePerformanceReviewsTab({
   async function exportMonthlyReviewsByYear() {
     if (!employeeId) return;
     if (!exportMonthlyYear) {
-      alert("Select a year.");
+      await alert("Select a year.");
       return;
     }
 
@@ -1670,13 +1671,13 @@ function EmployeePerformanceReviewsTab({
 
       const list = (reviews ?? []) as any[];
       if (list.length === 0) {
-        alert("No published monthly reviews found for that year.");
+        await alert("No published monthly reviews found for that year.");
         return;
       }
 
       const uniqueFormIds = Array.from(new Set(list.map((r) => r.form_id).filter(Boolean)));
       if (uniqueFormIds.length !== 1) {
-        alert("Cannot export: multiple monthly forms were used in the selected year.");
+        await alert("Cannot export: multiple monthly forms were used in the selected year.");
         return;
       }
       const formId = uniqueFormIds[0] as string;
@@ -1691,7 +1692,7 @@ function EmployeePerformanceReviewsTab({
 
       const questions = ((qs ?? []) as any[]).filter((q) => (q.kind ?? "question") === "question");
       if (questions.length === 0) {
-        alert("No questions found for that monthly form.");
+        await alert("No questions found for that monthly form.");
         return;
       }
 
@@ -1810,7 +1811,7 @@ function EmployeePerformanceReviewsTab({
       downloadBlob(`Monthly Reviews - ${employeeName} - ${year}.xlsx`, blob);
       setExportMonthlyOpen(false);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to export monthly reviews.");
+      await alert(e?.message ?? "Failed to export monthly reviews.");
     } finally {
       setExportMonthlyBusy(false);
     }
@@ -2007,7 +2008,7 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
 
   async function deleteReview(r: HrReview) {
     if (!canEdit) return;
-    const ok = confirm("Delete this evaluation and all its answers?");
+    const ok = await confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
     setStatus("Deleting...");
@@ -2794,7 +2795,7 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                                 type="button"
                                 title="Delete form"
                                 onClick={async () => {
-                                  const ok = confirm(
+                                  const ok = await confirm(
                                     'Are you sure you want to delete this form?\n\nDeleting a form will also delete any employee evaluations (reviews) that used it, along with their saved answers.'
                                   );
                                   if (!ok) return;
@@ -2990,10 +2991,10 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                     <button
                       className="btn-ghost"
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         const isExisting = !q.id.startsWith("new:");
                         if (isExisting) {
-                          const ok = confirm("Delete this question? This will also delete saved answers for it.");
+                          const ok = await confirm("Delete this question? This will also delete saved answers for it.");
                           if (!ok) return;
                         }
                         deleteEditQuestionRow(q.id);
@@ -3036,6 +3037,7 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
 
 
 export default function EmployeeByIdPage() {
+  const { confirm, alert, modal } = useDialog();
   const params = useParams();
   const router = useRouter();
 
@@ -3363,7 +3365,7 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   }
 
   async function deleteEmployeeDoc(documentId: string) {
-    if (!confirm("Delete this document?")) return;
+    if (!await confirm("Delete this document?")) return;
 
     setEmployeeDocsStatus("Deleting document...");
     try {
@@ -3621,7 +3623,7 @@ useEffect(() => {
 
   async function deleteMeeting(meetingId: string) {
     if (!meetingId) return;
-    if (!confirm("Delete this meeting and all its attendees/documents?")) return;
+    if (!await confirm("Delete this meeting and all its attendees/documents?")) return;
 
     setMeetingStatus("Deleting meeting...");
     try {
@@ -3838,7 +3840,7 @@ useEffect(() => {
   }
 
   async function deleteMeetingDoc(documentId: string, meetingId: string) {
-    if (!confirm("Delete this document?")) return;
+    if (!await confirm("Delete this document?")) return;
 
     setMeetingStatus("Deleting document...");
     try {
@@ -3996,7 +3998,7 @@ async function addMeetingType() {
   }
 
   async function deleteMeetingType(id: string) {
-    const ok = confirm("Delete this meeting type? (If meetings still reference it, deletion may fail.)");
+    const ok = await confirm("Delete this meeting type? (If meetings still reference it, deletion may fail.)");
     if (!ok) return;
 
     setMeetingTypesError(null);
@@ -4259,7 +4261,7 @@ async function addMeetingType() {
   }
 
   async function deleteCampus(id: string) {
-    const ok = confirm("Delete this campus? (Employees linked to it will be set to no campus.)");
+    const ok = await confirm("Delete this campus? (Employees linked to it will be set to no campus.)");
     if (!ok) return;
     setCampusBusy(true);
     setError(null);
@@ -4309,7 +4311,7 @@ async function addMeetingType() {
   }
 
   async function deleteEventType(id: string) {
-    const ok = confirm("Delete this event type? (Existing employee events will lose the label.)");
+    const ok = await confirm("Delete this event type? (Existing employee events will lose the label.)");
     if (!ok) return;
     setEventTypeBusy(true);
     setError(null);
@@ -4366,7 +4368,7 @@ async function addMeetingType() {
   }
 
   async function deleteAttendanceRecord(attId: string) {
-    const ok = confirm("Delete this attendance record? (This will restore points automatically.)");
+    const ok = await confirm("Delete this attendance record? (This will restore points automatically.)");
     if (!ok) return;
 
     setError(null);
@@ -4441,7 +4443,7 @@ async function addMeetingType() {
   }
 
   async function deleteMilestoneEvent(eventId: string) {
-    const ok = confirm("Delete this milestone/event? (Its reminders will be deleted too.)");
+    const ok = await confirm("Delete this milestone/event? (Its reminders will be deleted too.)");
     if (!ok) return;
 
     setError(null);
@@ -4455,7 +4457,7 @@ async function addMeetingType() {
   }
 
   async function resetMilestoneReminderSent(reminderId: string) {
-    const ok = confirm("Reset this reminder sent status?");
+    const ok = await confirm("Reset this reminder sent status?");
     if (!ok) return;
 
     setError(null);
@@ -4518,13 +4520,13 @@ async function addMeetingType() {
 
   async function deletePtoSchedule(employeeId: string, scheduleId: string) {
     try {
-      const ok = confirm("Delete this PTO schedule entry?");
+      const ok = await confirm("Delete this PTO schedule entry?");
       if (!ok) return;
       const { error } = await supabase.from("hr_pto_schedules").delete().eq("id", scheduleId).eq("employee_id", employeeId);
       if (error) throw error;
       await loadPtoSchedules(employeeId);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to delete PTO schedule");
+      await alert(e?.message ?? "Failed to delete PTO schedule");
     }
   }
 
@@ -4673,13 +4675,13 @@ async function addTimeOffRecord() {
 
   const date = newTimeOffDate.trim();
   if (!date) {
-    alert("Please select a date.");
+    await alert("Please select a date.");
     return;
   }
 
   const hoursNum = Number(newTimeOffHours);
   if (!Number.isFinite(hoursNum) || hoursNum <= 0) {
-    alert("Please enter a valid hours amount (> 0).");
+    await alert("Please enter a valid hours amount (> 0).");
     return;
   }
 
@@ -4712,7 +4714,7 @@ async function addTimeOffRecord() {
 }
 
 async function deleteTimeOffRecord(recId: string) {
-  const ok = confirm("Delete this time off request record? (This will subtract the hours automatically.)");
+  const ok = await confirm("Delete this time off request record? (This will subtract the hours automatically.)");
   if (!ok) return;
 
   setError(null);
@@ -4731,7 +4733,7 @@ async function deleteTimeOffRecord(recId: string) {
 
 
 async function deleteTimeOffDayRecord(recId: string) {
-  const ok = confirm("Delete this time off day request record? (This will subtract 1 day automatically.)");
+  const ok = await confirm("Delete this time off day request record? (This will subtract 1 day automatically.)");
   if (!ok) return;
 
   setError(null);
@@ -4750,7 +4752,7 @@ async function deleteTimeOffDayRecord(recId: string) {
 
 async function resetAttendancePointsToDefault() {
   if (!employeeId) return;
-  const ok = confirm("Reset attendance points to 3? (This keeps all existing records.)");
+  const ok = await confirm("Reset attendance points to 3? (This keeps all existing records.)");
   if (!ok) return;
 
   setError(null);
@@ -4771,7 +4773,7 @@ async function addTimeOffDayRecord() {
 
   const date = (newTimeOffDayDate || "").trim();
   if (!date) {
-    alert("Please choose a date.");
+    await alert("Please choose a date.");
     return;
   }
 
@@ -4790,7 +4792,7 @@ async function addTimeOffDayRecord() {
     setEmployee(fresh);
     await loadTimeOffDayRecords(employeeId);
   } catch (e: any) {
-    alert(e?.message ?? "Failed to add time off day record.");
+    await alert(e?.message ?? "Failed to add time off day record.");
   } finally {
     setTimeOffDaySaving(false);
   }
@@ -4798,7 +4800,7 @@ async function addTimeOffDayRecord() {
 
 async function resetTimeOffDaysToDefault() {
   if (!employeeId) return;
-  const ok = confirm("Reset time off DAY count back to 0? (Records will be kept.)");
+  const ok = await confirm("Reset time off DAY count back to 0? (Records will be kept.)");
   if (!ok) return;
 
   try {
@@ -4807,13 +4809,13 @@ async function resetTimeOffDaysToDefault() {
     const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
     setEmployee(fresh);
   } catch (e: any) {
-    alert(e?.message ?? "Failed to reset day count.");
+    await alert(e?.message ?? "Failed to reset day count.");
   }
 }
 
 async function resetTimeOffHoursToDefault() {
   if (!employeeId) return;
-  const ok = confirm("Reset time off requested hours to 0? (This keeps all existing records.)");
+  const ok = await confirm("Reset time off requested hours to 0? (This keeps all existing records.)");
   if (!ok) return;
 
   setError(null);
@@ -4877,7 +4879,7 @@ async function resetTimeOffHoursToDefault() {
       const fresh = normalizeEmployee(await fetchEmployeeData(employeeId));
       setEmployee(fresh);
       setInsuranceSheetDirty(false);
-      alert("Saved.");
+      await alert("Saved.");
     } catch (e: any) {
       setError(e?.message ?? "Failed to save.");
     }
@@ -5456,7 +5458,7 @@ async function resetTimeOffHoursToDefault() {
                               onClick={async () => {
                                 try {
                                   const latest = normalizeForFortune(exportInsuranceSheetDoc(), insuranceFallbackDoc);
-                                  const ok = confirm("Save the current insurance sheet as the default template for all employees?");
+                                  const ok = await confirm("Save the current insurance sheet as the default template for all employees?");
                                   if (!ok) return;
 
                                   const { error } = await supabase.rpc("hr_upsert_template", {
@@ -5466,9 +5468,9 @@ async function resetTimeOffHoursToDefault() {
                                   if (error) throw error;
 
                                   setInsuranceTemplateDoc(deepJsonClone(latest));
-                                  alert("Template saved.");
+                                  await alert("Template saved.");
                                 } catch (e: any) {
-                                  alert(e?.message ?? "Failed to save template.");
+                                  await alert(e?.message ?? "Failed to save template.");
                                 }
                               }}
                               title="Set the default template used when an employee has insurance enabled but no sheet saved yet."
@@ -6661,7 +6663,7 @@ async function resetTimeOffHoursToDefault() {
                                           title="Delete"
                                           onClick={() => {
                                             void (async () => {
-                                              const ok = confirm(`Delete "${doc.name}"? This cannot be undone.`);
+                                              const ok = await confirm(`Delete "${doc.name}"? This cannot be undone.`);
                                               if (!ok) return;
                                               await deleteEmployeeDoc(doc.id);
                                             })();
@@ -6898,6 +6900,7 @@ async function resetTimeOffHoursToDefault() {
           )}
         </div>
       </div>
+      {modal}
     </div>
   );
 }

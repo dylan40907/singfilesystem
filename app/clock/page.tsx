@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { formatEmployeeName, getDisplayName, timeToMinutes } from "@/lib/scheduleUtils";
+import { useDialog } from "@/components/ui/useDialog";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,7 @@ function elapsed(sinceISO: string): string {
 
 export default function ClockPage() {
   const router = useRouter();
+  const { alert: dialogAlert, modal: dialogModal } = useDialog();
 
   // Auth guard
   const [authChecked, setAuthChecked] = useState(false);
@@ -367,6 +369,8 @@ export default function ClockPage() {
 
   // ── Render ──
   return (
+    <>
+    {dialogModal}
     <div style={{
       minHeight: "100vh",
       background: "linear-gradient(135deg, #fdf2f8 0%, #eff6ff 100%)",
@@ -465,8 +469,9 @@ export default function ClockPage() {
           {/* Don't know your PIN */}
           <div style={{ textAlign: "center", marginTop: 28 }}>
             <button
-              onClick={() => alert(
-                "To find your PIN:\n\n1. Go to the Sing Portal website\n2. Log in with your personal account\n3. Click the HR tab in the navigation\n4. Your PIN is shown at the top of the page — click the eye icon to reveal it."
+              onClick={() => dialogAlert(
+                "To find your PIN:\n\n1. Go to the Sing Portal website\n2. Log in with your personal account\n3. Click the HR tab in the navigation\n4. Your PIN is shown at the top of the page — click the eye icon to reveal it.",
+                { title: "Finding Your PIN" }
               )}
               style={{
                 background: "none", border: "none", color: "#6b7280",
@@ -602,5 +607,6 @@ export default function ClockPage() {
         </div>
       )}
     </div>
+    </>
   );
 }

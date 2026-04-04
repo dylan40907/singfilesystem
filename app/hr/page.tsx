@@ -17,6 +17,7 @@ import {
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import TeacherScheduleView from "@/components/schedule/TeacherScheduleView";
+import { useDialog } from "@/components/ui/useDialog";
 
 /**
  * app/hr/page.tsx
@@ -249,6 +250,7 @@ function TabButton({
 ========================= */
 
 export default function HrPage() {
+  const { confirm, alert, modal } = useDialog();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -526,7 +528,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
       await reloadReviewJobLevels(employees);
       setExportRoleByMonthOpen(true);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to load job roles.");
+      await alert(e?.message ?? "Failed to load job roles.");
     } finally {
       setExportRoleByMonthBusy(false);
     }
@@ -552,15 +554,15 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
   async function exportMonthlyReviewsBySelectedJobRoleMonth() {
     if (!exportRoleByMonthJobLevelId) {
-      alert("Select a job role.");
+      await alert("Select a job role.");
       return;
     }
     if (!Number.isFinite(Number(exportRoleByMonthMonth)) || exportRoleByMonthMonth < 1 || exportRoleByMonthMonth > 12) {
-      alert("Select a valid month.");
+      await alert("Select a valid month.");
       return;
     }
     if (!Number.isFinite(Number(exportRoleByMonthYear)) || exportRoleByMonthYear < 2000 || exportRoleByMonthYear > 2100) {
-      alert("Enter a valid year.");
+      await alert("Enter a valid year.");
       return;
     }
 
@@ -581,7 +583,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
       const employeeRows = ((employees ?? []) as any[]).filter((e) => e.is_active !== false);
       if (!employeeRows.length) {
-        alert("No active employees found for that job role.");
+        await alert("No active employees found for that job role.");
         return;
       }
 
@@ -599,13 +601,13 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
       const reviewList = (reviews ?? []) as any[];
       if (!reviewList.length) {
-        alert("No published monthly reviews found for that job role in the selected month.");
+        await alert("No published monthly reviews found for that job role in the selected month.");
         return;
       }
 
       const formIds = Array.from(new Set(reviewList.map((r) => String(r.form_id ?? "")).filter(Boolean)));
       if (formIds.length !== 1) {
-        alert("Cannot export: multiple monthly forms were used for that job role in the selected month.");
+        await alert("Cannot export: multiple monthly forms were used for that job role in the selected month.");
         return;
       }
       const formId = formIds[0];
@@ -620,7 +622,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
       const questions = ((qs ?? []) as any[]).filter((q) => (q.kind ?? "question") !== "section");
       if (!questions.length) {
-        alert("No questions found for that monthly form.");
+        await alert("No questions found for that monthly form.");
         return;
       }
 
@@ -646,7 +648,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
       const exportingEmployees = employeeRows.filter((e) => reviewByEmployeeId.has(String(e.id)));
       if (!exportingEmployees.length) {
-        alert("No published monthly reviews found for that job role in the selected month.");
+        await alert("No published monthly reviews found for that job role in the selected month.");
         return;
       }
 
@@ -759,7 +761,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
       downloadBlob(`Monthly Reviews - ${safeRole} - ${monthName(month)} ${year}.xlsx`, blob);
       setExportRoleByMonthOpen(false);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to export monthly reviews by job role.");
+      await alert(e?.message ?? "Failed to export monthly reviews by job role.");
     } finally {
       setExportRoleByMonthBusy(false);
     }
@@ -1122,7 +1124,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   }
 
   async function deleteMeetingDoc(doc: HrMeetingDocument) {
-    if (!confirm(`Delete "${doc.name}"?`)) return;
+    if (!await confirm(`Delete "${doc.name}"?`)) return;
     setMeetingStatus("Deleting document...");
     try {
       const { error } = await supabase.from("hr_meeting_documents").delete().eq("id", doc.id);
@@ -1971,6 +1973,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           </div>
         </div>
       </div>
+      {modal}
     </main>
   );
 }
@@ -2162,6 +2165,7 @@ function EmployeePerformanceReviewsTab({
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
+  const { confirm, alert, modal } = useDialog();
 
   const canEdit = !readOnly;
 
@@ -2220,7 +2224,7 @@ function EmployeePerformanceReviewsTab({
       setExportMonthlyYear(yrs.length ? yrs[0] : null);
       setExportMonthlyOpen(true);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to load monthly review years.");
+      await alert(e?.message ?? "Failed to load monthly review years.");
     } finally {
       setExportMonthlyBusy(false);
     }
@@ -2229,7 +2233,7 @@ function EmployeePerformanceReviewsTab({
   async function exportMonthlyReviewsByYear() {
     if (!employeeId) return;
     if (!exportMonthlyYear) {
-      alert("Select a year.");
+      await alert("Select a year.");
       return;
     }
 
@@ -2258,14 +2262,14 @@ function EmployeePerformanceReviewsTab({
       if (rerr) throw rerr;
       const list = (reviews ?? []) as any[];
       if (!list.length) {
-        alert("No published monthly reviews found for that year.");
+        await alert("No published monthly reviews found for that year.");
         return;
       }
 
       // Validate single form_id for the year
       const formIds = Array.from(new Set(list.map((r) => String(r.form_id ?? "")))).filter(Boolean);
       if (formIds.length !== 1) {
-        alert("Cannot export: multiple monthly forms were used in the selected year.");
+        await alert("Cannot export: multiple monthly forms were used in the selected year.");
         return;
       }
       const formId = formIds[0];
@@ -2282,7 +2286,7 @@ function EmployeePerformanceReviewsTab({
       const questions = ((qs ?? []) as any[]).filter((q) => (q.kind ?? "question") !== "section");
 
       if (!questions.length) {
-        alert("No questions found for this monthly form.");
+        await alert("No questions found for this monthly form.");
         return;
       }
 
@@ -2410,7 +2414,7 @@ function EmployeePerformanceReviewsTab({
       downloadBlob(`Monthly Reviews - ${employeeName} - ${year}.xlsx`, blob);
       setExportMonthlyOpen(false);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to export monthly reviews.");
+      await alert(e?.message ?? "Failed to export monthly reviews.");
     } finally {
       setExportMonthlyBusy(false);
     }
@@ -2437,7 +2441,7 @@ function EmployeePerformanceReviewsTab({
       setExportRoleMonthlyYear(yrs.length ? yrs[0] : null);
       setExportRoleMonthlyOpen(true);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to load years for role export.");
+      await alert(e?.message ?? "Failed to load years for role export.");
     } finally {
       setExportRoleMonthlyBusy(false);
     }
@@ -2446,7 +2450,7 @@ function EmployeePerformanceReviewsTab({
   async function exportMonthlyReviewsByJobRoleYear() {
     if (!employeeId) return;
     if (!exportRoleMonthlyYear) {
-      alert("Select a year.");
+      await alert("Select a year.");
       return;
     }
 
@@ -2471,7 +2475,7 @@ function EmployeePerformanceReviewsTab({
       const jobLevelId = (selectedEmployee as any)?.job_level_id ?? null;
       const jobLevelName = (selectedEmployee as any)?.job_level?.name ?? "Unassigned Job Role";
       if (!jobLevelId) {
-        alert("This employee does not have a job role assigned.");
+        await alert("This employee does not have a job role assigned.");
         return;
       }
 
@@ -2485,7 +2489,7 @@ function EmployeePerformanceReviewsTab({
 
       const employeeRows = ((employees ?? []) as any[]).filter((e) => e.is_active !== false);
       if (!employeeRows.length) {
-        alert("No active employees found for that job role.");
+        await alert("No active employees found for that job role.");
         return;
       }
 
@@ -2503,7 +2507,7 @@ function EmployeePerformanceReviewsTab({
 
       const reviewList = (reviews ?? []) as any[];
       if (!reviewList.length) {
-        alert("No published monthly reviews found for that job role in the selected year.");
+        await alert("No published monthly reviews found for that job role in the selected year.");
         return;
       }
 
@@ -2601,7 +2605,7 @@ function EmployeePerformanceReviewsTab({
       downloadBlob(`Monthly Reviews - ${safeRole} - ${year}.xlsx`, blob);
       setExportRoleMonthlyOpen(false);
     } catch (e: any) {
-      alert(e?.message ?? "Failed to export monthly reviews by job role.");
+      await alert(e?.message ?? "Failed to export monthly reviews by job role.");
     } finally {
       setExportRoleMonthlyBusy(false);
     }
@@ -2844,7 +2848,7 @@ function EmployeePerformanceReviewsTab({
       printHtml(html);
     } catch (e: any) {
       console.error("[printAnnualReview] error", e);
-      alert(e?.message ?? "Failed to print annual evaluation.");
+      await alert(e?.message ?? "Failed to print annual evaluation.");
     }
   }
 
@@ -3151,7 +3155,7 @@ function EmployeePerformanceReviewsTab({
       const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
       if (toDelete.length > 0) {
-        const ok = confirm(
+        const ok = await confirm(
           `Delete ${toDelete.length} question(s) from "${form.title}"? This will also delete any saved answers for those questions.`
         );
         if (!ok) {
@@ -3520,7 +3524,7 @@ function EmployeePerformanceReviewsTab({
 
   async function deleteReview(r: HrReview) {
     if (!canEdit) return;
-    const ok = confirm("Delete this evaluation and all its answers?");
+    const ok = await confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
     setStatus("Deleting...");
@@ -4328,7 +4332,7 @@ function EmployeePerformanceReviewsTab({
                                 type="button"
                                 title="Delete form"
                                 onClick={async () => {
-                                  const ok = confirm(
+                                  const ok = await confirm(
                                     'Are you sure you want to delete this form?\n\nDeleting a form will also delete any employee evaluations (reviews) that used it, along with their saved answers.'
                                   );
                                   if (!ok) return;
@@ -4466,10 +4470,10 @@ function EmployeePerformanceReviewsTab({
                     <button
                       className="btn-ghost"
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         const isExisting = !q.id.startsWith("new:");
                         if (isExisting) {
-                          const ok = confirm("Delete this question? This will also delete saved answers for it.");
+                          const ok = await confirm("Delete this question? This will also delete saved answers for it.");
                           if (!ok) return;
                         }
                         deleteEditQuestionRow(q.id);
@@ -4611,7 +4615,7 @@ function EmployeePerformanceReviewsTab({
         </div>
       ) : null}
 
-
+      {modal}
     </div>
   );
 }

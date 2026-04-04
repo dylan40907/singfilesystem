@@ -16,6 +16,7 @@ import {
   parseCsv,
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
+import { useDialog } from "@/components/ui/useDialog";
 
 /**
  * app/hr/page.tsx
@@ -241,6 +242,7 @@ function TabButton({
 ========================= */
 
 export default function HrPage() {
+  const { confirm, modal: dialogModal } = useDialog();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -808,7 +810,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   }
 
   async function deleteMeetingDoc(doc: HrMeetingDocument) {
-    if (!confirm(`Delete "${doc.name}"?`)) return;
+    if (!await confirm(`Delete "${doc.name}"?`)) return;
     setMeetingStatus("Deleting document...");
     try {
       const { error } = await supabase.from("hr_meeting_documents").delete().eq("id", doc.id);
@@ -1477,6 +1479,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           </div>
         </div>
       </div>
+      {dialogModal}
     </main>
   );
 }
@@ -1585,6 +1588,7 @@ function EmployeePerformanceReviewsTab({
   const now = useMemo(() => new Date(), []);
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
+  const { confirm, alert, modal: dialogModal } = useDialog();
 
   const [status, setStatus] = useState<string>("");
 
@@ -1751,7 +1755,7 @@ function EmployeePerformanceReviewsTab({
       const toDelete = Array.from(currentIds).filter((id) => !desiredExistingIds.has(id));
 
       if (toDelete.length > 0) {
-        const ok = confirm(
+        const ok = await confirm(
           `Delete ${toDelete.length} question(s) from ${editFormType}? This will also delete any saved answers for those questions.`
         );
         if (!ok) {
@@ -2061,7 +2065,7 @@ function EmployeePerformanceReviewsTab({
 
   async function deleteReview(r: HrReview) {
 		if (readOnly) return;
-    const ok = confirm("Delete this evaluation and all its answers?");
+    const ok = await confirm("Delete this evaluation and all its answers?");
     if (!ok) return;
 
     setStatus("Deleting...");
@@ -2632,10 +2636,10 @@ function EmployeePerformanceReviewsTab({
                     <button
                       className="btn-ghost"
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         const isExisting = !q.id.startsWith("new:");
                         if (isExisting) {
-                          const ok = confirm("Delete this question? This will also delete saved answers for it.");
+                          const ok = await confirm("Delete this question? This will also delete saved answers for it.");
                           if (!ok) return;
                         }
                         deleteEditQuestionRow(q.id);
@@ -2667,6 +2671,7 @@ function EmployeePerformanceReviewsTab({
         </div>
       ) : null}
 
+      {dialogModal}
     </div>
   );
 }

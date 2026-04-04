@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { useDialog } from "@/components/ui/useDialog";
 
 type HrCampus = {
   id: string;
@@ -198,6 +199,7 @@ function IconButton({
 type PickerMode = "root" | "child" | "insertAbove";
 
 export default function HrOrgChartPage() {
+  const { confirm, modal: dialogModal } = useDialog();
   const [status, setStatus] = useState("");
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const isAdmin = !!profile?.is_active && profile.role === "admin";
@@ -493,7 +495,7 @@ export default function HrOrgChartPage() {
   }
 
   async function deleteJobLevel(id: string) {
-    const ok = confirm("Delete this job level? (If any employees are assigned to it, deletion will fail.)");
+    const ok = await confirm("Delete this job level? (If any employees are assigned to it, deletion will fail.)", { title: "Delete Job Level", confirmLabel: "Delete", danger: true });
     if (!ok) return;
 
     setJobLevelsError(null);
@@ -615,7 +617,7 @@ export default function HrOrgChartPage() {
 
   async function removeFromChart(employeeId: string) {
     if (!selectedCampusId) return;
-    const ok = confirm("Remove this employee from the org chart? (Children will become top-level.)");
+    const ok = await confirm("Remove this employee from the org chart? (Children will become top-level.)", { title: "Remove from Chart", confirmLabel: "Remove", danger: true });
     if (!ok) return;
 
     setStatus("Removing...");
@@ -1336,6 +1338,7 @@ export default function HrOrgChartPage() {
           </>
         )}
       </div>
+      {dialogModal}
     </main>
   );
 }
