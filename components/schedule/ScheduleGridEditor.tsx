@@ -1038,7 +1038,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           {!readOnly && (
             <button
               className="btn"
-              onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(rooms.map((r) => r.id)), fillStart: "07:20", fillEnd: "18:00" })}
+              onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), fillStart: "07:20", fillEnd: "18:00" })}
             >
               ↓ Fill Gaps
             </button>
