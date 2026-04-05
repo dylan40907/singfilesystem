@@ -27,7 +27,7 @@ interface ScheduleGridProps {
   onBlockContextMenu: (blockId: string, x: number, y: number) => void;
   onBlockResize: (blockId: string, newStartTime: string, newEndTime: string) => void;
   onBlockMoveToColumn: (blockId: string, newRoomId: string, newColumnIndex: number, deltaSlots: number) => void;
-  onRoomUpdate: (roomId: string, updates: { name?: string; capacity?: number }) => void;
+  onRoomUpdate: (roomId: string, updates: { name?: string; columns?: number }) => void;
   onRoomDelete: (roomId: string) => void;
   paintMode?: boolean;
   cellColors?: Record<string, string>; // "roomId:colIdx:timeSlot" -> color
@@ -73,14 +73,14 @@ export default function ScheduleGrid({
     }[] = [];
     let gi = 0;
     for (const room of rooms) {
-      for (let c = 0; c < room.capacity; c++) {
+      for (let c = 0; c < room.columns; c++) {
         cols.push({
           roomId: room.id,
           columnIndex: c,
           roomName: room.name,
-          capacity: room.capacity,
+          capacity: room.columns,
           isFirstInRoom: c === 0,
-          isLastInRoom: c === room.capacity - 1,
+          isLastInRoom: c === room.columns - 1,
           globalIndex: gi++,
         });
       }

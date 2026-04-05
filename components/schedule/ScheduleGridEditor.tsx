@@ -47,7 +47,10 @@ type DuplicateMode = {
 type RoomEditState = {
   roomId: string;
   name: string;
-  capacity: number;
+  columns: number;
+  requiredTeachers: number;
+  singleTeacherPeriods: Array<{ start: string; end: string }>;
+  periodDraft: { start: string; end: string };
 } | null;
 
 // State for the 3-option type picker popup
@@ -111,9 +114,18 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [showHoursView, setShowHoursView] = useState(false);
   const [hoursSearch, setHoursSearch] = useState("");
 
-  // Unassigned blocks publish alert
+  // Unassigned blocks publish confirmation
   type UnassignedItem = { day: string; room: string; start: string; end: string; label: string | null };
   const [unassignedAlert, setUnassignedAlert] = useState<UnassignedItem[] | null>(null);
+
+  // Fill gaps modal
+  type FillGapsState = {
+    open: boolean;
+    selectedRoomIds: Set<string>;
+    fillStart: string; // "HH:mm"
+    fillEnd: string;
+  };
+  const [fillGaps, setFillGaps] = useState<FillGapsState | null>(null);
 
   const { confirm, modal: dialogModal } = useDialog();
   const readOnly = schedule?.status === "published";
@@ -321,21 +333,21 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const nextOrder = rooms.length > 0 ? Math.max(...rooms.map((r) => r.sort_order)) + 1 : 0;
     const { data, error } = await supabase
       .from("schedule_rooms")
-      .insert({ schedule_id: scheduleId, name: `Room ${rooms.length + 1}`, capacity: 2, sort_order: nextOrder })
+      .insert({ schedule_id: scheduleId, name: `Room ${rooms.length + 1}`, columns: 2, required_teachers: 2, single_teacher_periods: [], sort_order: nextOrder })
       .select()
       .single();
     if (data) setRooms((prev) => [...prev, data]);
     if (error) setWarning(error.message);
   }
 
-  async function updateRoom(roomId: string, updates: { name?: string; capacity?: number }) {
+  async function updateRoom(roomId: string, updates: { name?: string; columns?: number; required_teachers?: number; single_teacher_periods?: Array<{ start: string; end: string }> }) {
     const { error } = await supabase.from("schedule_rooms").update(updates).eq("id", roomId);
     if (!error) {
       setRooms((prev) => prev.map((r) => (r.id === roomId ? { ...r, ...updates } : r)));
-      if (updates.capacity !== undefined) {
+      if (updates.columns !== undefined) {
         const room = rooms.find((r) => r.id === roomId);
-        if (room && updates.capacity < room.capacity) {
-          const toDelete = blocks.filter((b) => b.room_id === roomId && b.column_index >= updates.capacity!);
+        if (room && updates.columns < room.columns) {
+          const toDelete = blocks.filter((b) => b.room_id === roomId && b.column_index >= updates.columns!);
           if (toDelete.length > 0) {
             await supabase.from("schedule_blocks").delete().in("id", toDelete.map((b) => b.id));
             setBlocks((prev) => prev.filter((b) => !toDelete.some((d) => d.id === b.id)));
@@ -359,11 +371,18 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
   }
 
-  function handleRoomEditTrigger(roomId: string, _updates: { name?: string; capacity?: number }) {
+  function handleRoomEditTrigger(roomId: string, _updates: { name?: string; columns?: number }) {
     const room = rooms.find((r) => r.id === roomId);
     if (!room) return;
     if (Object.keys(_updates).length === 0) {
-      setRoomEdit({ roomId: room.id, name: room.name, capacity: room.capacity });
+      setRoomEdit({
+        roomId: room.id,
+        name: room.name,
+        columns: room.columns,
+        requiredTeachers: room.required_teachers ?? 2,
+        singleTeacherPeriods: room.single_teacher_periods ?? [],
+        periodDraft: { start: "07:20", end: "08:00" },
+      });
     } else {
       updateRoom(roomId, _updates);
     }
@@ -371,8 +390,212 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   async function handleRoomEditSave() {
     if (!roomEdit) return;
-    await updateRoom(roomEdit.roomId, { name: roomEdit.name.trim() || "Room", capacity: roomEdit.capacity });
+    await updateRoom(roomEdit.roomId, {
+      name: roomEdit.name.trim() || "Room",
+      columns: roomEdit.columns,
+      required_teachers: roomEdit.requiredTeachers,
+      single_teacher_periods: roomEdit.singleTeacherPeriods,
+    });
     setRoomEdit(null);
+  }
+
+  // Add a single-teacher period: paint #f2f2f2 on unpainted cells in all days for this room
+  async function addSingleTeacherPeriod() {
+    if (!roomEdit) return;
+    const { start, end } = roomEdit.periodDraft;
+    const startM = timeToMinutes(start);
+    const endM = timeToMinutes(end);
+    if (startM >= endM) { setWarning("Period end must be after start."); return; }
+
+    const newPeriods = [...roomEdit.singleTeacherPeriods, { start, end }];
+    setRoomEdit({ ...roomEdit, singleTeacherPeriods: newPeriods });
+
+    // Auto-label #f2f2f2 in the legend if not already set
+    if (!colorLabels["#f2f2f2"]) {
+      handleColorLabelChange("#f2f2f2", "1 Teacher Period");
+    }
+
+    // Compute new colors for all days from current state snapshot
+    const newCellColors = { ...cellColors };
+    for (const day of [1, 2, 3, 4, 5] as const) {
+      const dayColors = { ...(newCellColors[day] ?? {}) };
+      for (let m = startM; m < endM; m += SLOT_MINUTES) {
+        const timeSlot = minutesToTime(m);
+        for (let col = 0; col < roomEdit.columns; col++) {
+          const key = `${roomEdit.roomId}:${col}:${timeSlot}`;
+          if (!dayColors[key]) dayColors[key] = "#f2f2f2";
+        }
+      }
+      newCellColors[day] = dayColors;
+    }
+    setCellColors(newCellColors);
+
+    // Save all days directly (bypass debounce — this is an explicit user action)
+    for (const day of [1, 2, 3, 4, 5] as const) {
+      await supabase.from("schedule_cell_colors").upsert(
+        { schedule_id: scheduleId, day_of_week: day, colors: newCellColors[day] ?? {}, updated_at: new Date().toISOString() },
+        { onConflict: "schedule_id,day_of_week" }
+      );
+    }
+  }
+
+  // Remove a single-teacher period: remove #f2f2f2 cells in its range (but not other colors)
+  async function removeSingleTeacherPeriod(idx: number) {
+    if (!roomEdit) return;
+    const period = roomEdit.singleTeacherPeriods[idx];
+    const newPeriods = roomEdit.singleTeacherPeriods.filter((_, i) => i !== idx);
+    setRoomEdit({ ...roomEdit, singleTeacherPeriods: newPeriods });
+
+    const startM = timeToMinutes(period.start);
+    const endM = timeToMinutes(period.end);
+
+    const newCellColors = { ...cellColors };
+    for (const day of [1, 2, 3, 4, 5] as const) {
+      const dayColors = { ...(newCellColors[day] ?? {}) };
+      for (let m = startM; m < endM; m += SLOT_MINUTES) {
+        const timeSlot = minutesToTime(m);
+        for (let col = 0; col < roomEdit.columns; col++) {
+          const key = `${roomEdit.roomId}:${col}:${timeSlot}`;
+          if (dayColors[key] === "#f2f2f2") delete dayColors[key];
+        }
+      }
+      newCellColors[day] = dayColors;
+    }
+    setCellColors(newCellColors);
+
+    for (const day of [1, 2, 3, 4, 5] as const) {
+      await supabase.from("schedule_cell_colors").upsert(
+        { schedule_id: scheduleId, day_of_week: day, colors: newCellColors[day] ?? {}, updated_at: new Date().toISOString() },
+        { onConflict: "schedule_id,day_of_week" }
+      );
+    }
+  }
+
+  // --- Fill Gaps ---
+  async function runFillGaps() {
+    if (!fillGaps) return;
+    setSaving(true);
+
+    const fillStartM = timeToMinutes(fillGaps.fillStart);
+    const fillEndM = timeToMinutes(fillGaps.fillEnd);
+    const selectedRooms = rooms.filter((r) => fillGaps.selectedRoomIds.has(r.id));
+
+    const newBlocks: Array<{
+      schedule_id: string;
+      room_id: string;
+      employee_id: null;
+      day_of_week: number;
+      start_time: string;
+      end_time: string;
+      column_index: number;
+      label: string;
+      block_type: "shift";
+    }> = [];
+
+    for (const room of selectedRooms) {
+      const roomCols = room.columns ?? 2;
+      const required = room.required_teachers ?? 2;
+      const periods = room.single_teacher_periods ?? [];
+
+      for (const day of [1, 2, 3, 4, 5] as number[]) {
+        // All blocks in this room/day
+        const allDayBlocks = blocks.filter(
+          (b) => b.room_id === room.id && b.day_of_week === day
+        );
+
+        // Build set of critical time boundaries within fill range
+        const eventSet = new Set<number>([fillStartM, fillEndM]);
+        for (const p of periods) {
+          const ps = timeToMinutes(p.start);
+          const pe = timeToMinutes(p.end);
+          if (ps > fillStartM && ps < fillEndM) eventSet.add(ps);
+          if (pe > fillStartM && pe < fillEndM) eventSet.add(pe);
+        }
+        for (const b of allDayBlocks) {
+          const bs = timeToMinutes(b.start_time);
+          const be = timeToMinutes(b.end_time);
+          if (bs > fillStartM && bs < fillEndM) eventSet.add(bs);
+          if (be > fillStartM && be < fillEndM) eventSet.add(be);
+        }
+        const sortedEvents = [...eventSet].sort((a, b) => a - b);
+
+        // Collect gap intervals: { startM, endM, column }
+        type GapInterval = { startM: number; endM: number; column: number };
+        const gaps: GapInterval[] = [];
+
+        for (let i = 0; i < sortedEvents.length - 1; i++) {
+          const iStart = sortedEvents[i];
+          const iEnd = sortedEvents[i + 1];
+          const mid = (iStart + iEnd) / 2;
+
+          // Required teachers for this interval
+          let reqHere = required;
+          for (const p of periods) {
+            if (mid >= timeToMinutes(p.start) && mid < timeToMinutes(p.end)) {
+              reqHere = 1;
+              break;
+            }
+          }
+
+          // coveredByShift: columns with a shift block here → counts toward required
+          // occupied: columns with ANY block here → can't place an unassigned block
+          const coveredByShift = new Set<number>();
+          const occupied = new Set<number>();
+          for (const b of allDayBlocks) {
+            const bs = timeToMinutes(b.start_time);
+            const be = timeToMinutes(b.end_time);
+            if (bs < iEnd && be > iStart) {
+              occupied.add(b.column_index);
+              if (b.block_type === "shift") coveredByShift.add(b.column_index);
+            }
+          }
+
+          const shortage = Math.max(0, reqHere - coveredByShift.size);
+          for (let n = 0; n < shortage; n++) {
+            let freeCol = -1;
+            for (let col = 0; col < roomCols; col++) {
+              if (!occupied.has(col)) { freeCol = col; occupied.add(col); break; }
+            }
+            if (freeCol >= 0) gaps.push({ startM: iStart, endM: iEnd, column: freeCol });
+          }
+        }
+
+        // Merge adjacent gaps with the same column
+        const merged: GapInterval[] = [];
+        const sortedGaps = [...gaps].sort((a, b) => a.column - b.column || a.startM - b.startM);
+        for (const g of sortedGaps) {
+          const last = merged[merged.length - 1];
+          if (last && last.column === g.column && last.endM === g.startM) {
+            last.endM = g.endM;
+          } else {
+            merged.push({ ...g });
+          }
+        }
+
+        for (const g of merged) {
+          newBlocks.push({
+            schedule_id: scheduleId,
+            room_id: room.id,
+            employee_id: null,
+            day_of_week: day,
+            start_time: minutesToTime(g.startM),
+            end_time: minutesToTime(g.endM),
+            column_index: g.column,
+            label: "Unassigned",
+            block_type: "shift",
+          });
+        }
+      }
+    }
+
+    if (newBlocks.length > 0) {
+      const { data, error } = await supabase.from("schedule_blocks").insert(newBlocks).select();
+      if (error) setWarning(error.message);
+      else if (data) setBlocks((prev) => [...prev, ...data]);
+    }
+
+    setFillGaps(null);
+    setSaving(false);
   }
 
   // --- Block CRUD ---
@@ -480,7 +703,22 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
 
     const targetRoom = rooms.find((r) => r.id === newRoomId);
-    if (!targetRoom || newColumnIndex >= targetRoom.capacity) { setWarning("Invalid target column."); return; }
+    if (!targetRoom || newColumnIndex >= targetRoom.columns) { setWarning("Invalid target column."); return; }
+
+    // Prevent dropping into a column that already has any overlapping block
+    const columnConflict = blocks.some(
+      (b) =>
+        b.id !== blockId &&
+        b.room_id === newRoomId &&
+        b.column_index === newColumnIndex &&
+        b.day_of_week === block.day_of_week &&
+        timeToMinutes(b.start_time) < timeToMinutes(newEndTime) &&
+        timeToMinutes(b.end_time) > timeToMinutes(newStartTime)
+    );
+    if (columnConflict) {
+      setWarning("Cannot place block on top of an existing block in that column.");
+      return;
+    }
 
     setBlocks((prev) =>
       prev.map((b) =>
@@ -579,10 +817,18 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   }
 
   // --- Publish / Unpublish ---
+  async function proceedPublish() {
+    if (!schedule) return;
+    const newStatus = schedule.status === "published" ? "draft" : "published";
+    const { error } = await supabase.from("schedules").update({ status: newStatus }).eq("id", schedule.id);
+    if (!error) setSchedule((prev) => (prev ? { ...prev, status: newStatus } : prev));
+    else setWarning(error.message);
+  }
+
   async function togglePublish() {
     if (!schedule) return;
 
-    // When publishing, block if any unassigned blocks exist
+    // When publishing, warn if unassigned blocks exist — but allow proceeding
     if (schedule.status !== "published") {
       const unassigned = blocks.filter((b) => !b.employee_id);
       if (unassigned.length > 0) {
@@ -601,10 +847,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       }
     }
 
-    const newStatus = schedule.status === "published" ? "draft" : "published";
-    const { error } = await supabase.from("schedules").update({ status: newStatus }).eq("id", schedule.id);
-    if (!error) setSchedule((prev) => (prev ? { ...prev, status: newStatus } : prev));
-    else setWarning(error.message);
+    await proceedPublish();
   }
 
   // --- Copy Previous Week (includes rooms, blocks, and cell colors) ---
@@ -656,7 +899,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
     const { data: newRooms } = await supabase
       .from("schedule_rooms")
-      .insert(prevRooms.map((r) => ({ schedule_id: scheduleId, name: r.name, capacity: r.capacity, sort_order: r.sort_order })))
+      .insert(prevRooms.map((r) => ({ schedule_id: scheduleId, name: r.name, columns: r.columns, required_teachers: r.required_teachers ?? 2, single_teacher_periods: r.single_teacher_periods ?? [], sort_order: r.sort_order })))
       .select();
 
     if (newRooms && prevBlocks.length > 0) {
@@ -792,6 +1035,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             </>
           )}
           <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>
+          {!readOnly && (
+            <button
+              className="btn"
+              onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(rooms.map((r) => r.id)), fillStart: "07:20", fillEnd: "18:00" })}
+            >
+              ↓ Fill Gaps
+            </button>
+          )}
           <button className="btn btn-pink" onClick={togglePublish}>
             {schedule.status === "published" ? "Unpublish" : "Publish"}
           </button>
@@ -814,31 +1065,89 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         </div>
       )}
 
-      {/* Room edit panel */}
+      {/* Room edit modal */}
       {roomEdit && (
-        <div style={{ padding: "10px 16px", background: "#fdf2f8", borderRadius: 10, marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontWeight: 700, fontSize: 13 }}>Edit Room:</span>
-          <input
-            type="text"
-            value={roomEdit.name}
-            onChange={(e) => setRoomEdit({ ...roomEdit, name: e.target.value })}
-            placeholder="Room name"
-            autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter") handleRoomEditSave(); if (e.key === "Escape") setRoomEdit(null); }}
-            style={{ padding: "6px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, width: 160 }}
-          />
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#6b7280" }}>Capacity:</label>
-            <input
-              type="number" min={1} max={10} value={roomEdit.capacity}
-              onChange={(e) => setRoomEdit({ ...roomEdit, capacity: Math.max(1, parseInt(e.target.value) || 1) })}
-              style={{ width: 50, padding: "4px 6px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 13, textAlign: "center" }}
-            />
+        <>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }} onMouseDown={() => setRoomEdit(null)} />
+          <div
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 81, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", padding: 24, width: 420, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 16 }}>Edit Room</div>
+
+            {/* Name */}
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Room Name</label>
+              <input
+                type="text" value={roomEdit.name} autoFocus
+                onChange={(e) => setRoomEdit({ ...roomEdit, name: e.target.value })}
+                onKeyDown={(e) => { if (e.key === "Enter") handleRoomEditSave(); if (e.key === "Escape") setRoomEdit(null); }}
+                style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }}
+              />
+            </div>
+
+            {/* Columns + Required teachers */}
+            <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Columns</label>
+                <input
+                  type="number" min={1} max={10} value={roomEdit.columns}
+                  onChange={(e) => setRoomEdit({ ...roomEdit, columns: Math.max(1, parseInt(e.target.value) || 1) })}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, textAlign: "center", boxSizing: "border-box" }}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Min. Required Teachers</label>
+                <input
+                  type="number" min={1} max={10} value={roomEdit.requiredTeachers}
+                  onChange={(e) => setRoomEdit({ ...roomEdit, requiredTeachers: Math.max(1, parseInt(e.target.value) || 1) })}
+                  style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, textAlign: "center", boxSizing: "border-box" }}
+                />
+              </div>
+            </div>
+
+            {/* Single-teacher time periods */}
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>1-Teacher Time Periods</label>
+              <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>During these windows only 1 teacher is required. Cells are auto-painted gray.</div>
+              {roomEdit.singleTeacherPeriods.length === 0 && (
+                <div style={{ fontSize: 12, color: "#9ca3af", padding: "6px 0" }}>No periods set.</div>
+              )}
+              {roomEdit.singleTeacherPeriods.map((p, idx) => (
+                <div key={idx} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 10px", background: "#f9fafb", borderRadius: 8, border: "1px solid #e5e7eb", marginBottom: 4 }}>
+                  <div style={{ width: 12, height: 12, borderRadius: 3, background: "#f2f2f2", border: "1px solid #d1d5db", flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{formatTime(p.start)} – {formatTime(p.end)}</span>
+                  <button
+                    onClick={() => removeSingleTeacherPeriod(idx)}
+                    style={{ border: "none", background: "none", cursor: "pointer", color: "#9ca3af", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
+                  >✕</button>
+                </div>
+              ))}
+              {/* Add period */}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
+                <input
+                  type="time" value={roomEdit.periodDraft.start}
+                  onChange={(e) => setRoomEdit({ ...roomEdit, periodDraft: { ...roomEdit.periodDraft, start: e.target.value } })}
+                  style={{ padding: "5px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 12, flex: 1 }}
+                />
+                <span style={{ fontSize: 12, color: "#6b7280" }}>to</span>
+                <input
+                  type="time" value={roomEdit.periodDraft.end}
+                  onChange={(e) => setRoomEdit({ ...roomEdit, periodDraft: { ...roomEdit.periodDraft, end: e.target.value } })}
+                  style={{ padding: "5px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 12, flex: 1 }}
+                />
+                <button className="btn" onClick={addSingleTeacherPeriod} style={{ padding: "5px 12px", fontSize: 12 }}>+ Add</button>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button className="btn btn-pink" onClick={handleRoomEditSave} style={{ flex: 1, padding: "8px 0", fontSize: 13 }}>Save</button>
+              <button className="btn" onClick={() => { void deleteRoom(roomEdit.roomId); setRoomEdit(null); }} style={{ padding: "8px 14px", fontSize: 13, color: "#dc2626", borderColor: "#fca5a5" }}>Delete Room</button>
+              <button className="btn" onClick={() => setRoomEdit(null)} style={{ padding: "8px 14px", fontSize: 13 }}>Cancel</button>
+            </div>
           </div>
-          <button className="btn btn-pink" onClick={handleRoomEditSave} style={{ padding: "6px 14px", fontSize: 13 }}>Save</button>
-          <button className="btn" onClick={() => { deleteRoom(roomEdit.roomId); setRoomEdit(null); }} style={{ padding: "6px 14px", fontSize: 13, color: "#dc2626", borderColor: "#fca5a5" }}>Delete Room</button>
-          <button className="btn" onClick={() => setRoomEdit(null)} style={{ padding: "6px 14px", fontSize: 13 }}>Cancel</button>
-        </div>
+        </>
       )}
 
       {/* Paint mode toolbar */}
@@ -888,14 +1197,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       {usedColors.length > 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "6px 12px", background: "#f9fafb", borderRadius: 10, border: "1.5px solid #e5e7eb", flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", marginRight: 4 }}>Legend:</span>
-          {usedColors.map((color) => (
+          {[...usedColors.filter((c) => c !== "#f2f2f2"), ...(usedColors.includes("#f2f2f2") ? ["#f2f2f2"] : [])].map((color) => (
             <div key={color} style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <div style={{ width: 18, height: 18, borderRadius: 4, background: color, border: "1px solid #d1d5db", flexShrink: 0 }} />
               <input
                 type="text"
-                value={colorLabels[color] ?? ""}
+                value={color === "#f2f2f2" ? (colorLabels[color] || "1 Teacher Period") : (colorLabels[color] ?? "")}
                 onChange={(e) => handleColorLabelChange(color, e.target.value)}
-                placeholder="Label…"
+                placeholder={color === "#f2f2f2" ? "1 Teacher Period" : "Label…"}
                 style={{ width: 90, padding: "2px 6px", borderRadius: 6, border: "1px solid #e5e7eb", fontSize: 12, fontWeight: 500, color: "#374151", background: "white" }}
               />
             </div>
@@ -1102,7 +1411,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         />
       )}
 
-      {/* Unassigned blocks publish alert */}
+      {/* Unassigned blocks publish confirmation */}
       {unassignedAlert && (
         <>
           <div
@@ -1119,15 +1428,15 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-              <span style={{ fontSize: 22 }}>🚫</span>
-              <div style={{ fontWeight: 800, fontSize: 16, color: "#dc2626" }}>Cannot Publish</div>
+              <span style={{ fontSize: 22 }}>⚠️</span>
+              <div style={{ fontWeight: 800, fontSize: 16, color: "#d97706" }}>Unassigned Blocks</div>
             </div>
             <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 14 }}>
-              The schedule has <b>{unassignedAlert.length}</b> unassigned block{unassignedAlert.length !== 1 ? "s" : ""}. Assign all blocks before publishing.
+              This schedule has <b>{unassignedAlert.length}</b> unassigned block{unassignedAlert.length !== 1 ? "s" : ""}. Are you sure you want to publish with these unassigned?
             </div>
-            <div style={{ overflowY: "auto", flex: 1, borderRadius: 8, border: "1.5px solid #fee2e2", background: "#fef2f2" }}>
+            <div style={{ overflowY: "auto", flex: 1, borderRadius: 8, border: "1.5px solid #fed7aa", background: "#fff7ed", marginBottom: 16 }}>
               {unassignedAlert.map((item, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i < unassignedAlert.length - 1 ? "1px solid #fecaca" : "none" }}>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", borderBottom: i < unassignedAlert.length - 1 ? "1px solid #fed7aa" : "none" }}>
                   <div style={{ width: 3, flexShrink: 0, alignSelf: "stretch", background: "#f97316", borderRadius: 2 }} />
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>
@@ -1140,13 +1449,22 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 </div>
               ))}
             </div>
-            <button
-              className="btn"
-              onClick={() => setUnassignedAlert(null)}
-              style={{ marginTop: 16, padding: "9px 0", fontWeight: 700 }}
-            >
-              Got it
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                className="btn btn-pink"
+                onClick={() => { setUnassignedAlert(null); void proceedPublish(); }}
+                style={{ flex: 1, padding: "9px 0", fontWeight: 700 }}
+              >
+                Publish Anyway
+              </button>
+              <button
+                className="btn"
+                onClick={() => setUnassignedAlert(null)}
+                style={{ padding: "9px 16px", fontWeight: 700 }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -1219,6 +1537,69 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             </div>
             <div style={{ marginTop: 10, fontSize: 11, color: "#9ca3af" }}>
               Paid time = shifts + breaks, excluding lunch breaks.
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Fill Gaps modal */}
+      {fillGaps && (
+        <>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }} onMouseDown={() => setFillGaps(null)} />
+          <div
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 81, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", padding: 24, width: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>Fill Coverage Gaps</div>
+            <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 16 }}>
+              Adds unassigned shift blocks wherever a room is below its required teacher count.
+            </div>
+
+            {/* Room selection */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Rooms</label>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {rooms.map((room) => (
+                  <label key={room.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, padding: "4px 0" }}>
+                    <input
+                      type="checkbox"
+                      checked={fillGaps.selectedRoomIds.has(room.id)}
+                      onChange={(e) => {
+                        const next = new Set(fillGaps.selectedRoomIds);
+                        if (e.target.checked) next.add(room.id); else next.delete(room.id);
+                        setFillGaps({ ...fillGaps, selectedRoomIds: next });
+                      }}
+                    />
+                    <span style={{ fontWeight: 600 }}>{room.name}</span>
+                    <span style={{ color: "#9ca3af", fontSize: 11 }}>(min {room.required_teachers ?? 2} teacher{(room.required_teachers ?? 2) !== 1 ? "s" : ""})</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Time range */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="time" value={fillGaps.fillStart}
+                  onChange={(e) => setFillGaps({ ...fillGaps, fillStart: e.target.value })}
+                  style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }}
+                />
+                <span style={{ color: "#6b7280", fontSize: 13 }}>to</span>
+                <input
+                  type="time" value={fillGaps.fillEnd}
+                  onChange={(e) => setFillGaps({ ...fillGaps, fillEnd: e.target.value })}
+                  style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-pink" onClick={runFillGaps} disabled={fillGaps.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
+                Fill Gaps
+              </button>
+              <button className="btn" onClick={() => setFillGaps(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
             </div>
           </div>
         </>

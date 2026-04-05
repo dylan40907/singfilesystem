@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ScheduleBlock as ScheduleBlockType,
   EmployeeLite,
@@ -275,14 +276,14 @@ export default function ScheduleBlock({
       )}
 
 
-      {/* Warning tooltip */}
-      {tooltipPos && warnings && warnings.length > 0 && (
+      {/* Warning tooltip — rendered via portal to escape any stacking context */}
+      {tooltipPos && warnings && warnings.length > 0 && typeof document !== "undefined" && createPortal(
         <div
           style={{
             position: "fixed",
             left: tooltipPos.x + 14,
             top: tooltipPos.y - 12,
-            zIndex: 1000,
+            zIndex: 99999,
             background: "#1e293b",
             color: "white",
             borderRadius: 8,
@@ -297,7 +298,8 @@ export default function ScheduleBlock({
           }}
         >
           {warnings.join("\n\n")}
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Resize bottom handle */}

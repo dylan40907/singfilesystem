@@ -14,9 +14,11 @@ export interface ScheduleRoom {
   id: string;
   schedule_id: string;
   name: string;
-  capacity: number;
+  columns: number;
   sort_order: number;
   created_at: string;
+  required_teachers: number;
+  single_teacher_periods: Array<{ start: string; end: string }>;
 }
 
 export type BlockType = "shift" | "lunch_break" | "break";
