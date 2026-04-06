@@ -207,16 +207,14 @@ export default function ScheduleGrid({
                 height: 36,
                 borderBottom: "1.5px solid #e5e7eb",
                 background: "#f9fafb",
-                cursor: !readOnly && col.isFirstInRoom ? "pointer" : "default",
+                cursor: !readOnly ? "pointer" : "default",
                 position: "sticky",
                 top: 0,
-                zIndex: 15,
+                zIndex: col.isFirstInRoom ? 16 : 15,
                 overflow: "visible",
               }}
               onClick={() => {
-                if (!readOnly && col.isFirstInRoom) {
-                  onRoomUpdate(col.roomId, {});
-                }
+                if (!readOnly) onRoomUpdate(col.roomId, {});
               }}
             >
               {col.isFirstInRoom && (

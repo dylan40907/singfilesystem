@@ -127,6 +127,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   };
   const [fillGaps, setFillGaps] = useState<FillGapsState | null>(null);
 
+  // Clear unassigned modal
+  type ClearUnassignedState = {
+    selectedRoomIds: Set<string>;
+    clearStart: string;
+    clearEnd: string;
+  };
+  const [clearUnassigned, setClearUnassigned] = useState<ClearUnassignedState | null>(null);
+
   const { confirm, modal: dialogModal } = useDialog();
   const readOnly = schedule?.status === "published";
 
@@ -598,6 +606,28 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     setSaving(false);
   }
 
+  async function runClearUnassigned() {
+    if (!clearUnassigned) return;
+    setSaving(true);
+    const startM = timeToMinutes(clearUnassigned.clearStart);
+    const endM = timeToMinutes(clearUnassigned.clearEnd);
+
+    const toDelete = blocks.filter((b) =>
+      !b.employee_id &&
+      clearUnassigned.selectedRoomIds.has(b.room_id) &&
+      timeToMinutes(b.start_time) >= startM &&
+      timeToMinutes(b.end_time) <= endM
+    );
+
+    if (toDelete.length > 0) {
+      const { error } = await supabase.from("schedule_blocks").delete().in("id", toDelete.map((b) => b.id));
+      if (error) setWarning(error.message);
+      else setBlocks((prev) => prev.filter((b) => !toDelete.some((d) => d.id === b.id)));
+    }
+    setClearUnassigned(null);
+    setSaving(false);
+  }
+
   // --- Block CRUD ---
   async function createBlock(
     roomId: string,
@@ -1036,12 +1066,20 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
           )}
           <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>
           {!readOnly && (
-            <button
-              className="btn"
-              onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), fillStart: "07:20", fillEnd: "18:00" })}
-            >
-              ↓ Fill Gaps
-            </button>
+            <>
+              <button
+                className="btn"
+                onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), fillStart: "07:20", fillEnd: "18:00" })}
+              >
+                ↓ Fill Gaps
+              </button>
+              <button
+                className="btn"
+                onClick={() => setClearUnassigned({ selectedRoomIds: new Set(), clearStart: "07:20", clearEnd: "18:00" })}
+              >
+                ✕ Clear Unassigned
+              </button>
+            </>
           )}
           <button className="btn btn-pink" onClick={togglePublish}>
             {schedule.status === "published" ? "Unpublish" : "Publish"}
@@ -1547,18 +1585,21 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         <>
           <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }} onMouseDown={() => setFillGaps(null)} />
           <div
-            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 81, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", padding: 24, width: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 81, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", width: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>Fill Coverage Gaps</div>
-            <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 16 }}>
-              Adds unassigned shift blocks wherever a room is below its required teacher count.
+            {/* Header */}
+            <div style={{ padding: "20px 24px 0", flexShrink: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>Fill Coverage Gaps</div>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>
+                Adds unassigned shift blocks wherever a room is below its required teacher count.
+              </div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Rooms</label>
             </div>
 
-            {/* Room selection */}
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Rooms</label>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {/* Scrollable room list */}
+            <div style={{ overflowY: "auto", flex: 1, padding: "0 24px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingBottom: 4 }}>
                 {rooms.map((room) => (
                   <label key={room.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, padding: "4px 0" }}>
                     <input
@@ -1577,29 +1618,76 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               </div>
             </div>
 
-            {/* Time range */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="time" value={fillGaps.fillStart}
-                  onChange={(e) => setFillGaps({ ...fillGaps, fillStart: e.target.value })}
-                  style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }}
-                />
-                <span style={{ color: "#6b7280", fontSize: 13 }}>to</span>
-                <input
-                  type="time" value={fillGaps.fillEnd}
-                  onChange={(e) => setFillGaps({ ...fillGaps, fillEnd: e.target.value })}
-                  style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }}
-                />
+            {/* Sticky footer */}
+            <div style={{ padding: "14px 24px 20px", flexShrink: 0, borderTop: "1px solid #f3f4f6" }}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="time" value={fillGaps.fillStart} onChange={(e) => setFillGaps({ ...fillGaps, fillStart: e.target.value })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }} />
+                  <span style={{ color: "#6b7280", fontSize: 13 }}>to</span>
+                  <input type="time" value={fillGaps.fillEnd} onChange={(e) => setFillGaps({ ...fillGaps, fillEnd: e.target.value })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-pink" onClick={runFillGaps} disabled={fillGaps.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>Fill Gaps</button>
+                <button className="btn" onClick={() => setFillGaps(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Clear Unassigned modal */}
+      {clearUnassigned && (
+        <>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 80 }} onMouseDown={() => setClearUnassigned(null)} />
+          <div
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 81, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", width: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ padding: "20px 24px 0", flexShrink: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4 }}>Clear Unassigned Blocks</div>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 14 }}>
+                Removes all unassigned blocks within the selected rooms and time range.
+              </div>
+              <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Rooms</label>
+            </div>
+
+            {/* Scrollable room list */}
+            <div style={{ overflowY: "auto", flex: 1, padding: "0 24px" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingBottom: 4 }}>
+                {rooms.map((room) => (
+                  <label key={room.id} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, padding: "4px 0" }}>
+                    <input
+                      type="checkbox"
+                      checked={clearUnassigned.selectedRoomIds.has(room.id)}
+                      onChange={(e) => {
+                        const next = new Set(clearUnassigned.selectedRoomIds);
+                        if (e.target.checked) next.add(room.id); else next.delete(room.id);
+                        setClearUnassigned({ ...clearUnassigned, selectedRoomIds: next });
+                      }}
+                    />
+                    <span style={{ fontWeight: 600 }}>{room.name}</span>
+                  </label>
+                ))}
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-pink" onClick={runFillGaps} disabled={fillGaps.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>
-                Fill Gaps
-              </button>
-              <button className="btn" onClick={() => setFillGaps(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
+            {/* Sticky footer */}
+            <div style={{ padding: "14px 24px 20px", flexShrink: 0, borderTop: "1px solid #f3f4f6" }}>
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input type="time" value={clearUnassigned.clearStart} onChange={(e) => setClearUnassigned({ ...clearUnassigned, clearStart: e.target.value })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }} />
+                  <span style={{ color: "#6b7280", fontSize: 13 }}>to</span>
+                  <input type="time" value={clearUnassigned.clearEnd} onChange={(e) => setClearUnassigned({ ...clearUnassigned, clearEnd: e.target.value })} style={{ flex: 1, padding: "6px 8px", borderRadius: 7, border: "1.5px solid #e5e7eb", fontSize: 13 }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn" onClick={runClearUnassigned} disabled={clearUnassigned.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700, color: "#dc2626", borderColor: "#fca5a5" }}>Clear Unassigned</button>
+                <button className="btn" onClick={() => setClearUnassigned(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
+              </div>
             </div>
           </div>
         </>
