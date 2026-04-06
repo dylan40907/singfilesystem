@@ -128,7 +128,7 @@ export default function ScheduleGrid({
     return lines;
   }, []);
 
-  const COL_WIDTH = 60;
+  const COL_WIDTH = 45;
   const TIME_COL_WIDTH = 72;
 
   return (
@@ -206,17 +206,12 @@ export default function ScheduleGrid({
               style={{
                 height: 36,
                 borderBottom: "1.5px solid #e5e7eb",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 13,
-                fontWeight: 800,
-                color: "#111827",
                 background: "#f9fafb",
                 cursor: !readOnly && col.isFirstInRoom ? "pointer" : "default",
                 position: "sticky",
                 top: 0,
                 zIndex: 15,
+                overflow: "visible",
               }}
               onClick={() => {
                 if (!readOnly && col.isFirstInRoom) {
@@ -224,7 +219,27 @@ export default function ScheduleGrid({
                 }
               }}
             >
-              {col.isFirstInRoom ? col.roomName : ""}
+              {col.isFirstInRoom && (
+                <div style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  // span all columns of this room; clip if single column
+                  width: col.capacity === 1 ? COL_WIDTH : col.capacity * COL_WIDTH,
+                  height: 36,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 13,
+                  fontWeight: 800,
+                  color: "#111827",
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                  pointerEvents: "none",
+                }}>
+                  {col.roomName}
+                </div>
+              )}
             </div>
 
             {/* Grid area */}

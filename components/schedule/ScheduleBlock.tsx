@@ -244,7 +244,7 @@ export default function ScheduleBlock({
       <div
         style={{
           fontWeight: 900,
-          fontSize: 13,
+          fontSize: isUnassigned ? 15 : 13,
           whiteSpace: "nowrap",
           overflow: "hidden",
           pointerEvents: "none",
@@ -252,11 +252,11 @@ export default function ScheduleBlock({
           lineHeight: "16px",
         }}
       >
-        {displayName}
+        {isUnassigned ? "⚠" : displayName}
       </div>
       {heightPx > 32 && (
         <div style={{ pointerEvents: "none", marginTop: 2, lineHeight: "14px" }}>
-          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeStart} –</div>
+          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeStart}</div>
           <div style={{ fontSize: 11, color: "#6b7280" }}>{timeEnd}</div>
         </div>
       )}
