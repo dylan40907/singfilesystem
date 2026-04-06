@@ -122,6 +122,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   type FillGapsState = {
     open: boolean;
     selectedRoomIds: Set<string>;
+    selectedDays: Set<number>;
     fillStart: string; // "HH:mm"
     fillEnd: string;
   };
@@ -130,6 +131,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   // Clear unassigned modal
   type ClearUnassignedState = {
     selectedRoomIds: Set<string>;
+    selectedDays: Set<number>;
     clearStart: string;
     clearEnd: string;
   };
@@ -505,7 +507,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       const required = room.required_teachers ?? 2;
       const periods = room.single_teacher_periods ?? [];
 
-      for (const day of [1, 2, 3, 4, 5] as number[]) {
+      for (const day of ([1, 2, 3, 4, 5] as number[]).filter((d) => fillGaps.selectedDays.has(d))) {
         // All blocks in this room/day
         const allDayBlocks = blocks.filter(
           (b) => b.room_id === room.id && b.day_of_week === day
@@ -615,6 +617,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     const toDelete = blocks.filter((b) =>
       !b.employee_id &&
       clearUnassigned.selectedRoomIds.has(b.room_id) &&
+      clearUnassigned.selectedDays.has(b.day_of_week) &&
       timeToMinutes(b.start_time) >= startM &&
       timeToMinutes(b.end_time) <= endM
     );
@@ -1069,13 +1072,13 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
             <>
               <button
                 className="btn"
-                onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), fillStart: "07:20", fillEnd: "18:00" })}
+                onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), fillStart: "07:20", fillEnd: "18:00" })}
               >
                 ↓ Fill Gaps
               </button>
               <button
                 className="btn"
-                onClick={() => setClearUnassigned({ selectedRoomIds: new Set(), clearStart: "07:20", clearEnd: "18:00" })}
+                onClick={() => setClearUnassigned({ selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), clearStart: "07:20", clearEnd: "18:00" })}
               >
                 ✕ Clear Unassigned
               </button>
@@ -1620,6 +1623,28 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
             {/* Sticky footer */}
             <div style={{ padding: "14px 24px 20px", flexShrink: 0, borderTop: "1px solid #f3f4f6" }}>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Days</label>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {DAY_LABELS.map((label, i) => {
+                    const dayNum = i + 1;
+                    const selected = fillGaps.selectedDays.has(dayNum);
+                    return (
+                      <button
+                        key={dayNum}
+                        onClick={() => {
+                          const next = new Set(fillGaps.selectedDays);
+                          if (selected) next.delete(dayNum); else next.add(dayNum);
+                          setFillGaps({ ...fillGaps, selectedDays: next });
+                        }}
+                        style={{ flex: 1, padding: "5px 0", borderRadius: 7, border: selected ? "1.5px solid rgba(230,23,141,0.5)" : "1.5px solid #e5e7eb", background: selected ? "rgba(230,23,141,0.08)" : "white", color: selected ? "#e6178d" : "#374151", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div style={{ marginBottom: 14 }}>
                 <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1629,7 +1654,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn btn-pink" onClick={runFillGaps} disabled={fillGaps.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>Fill Gaps</button>
+                <button className="btn btn-pink" onClick={runFillGaps} disabled={fillGaps.selectedRoomIds.size === 0 || fillGaps.selectedDays.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700 }}>Fill Gaps</button>
                 <button className="btn" onClick={() => setFillGaps(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
               </div>
             </div>
@@ -1676,6 +1701,28 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
             {/* Sticky footer */}
             <div style={{ padding: "14px 24px 20px", flexShrink: 0, borderTop: "1px solid #f3f4f6" }}>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Days</label>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {DAY_LABELS.map((label, i) => {
+                    const dayNum = i + 1;
+                    const selected = clearUnassigned.selectedDays.has(dayNum);
+                    return (
+                      <button
+                        key={dayNum}
+                        onClick={() => {
+                          const next = new Set(clearUnassigned.selectedDays);
+                          if (selected) next.delete(dayNum); else next.add(dayNum);
+                          setClearUnassigned({ ...clearUnassigned, selectedDays: next });
+                        }}
+                        style={{ flex: 1, padding: "5px 0", borderRadius: 7, border: selected ? "1.5px solid rgba(230,23,141,0.5)" : "1.5px solid #e5e7eb", background: selected ? "rgba(230,23,141,0.08)" : "white", color: selected ? "#e6178d" : "#374151", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div style={{ marginBottom: 14 }}>
                 <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 6 }}>Time Range</label>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1685,7 +1732,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button className="btn" onClick={runClearUnassigned} disabled={clearUnassigned.selectedRoomIds.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700, color: "#dc2626", borderColor: "#fca5a5" }}>Clear Unassigned</button>
+                <button className="btn" onClick={runClearUnassigned} disabled={clearUnassigned.selectedRoomIds.size === 0 || clearUnassigned.selectedDays.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700, color: "#dc2626", borderColor: "#fca5a5" }}>Clear Unassigned</button>
                 <button className="btn" onClick={() => setClearUnassigned(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
               </div>
             </div>
