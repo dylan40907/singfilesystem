@@ -238,12 +238,36 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   }, [cellColors]);
 
   // Weekly hours: all employees with blocks, total paid minutes per employee
+  // Uses union-of-intervals to avoid double-counting overlapping blocks across columns
   const weeklyHours = useMemo(() => {
-    const paidByEmp = new Map<string, number>();
+    // Group intervals by employee+day, then merge overlapping ones before summing
+    const intervalsByEmpDay = new Map<string, { start: number; end: number }[]>();
     for (const b of blocks) {
       if (!b.employee_id || b.block_type === "lunch_break") continue;
-      const dur = timeToMinutes(b.end_time) - timeToMinutes(b.start_time);
-      paidByEmp.set(b.employee_id, (paidByEmp.get(b.employee_id) ?? 0) + dur);
+      const key = `${b.employee_id}:${b.day_of_week}`;
+      if (!intervalsByEmpDay.has(key)) intervalsByEmpDay.set(key, []);
+      intervalsByEmpDay.get(key)!.push({ start: timeToMinutes(b.start_time), end: timeToMinutes(b.end_time) });
+    }
+    const mergeIntervals = (intervals: { start: number; end: number }[]) => {
+      if (!intervals.length) return 0;
+      const sorted = [...intervals].sort((a, b) => a.start - b.start);
+      let total = 0;
+      let cur = sorted[0];
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].start < cur.end) {
+          cur = { start: cur.start, end: Math.max(cur.end, sorted[i].end) };
+        } else {
+          total += cur.end - cur.start;
+          cur = sorted[i];
+        }
+      }
+      total += cur.end - cur.start;
+      return total;
+    };
+    const paidByEmp = new Map<string, number>();
+    for (const [key, intervals] of intervalsByEmpDay) {
+      const empId = key.split(":")[0];
+      paidByEmp.set(empId, (paidByEmp.get(empId) ?? 0) + mergeIntervals(intervals));
     }
     return [...paidByEmp.entries()]
       .map(([empId, mins]) => {
@@ -282,9 +306,24 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       const dayLabel = DAY_LABELS[day - 1];
 
       // Overtime: total paid (shift + break, not lunch) > 8h
-      const paidMins = empBlocks
+      // Use union-of-intervals to avoid double-counting overlapping blocks across columns
+      const paidIntervals = empBlocks
         .filter((b) => b.block_type !== "lunch_break")
-        .reduce((s, b) => s + timeToMinutes(b.end_time) - timeToMinutes(b.start_time), 0);
+        .map((b) => ({ start: timeToMinutes(b.start_time), end: timeToMinutes(b.end_time) }))
+        .sort((a, b) => a.start - b.start);
+      let paidMins = 0;
+      if (paidIntervals.length > 0) {
+        let cur = paidIntervals[0];
+        for (let i = 1; i < paidIntervals.length; i++) {
+          if (paidIntervals[i].start < cur.end) {
+            cur = { start: cur.start, end: Math.max(cur.end, paidIntervals[i].end) };
+          } else {
+            paidMins += cur.end - cur.start;
+            cur = paidIntervals[i];
+          }
+        }
+        paidMins += cur.end - cur.start;
+      }
       if (paidMins > 480) {
         const msg = `Overtime: ${name} has ${fmt(paidMins)} paid time on ${dayLabel} (over 8h).`;
         for (const b of empBlocks.filter((b) => b.block_type !== "lunch_break")) {
@@ -306,10 +345,24 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         }
       }
 
-      // 6h+ shift time with < 2 qualifying breaks
-      const shiftMins = empBlocks
+      // 6h+ shift time with < 2 qualifying breaks (union-of-intervals)
+      const shiftIntervals = empBlocks
         .filter((b) => b.block_type === "shift")
-        .reduce((s, b) => s + timeToMinutes(b.end_time) - timeToMinutes(b.start_time), 0);
+        .map((b) => ({ start: timeToMinutes(b.start_time), end: timeToMinutes(b.end_time) }))
+        .sort((a, b) => a.start - b.start);
+      let shiftMins = 0;
+      if (shiftIntervals.length > 0) {
+        let cur = shiftIntervals[0];
+        for (let i = 1; i < shiftIntervals.length; i++) {
+          if (shiftIntervals[i].start < cur.end) {
+            cur = { start: cur.start, end: Math.max(cur.end, shiftIntervals[i].end) };
+          } else {
+            shiftMins += cur.end - cur.start;
+            cur = shiftIntervals[i];
+          }
+        }
+        shiftMins += cur.end - cur.start;
+      }
       if (shiftMins >= 360) {
         const qualBreaks = empBlocks.filter(
           (b) =>
