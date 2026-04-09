@@ -530,7 +530,7 @@ export default function ClockPage() {
               rows={2}
               style={{
                 width: "100%", padding: "10px 12px", borderRadius: 10,
-                border: "1.5px solid #e5e7eb", fontSize: 14, resize: "vertical",
+                border: "1.5px solid #e5e7eb", fontSize: 16, resize: "vertical",
                 boxSizing: "border-box", fontFamily: "inherit",
               }}
             />

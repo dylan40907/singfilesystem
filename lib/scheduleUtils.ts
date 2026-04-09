@@ -49,14 +49,18 @@ export interface EmployeeLite {
 }
 
 // Time constants
+// ⚠️ TESTING MODE: set EXTENDED_HOURS to true to run the grid until midnight.
+//    Set back to false for production (ends at 18:00).
+const EXTENDED_HOURS = true;
+
 export const START_HOUR = 7;
 export const START_MINUTE = 0;
-export const END_HOUR = 18;
+export const END_HOUR = EXTENDED_HOURS ? 24 : 18;
 export const END_MINUTE = 0;
 export const SLOT_MINUTES = 5;
-export const START_MINUTES = START_HOUR * 60 + START_MINUTE; // 440
-export const END_MINUTES = END_HOUR * 60 + END_MINUTE; // 1080
-export const TOTAL_SLOTS = (END_MINUTES - START_MINUTES) / SLOT_MINUTES; // 128
+export const START_MINUTES = START_HOUR * 60 + START_MINUTE; // 420
+export const END_MINUTES = END_HOUR * 60 + END_MINUTE; // 1080 (prod) / 1440 (extended)
+export const TOTAL_SLOTS = (END_MINUTES - START_MINUTES) / SLOT_MINUTES;
 export const PX_PER_SLOT = 14; // pixels per 5-minute slot
 
 export const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
