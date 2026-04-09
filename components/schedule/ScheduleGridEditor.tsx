@@ -53,6 +53,16 @@ type RoomEditState = {
   periodDraft: { start: string; end: string };
 } | null;
 
+type UndoEntry =
+  | { type: "block_create"; blockId: string }
+  | { type: "block_delete"; block: ScheduleBlockType }
+  | { type: "block_move"; blockId: string; prevRoomId: string; prevColumnIndex: number; prevStartTime: string; prevEndTime: string }
+  | { type: "block_resize"; blockId: string; prevStartTime: string; prevEndTime: string }
+  | { type: "block_update"; blockId: string; prevEmployeeId: string | null; prevLabel: string | null }
+  | { type: "paint"; prevColors: Record<number, Record<string, string>> }
+  | { type: "fill_gaps"; insertedBlockIds: string[] }
+  | { type: "clear_unassigned"; deletedBlocks: ScheduleBlockType[] };
+
 // State for the 3-option type picker popup
 type TypePickerState = {
   x: number;
@@ -103,8 +113,13 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [paintColor, setPaintColor] = useState("#fde68a");
   const [paintErase, setPaintErase] = useState(false);
   const [cellColors, setCellColors] = useState<Record<number, Record<string, string>>>({});
-  const [colorUndoStack, setColorUndoStack] = useState<Record<number, Record<string, string>>[]>([]);
   const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Unified undo stack
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const pushUndo = useCallback((entry: UndoEntry) => {
+    setUndoStack((prev) => [...prev.slice(-49), entry]);
+  }, []);
 
   // Color legend labels: maps hex color → label text
   const [colorLabels, setColorLabels] = useState<Record<string, string>>({});
@@ -191,7 +206,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   function handlePaintCells(cellKeys: string[]) {
     if (!paintMode) return;
-    setColorUndoStack((prev) => [...prev.slice(-20), JSON.parse(JSON.stringify(cellColors))]);
+    // Snapshot current colors before mutating (for undo)
+    const snapshot: Record<number, Record<string, string>> = JSON.parse(JSON.stringify(cellColors));
+    pushUndo({ type: "paint", prevColors: snapshot });
     setCellColors((prev) => {
       const dayColors = { ...(prev[activeDay] ?? {}) };
       for (const key of cellKeys) {
@@ -204,13 +221,88 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     });
   }
 
-  function handleColorUndo() {
-    if (colorUndoStack.length === 0) return;
-    const prevState = colorUndoStack[colorUndoStack.length - 1];
-    setColorUndoStack((s) => s.slice(0, -1));
-    setCellColors(prevState);
-    saveCellColors(activeDay, prevState[activeDay] ?? {});
-  }
+  // Unified undo handler
+  const handleUndo = useCallback(async () => {
+    if (undoStack.length === 0) return;
+    const entry = undoStack[undoStack.length - 1];
+    setUndoStack((s) => s.slice(0, -1));
+
+    switch (entry.type) {
+      case "block_create":
+        await supabase.from("schedule_blocks").delete().eq("id", entry.blockId);
+        setBlocks((prev) => prev.filter((b) => b.id !== entry.blockId));
+        break;
+
+      case "block_delete": {
+        const { id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type } = entry.block;
+        const { data } = await supabase.from("schedule_blocks")
+          .insert({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type })
+          .select().single();
+        if (data) setBlocks((prev) => [...prev, data]);
+        break;
+      }
+
+      case "block_move": {
+        const updates = { room_id: entry.prevRoomId, column_index: entry.prevColumnIndex, start_time: entry.prevStartTime, end_time: entry.prevEndTime };
+        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        break;
+      }
+
+      case "block_resize": {
+        const updates = { start_time: entry.prevStartTime, end_time: entry.prevEndTime };
+        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        break;
+      }
+
+      case "block_update": {
+        const updates = { employee_id: entry.prevEmployeeId, label: entry.prevLabel };
+        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        break;
+      }
+
+      case "paint": {
+        setCellColors(entry.prevColors);
+        for (const [dayStr, colors] of Object.entries(entry.prevColors)) {
+          await supabase.from("schedule_cell_colors").upsert(
+            { schedule_id: scheduleId, day_of_week: parseInt(dayStr), colors, updated_at: new Date().toISOString() },
+            { onConflict: "schedule_id,day_of_week" }
+          );
+        }
+        break;
+      }
+
+      case "fill_gaps":
+        await supabase.from("schedule_blocks").delete().in("id", entry.insertedBlockIds);
+        setBlocks((prev) => prev.filter((b) => !entry.insertedBlockIds.includes(b.id)));
+        break;
+
+      case "clear_unassigned": {
+        const toRestore = entry.deletedBlocks.map(({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type }) =>
+          ({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type })
+        );
+        const { data } = await supabase.from("schedule_blocks").insert(toRestore).select();
+        if (data) setBlocks((prev) => [...prev, ...data]);
+        break;
+      }
+    }
+  }, [undoStack, scheduleId]);
+
+  // Keyboard shortcut: Ctrl+Z / Cmd+Z
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        e.preventDefault();
+        void handleUndo();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleUndo]);
 
   // Save color labels (debounced)
   function saveColorLabels(labels: Record<string, string>) {
@@ -654,7 +746,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     if (newBlocks.length > 0) {
       const { data, error } = await supabase.from("schedule_blocks").insert(newBlocks).select();
       if (error) setWarning(error.message);
-      else if (data) setBlocks((prev) => [...prev, ...data]);
+      else if (data) {
+        setBlocks((prev) => [...prev, ...data]);
+        pushUndo({ type: "fill_gaps", insertedBlockIds: data.map((b: ScheduleBlockType) => b.id) });
+      }
     }
 
     setFillGaps(null);
@@ -676,6 +771,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     );
 
     if (toDelete.length > 0) {
+      pushUndo({ type: "clear_unassigned", deletedBlocks: toDelete });
       const { error } = await supabase.from("schedule_blocks").delete().in("id", toDelete.map((b) => b.id));
       if (error) setWarning(error.message);
       else setBlocks((prev) => prev.filter((b) => !toDelete.some((d) => d.id === b.id)));
@@ -709,7 +805,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       .insert({ schedule_id: scheduleId, room_id: roomId, column_index: columnIndex, day_of_week: day, start_time: startTime, end_time: endTime, employee_id: employeeId, label, block_type: blockType })
       .select()
       .single();
-    if (data) setBlocks((prev) => [...prev, data]);
+    if (data) {
+      setBlocks((prev) => [...prev, data]);
+      pushUndo({ type: "block_create", blockId: data.id });
+    }
     if (error) setWarning(error.message);
     setSaving(false);
   }
@@ -726,6 +825,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
 
     setSaving(true);
+    pushUndo({ type: "block_update", blockId, prevEmployeeId: block.employee_id, prevLabel: block.label });
     const { error } = await supabase
       .from("schedule_blocks")
       .update({ employee_id: employeeId, label })
@@ -739,9 +839,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   }
 
   async function deleteBlock(blockId: string) {
+    const block = blocks.find((b) => b.id === blockId);
     const { error } = await supabase.from("schedule_blocks").delete().eq("id", blockId);
-    if (!error) setBlocks((prev) => prev.filter((b) => b.id !== blockId));
-    else setWarning(error.message);
+    if (!error) {
+      if (block) pushUndo({ type: "block_delete", block });
+      setBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    } else {
+      setWarning(error.message);
+    }
     setContextMenu(null);
   }
 
@@ -756,6 +861,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
+    pushUndo({ type: "block_resize", blockId, prevStartTime: block.start_time, prevEndTime: block.end_time });
     setBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b)));
     const { error } = await supabase.from("schedule_blocks").update({ start_time: newStartTime, end_time: newEndTime }).eq("id", blockId);
     if (error) { setWarning(error.message); fetchData(); }
@@ -806,6 +912,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
+    pushUndo({ type: "block_move", blockId, prevRoomId: block.room_id, prevColumnIndex: block.column_index, prevStartTime: block.start_time, prevEndTime: block.end_time });
     setBlocks((prev) =>
       prev.map((b) =>
         b.id === blockId ? { ...b, room_id: newRoomId, column_index: newColumnIndex, start_time: newStartTime, end_time: newEndTime } : b
@@ -1135,6 +1242,15 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               >
                 ✕ Clear Unassigned
               </button>
+              <button
+                className="btn"
+                onClick={handleUndo}
+                disabled={undoStack.length === 0}
+                title="Undo last action (Ctrl+Z / ⌘Z)"
+                style={{ padding: "6px 14px", fontSize: 13 }}
+              >
+                ↩ Undo
+              </button>
             </>
           )}
           <button className="btn btn-pink" onClick={togglePublish}>
@@ -1278,9 +1394,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 style={{ padding: "6px 12px", fontSize: 12, background: paintErase ? "#fef2f2" : undefined, borderColor: paintErase ? "#fca5a5" : undefined }}
               >
                 {paintErase ? "🧹 Erasing" : "🧹 Erase"}
-              </button>
-              <button className="btn" onClick={handleColorUndo} disabled={colorUndoStack.length === 0} style={{ padding: "6px 12px", fontSize: 12 }}>
-                ↩ Undo
               </button>
             </>
           )}

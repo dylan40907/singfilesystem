@@ -117,7 +117,7 @@ function elapsed(sinceISO: string): string {
 
 export default function ClockPage() {
   const router = useRouter();
-  const { alert: dialogAlert, modal: dialogModal } = useDialog();
+  const { alert: dialogAlert, confirm: dialogConfirm, modal: dialogModal } = useDialog();
 
   // Auth guard
   const [authChecked, setAuthChecked] = useState(false);
@@ -382,18 +382,30 @@ export default function ClockPage() {
       fontFamily: "system-ui, sans-serif",
       position: "relative",
     }}>
-      {/* Sign out */}
+      {/* Sign out — discreet exit icon */}
       <button
-        onClick={async () => { await supabase.auth.signOut(); router.replace("/"); }}
-        style={{
-          position: "absolute", top: 16, right: 16,
-          background: "none", border: "1px solid #e5e7eb",
-          borderRadius: 8, padding: "6px 12px",
-          fontSize: 12, fontWeight: 600, color: "#9ca3af",
-          cursor: "pointer",
+        onClick={async () => {
+          const ok = await dialogConfirm(
+            "This will sign out the hours manager account and disable hour logging for employees. Are you sure?",
+            { title: "Disable Hour Logging?", confirmLabel: "Sign Out", cancelLabel: "Cancel" }
+          );
+          if (!ok) return;
+          await supabase.auth.signOut();
+          router.replace("/");
         }}
+        title="Sign out"
+        style={{
+          position: "absolute", top: 14, right: 14,
+          background: "none", border: "none",
+          padding: 6, borderRadius: 6,
+          fontSize: 18, color: "#d1d5db",
+          cursor: "pointer", lineHeight: 1,
+          opacity: 0.5,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
       >
-        Sign out
+        ⏻
       </button>
 
       {/* ── SUCCESS SCREEN ── */}

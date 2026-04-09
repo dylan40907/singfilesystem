@@ -9,6 +9,7 @@ import {
   formatDateLocal,
 } from "@/lib/scheduleUtils";
 import WeekPicker from "./WeekPicker";
+import TeacherScheduleView from "./TeacherScheduleView";
 
 interface ScheduleListViewProps {
   onSelectSchedule: (id: string) => void;
@@ -23,6 +24,13 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
   );
   const [showNewForm, setShowNewForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // My Schedule modal
+  const [myScheduleOpen, setMyScheduleOpen] = useState(false);
+  const [myEmployeeId, setMyEmployeeId] = useState<string | null | false>(null); // false = not found
+  const [myPin, setMyPin] = useState<string | null>(null);
+  const [pinRevealed, setPinRevealed] = useState(false);
+  const [empLoading, setEmpLoading] = useState(false);
 
   async function fetchSchedules() {
     setLoading(true);
@@ -41,6 +49,30 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
   useEffect(() => {
     fetchSchedules();
   }, []);
+
+  async function openMySchedule() {
+    setMyScheduleOpen(true);
+    if (myEmployeeId !== null) return; // already fetched (string or false)
+
+    setEmpLoading(true);
+    const { data: session } = await supabase.auth.getSession();
+    const userId = session.session?.user?.id;
+    if (!userId) { setMyEmployeeId(false); setEmpLoading(false); return; }
+
+    const { data: emp } = await supabase
+      .from("hr_employees")
+      .select("id, hours_pin")
+      .eq("profile_id", userId)
+      .single();
+
+    if (emp) {
+      setMyEmployeeId(emp.id);
+      setMyPin(emp.hours_pin ?? null);
+    } else {
+      setMyEmployeeId(false);
+    }
+    setEmpLoading(false);
+  }
 
   async function handleCreate() {
     setError(null);
@@ -110,12 +142,17 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
         }}
       >
         <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Schedules</h2>
-        <button
-          className="btn btn-pink"
-          onClick={() => setShowNewForm(!showNewForm)}
-        >
-          {showNewForm ? "Cancel" : "+ New Schedule"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn" onClick={openMySchedule}>
+            My Schedule
+          </button>
+          <button
+            className="btn btn-pink"
+            onClick={() => setShowNewForm(!showNewForm)}
+          >
+            {showNewForm ? "Cancel" : "+ New Schedule"}
+          </button>
+        </div>
       </div>
 
       {showNewForm && (
@@ -217,6 +254,75 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
             </button>
           ))}
         </div>
+      )}
+
+      {/* My Schedule modal */}
+      {myScheduleOpen && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200 }}
+            onClick={() => setMyScheduleOpen(false)}
+          />
+          <div
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              zIndex: 201,
+              background: "white",
+              borderRadius: 16,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.18)",
+              width: "min(640px, 95vw)",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid #e5e7eb", flexShrink: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>My Schedule</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                {myPin && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", background: "#f9fafb", borderRadius: 10, border: "1.5px solid #e5e7eb" }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280" }}>Hours PIN:</span>
+                    <span style={{ fontWeight: 900, fontSize: 16, letterSpacing: 4, fontVariantNumeric: "tabular-nums", color: "#111827" }}>
+                      {pinRevealed ? myPin : "••••"}
+                    </span>
+                    <button
+                      onClick={() => setPinRevealed((v) => !v)}
+                      style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2 }}
+                      title={pinRevealed ? "Hide PIN" : "Reveal PIN"}
+                    >
+                      {pinRevealed ? "🙈" : "👁️"}
+                    </button>
+                  </div>
+                )}
+                <button
+                  onClick={() => setMyScheduleOpen(false)}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", lineHeight: 1, padding: 4 }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Modal body */}
+            <div style={{ padding: "20px", overflowY: "auto", flex: 1 }}>
+              {empLoading ? (
+                <div style={{ color: "#6b7280", fontSize: 14 }}>Loading…</div>
+              ) : myEmployeeId === false ? (
+                <div style={{ color: "#6b7280", fontSize: 14 }}>
+                  No employee record found for your account. Ask an admin to link your profile to an employee record.
+                </div>
+              ) : myEmployeeId ? (
+                <TeacherScheduleView employeeId={myEmployeeId} />
+              ) : null}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
