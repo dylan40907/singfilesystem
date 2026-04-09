@@ -54,14 +54,14 @@ type RoomEditState = {
 } | null;
 
 type UndoEntry =
-  | { type: "block_create"; blockId: string }
+  | { type: "block_create"; block: ScheduleBlockType }
   | { type: "block_delete"; block: ScheduleBlockType }
-  | { type: "block_move"; blockId: string; prevRoomId: string; prevColumnIndex: number; prevStartTime: string; prevEndTime: string }
-  | { type: "block_resize"; blockId: string; prevStartTime: string; prevEndTime: string }
-  | { type: "block_update"; blockId: string; prevEmployeeId: string | null; prevLabel: string | null }
-  | { type: "paint"; prevColors: Record<number, Record<string, string>> }
-  | { type: "fill_gaps"; insertedBlockIds: string[] }
-  | { type: "clear_unassigned"; deletedBlocks: ScheduleBlockType[] };
+  | { type: "block_move"; blockId: string; prevRoomId: string; prevColumnIndex: number; prevStartTime: string; prevEndTime: string; nextRoomId: string; nextColumnIndex: number; nextStartTime: string; nextEndTime: string }
+  | { type: "block_resize"; blockId: string; prevStartTime: string; prevEndTime: string; nextStartTime: string; nextEndTime: string }
+  | { type: "block_update"; blockId: string; prevEmployeeId: string | null; prevLabel: string | null; nextEmployeeId: string | null; nextLabel: string | null }
+  | { type: "paint"; prevColors: Record<number, Record<string, string>>; nextColors: Record<number, Record<string, string>> }
+  | { type: "fill_gaps"; blocks: ScheduleBlockType[] }
+  | { type: "clear_unassigned"; blocks: ScheduleBlockType[] };
 
 // State for the 3-option type picker popup
 type TypePickerState = {
@@ -115,10 +115,12 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [cellColors, setCellColors] = useState<Record<number, Record<string, string>>>({});
   const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Unified undo stack
+  // Unified undo/redo stacks
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoEntry[]>([]);
   const pushUndo = useCallback((entry: UndoEntry) => {
     setUndoStack((prev) => [...prev.slice(-49), entry]);
+    setRedoStack([]); // any new action clears redo history
   }, []);
 
   // Color legend labels: maps hex color → label text
@@ -206,103 +208,160 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
 
   function handlePaintCells(cellKeys: string[]) {
     if (!paintMode) return;
-    // Snapshot current colors before mutating (for undo)
-    const snapshot: Record<number, Record<string, string>> = JSON.parse(JSON.stringify(cellColors));
-    pushUndo({ type: "paint", prevColors: snapshot });
-    setCellColors((prev) => {
-      const dayColors = { ...(prev[activeDay] ?? {}) };
-      for (const key of cellKeys) {
-        if (paintErase) delete dayColors[key];
-        else dayColors[key] = paintColor;
-      }
-      const next = { ...prev, [activeDay]: dayColors };
-      saveCellColors(activeDay, dayColors);
-      return next;
-    });
+    const prevColors: Record<number, Record<string, string>> = JSON.parse(JSON.stringify(cellColors));
+    // Compute next state synchronously so we can store it for redo
+    const dayColors = { ...(cellColors[activeDay] ?? {}) };
+    for (const key of cellKeys) {
+      if (paintErase) delete dayColors[key];
+      else dayColors[key] = paintColor;
+    }
+    const nextColors = { ...cellColors, [activeDay]: dayColors };
+    pushUndo({ type: "paint", prevColors, nextColors });
+    setCellColors(nextColors);
+    saveCellColors(activeDay, dayColors);
   }
 
-  // Unified undo handler
+  // Shared helper: apply a block row from stored entry
+  function blockFields(b: ScheduleBlockType) {
+    const { id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type } = b;
+    return { id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type };
+  }
+
+  async function applyColorState(colors: Record<number, Record<string, string>>) {
+    setCellColors(colors);
+    for (const [dayStr, dayColors] of Object.entries(colors)) {
+      await supabase.from("schedule_cell_colors").upsert(
+        { schedule_id: scheduleId, day_of_week: parseInt(dayStr), colors: dayColors, updated_at: new Date().toISOString() },
+        { onConflict: "schedule_id,day_of_week" }
+      );
+    }
+  }
+
   const handleUndo = useCallback(async () => {
     if (undoStack.length === 0) return;
     const entry = undoStack[undoStack.length - 1];
     setUndoStack((s) => s.slice(0, -1));
+    setRedoStack((s) => [...s.slice(-49), entry]);
 
     switch (entry.type) {
       case "block_create":
-        await supabase.from("schedule_blocks").delete().eq("id", entry.blockId);
-        setBlocks((prev) => prev.filter((b) => b.id !== entry.blockId));
+        await supabase.from("schedule_blocks").delete().eq("id", entry.block.id);
+        setBlocks((prev) => prev.filter((b) => b.id !== entry.block.id));
         break;
 
       case "block_delete": {
-        const { id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type } = entry.block;
-        const { data } = await supabase.from("schedule_blocks")
-          .insert({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type })
-          .select().single();
+        const { data } = await supabase.from("schedule_blocks").insert(blockFields(entry.block)).select().single();
         if (data) setBlocks((prev) => [...prev, data]);
         break;
       }
 
       case "block_move": {
-        const updates = { room_id: entry.prevRoomId, column_index: entry.prevColumnIndex, start_time: entry.prevStartTime, end_time: entry.prevEndTime };
-        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
-        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        const u = { room_id: entry.prevRoomId, column_index: entry.prevColumnIndex, start_time: entry.prevStartTime, end_time: entry.prevEndTime };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
         break;
       }
 
       case "block_resize": {
-        const updates = { start_time: entry.prevStartTime, end_time: entry.prevEndTime };
-        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
-        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        const u = { start_time: entry.prevStartTime, end_time: entry.prevEndTime };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
         break;
       }
 
       case "block_update": {
-        const updates = { employee_id: entry.prevEmployeeId, label: entry.prevLabel };
-        await supabase.from("schedule_blocks").update(updates).eq("id", entry.blockId);
-        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...updates } : b));
+        const u = { employee_id: entry.prevEmployeeId, label: entry.prevLabel };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
         break;
       }
 
-      case "paint": {
-        setCellColors(entry.prevColors);
-        for (const [dayStr, colors] of Object.entries(entry.prevColors)) {
-          await supabase.from("schedule_cell_colors").upsert(
-            { schedule_id: scheduleId, day_of_week: parseInt(dayStr), colors, updated_at: new Date().toISOString() },
-            { onConflict: "schedule_id,day_of_week" }
-          );
-        }
+      case "paint":
+        await applyColorState(entry.prevColors);
         break;
-      }
 
       case "fill_gaps":
-        await supabase.from("schedule_blocks").delete().in("id", entry.insertedBlockIds);
-        setBlocks((prev) => prev.filter((b) => !entry.insertedBlockIds.includes(b.id)));
+        await supabase.from("schedule_blocks").delete().in("id", entry.blocks.map((b) => b.id));
+        setBlocks((prev) => prev.filter((b) => !entry.blocks.some((eb) => eb.id === b.id)));
         break;
 
       case "clear_unassigned": {
-        const toRestore = entry.deletedBlocks.map(({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type }) =>
-          ({ id, schedule_id, room_id, employee_id, day_of_week, start_time, end_time, column_index, label, block_type })
-        );
-        const { data } = await supabase.from("schedule_blocks").insert(toRestore).select();
+        const { data } = await supabase.from("schedule_blocks").insert(entry.blocks.map(blockFields)).select();
         if (data) setBlocks((prev) => [...prev, ...data]);
         break;
       }
     }
-  }, [undoStack, scheduleId]);
+  }, [undoStack, scheduleId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard shortcut: Ctrl+Z / Cmd+Z
+  const handleRedo = useCallback(async () => {
+    if (redoStack.length === 0) return;
+    const entry = redoStack[redoStack.length - 1];
+    setRedoStack((s) => s.slice(0, -1));
+    setUndoStack((s) => [...s.slice(-49), entry]);
+
+    switch (entry.type) {
+      case "block_create": {
+        const { data } = await supabase.from("schedule_blocks").insert(blockFields(entry.block)).select().single();
+        if (data) setBlocks((prev) => [...prev, data]);
+        break;
+      }
+
+      case "block_delete":
+        await supabase.from("schedule_blocks").delete().eq("id", entry.block.id);
+        setBlocks((prev) => prev.filter((b) => b.id !== entry.block.id));
+        break;
+
+      case "block_move": {
+        const u = { room_id: entry.nextRoomId, column_index: entry.nextColumnIndex, start_time: entry.nextStartTime, end_time: entry.nextEndTime };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
+        break;
+      }
+
+      case "block_resize": {
+        const u = { start_time: entry.nextStartTime, end_time: entry.nextEndTime };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
+        break;
+      }
+
+      case "block_update": {
+        const u = { employee_id: entry.nextEmployeeId, label: entry.nextLabel };
+        await supabase.from("schedule_blocks").update(u).eq("id", entry.blockId);
+        setBlocks((prev) => prev.map((b) => b.id === entry.blockId ? { ...b, ...u } : b));
+        break;
+      }
+
+      case "paint":
+        await applyColorState(entry.nextColors);
+        break;
+
+      case "fill_gaps": {
+        const { data } = await supabase.from("schedule_blocks").insert(entry.blocks.map(blockFields)).select();
+        if (data) setBlocks((prev) => [...prev, ...data]);
+        break;
+      }
+
+      case "clear_unassigned":
+        await supabase.from("schedule_blocks").delete().in("id", entry.blocks.map((b) => b.id));
+        setBlocks((prev) => prev.filter((b) => !entry.blocks.some((eb) => eb.id === b.id)));
+        break;
+    }
+  }, [redoStack, scheduleId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keyboard shortcuts: Ctrl/⌘+Z → undo, Ctrl/⌘+Shift+Z → redo
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-        e.preventDefault();
-        void handleUndo();
-      }
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      e.preventDefault();
+      if (e.shiftKey) void handleRedo();
+      else void handleUndo();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [handleUndo]);
+  }, [handleUndo, handleRedo]);
 
   // Save color labels (debounced)
   function saveColorLabels(labels: Record<string, string>) {
@@ -748,7 +807,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       if (error) setWarning(error.message);
       else if (data) {
         setBlocks((prev) => [...prev, ...data]);
-        pushUndo({ type: "fill_gaps", insertedBlockIds: data.map((b: ScheduleBlockType) => b.id) });
+        pushUndo({ type: "fill_gaps", blocks: data });
       }
     }
 
@@ -771,7 +830,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     );
 
     if (toDelete.length > 0) {
-      pushUndo({ type: "clear_unassigned", deletedBlocks: toDelete });
+      pushUndo({ type: "clear_unassigned", blocks: toDelete });
       const { error } = await supabase.from("schedule_blocks").delete().in("id", toDelete.map((b) => b.id));
       if (error) setWarning(error.message);
       else setBlocks((prev) => prev.filter((b) => !toDelete.some((d) => d.id === b.id)));
@@ -807,7 +866,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       .single();
     if (data) {
       setBlocks((prev) => [...prev, data]);
-      pushUndo({ type: "block_create", blockId: data.id });
+      pushUndo({ type: "block_create", block: data });
     }
     if (error) setWarning(error.message);
     setSaving(false);
@@ -825,7 +884,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
 
     setSaving(true);
-    pushUndo({ type: "block_update", blockId, prevEmployeeId: block.employee_id, prevLabel: block.label });
+    pushUndo({ type: "block_update", blockId, prevEmployeeId: block.employee_id, prevLabel: block.label, nextEmployeeId: employeeId, nextLabel: label });
     const { error } = await supabase
       .from("schedule_blocks")
       .update({ employee_id: employeeId, label })
@@ -861,7 +920,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    pushUndo({ type: "block_resize", blockId, prevStartTime: block.start_time, prevEndTime: block.end_time });
+    pushUndo({ type: "block_resize", blockId, prevStartTime: block.start_time, prevEndTime: block.end_time, nextStartTime: newStartTime, nextEndTime: newEndTime });
     setBlocks((prev) => prev.map((b) => (b.id === blockId ? { ...b, start_time: newStartTime, end_time: newEndTime } : b)));
     const { error } = await supabase.from("schedule_blocks").update({ start_time: newStartTime, end_time: newEndTime }).eq("id", blockId);
     if (error) { setWarning(error.message); fetchData(); }
@@ -912,7 +971,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       return;
     }
 
-    pushUndo({ type: "block_move", blockId, prevRoomId: block.room_id, prevColumnIndex: block.column_index, prevStartTime: block.start_time, prevEndTime: block.end_time });
+    pushUndo({ type: "block_move", blockId, prevRoomId: block.room_id, prevColumnIndex: block.column_index, prevStartTime: block.start_time, prevEndTime: block.end_time, nextRoomId: newRoomId, nextColumnIndex: newColumnIndex, nextStartTime: newStartTime, nextEndTime: newEndTime });
     setBlocks((prev) =>
       prev.map((b) =>
         b.id === blockId ? { ...b, room_id: newRoomId, column_index: newColumnIndex, start_time: newStartTime, end_time: newEndTime } : b
@@ -1246,10 +1305,19 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
                 className="btn"
                 onClick={handleUndo}
                 disabled={undoStack.length === 0}
-                title="Undo last action (Ctrl+Z / ⌘Z)"
+                title="Undo (Ctrl+Z / ⌘Z)"
                 style={{ padding: "6px 14px", fontSize: 13 }}
               >
                 ↩ Undo
+              </button>
+              <button
+                className="btn"
+                onClick={handleRedo}
+                disabled={redoStack.length === 0}
+                title="Redo (Ctrl+Shift+Z / ⌘⇧Z)"
+                style={{ padding: "6px 14px", fontSize: 13 }}
+              >
+                ↪ Redo
               </button>
             </>
           )}
