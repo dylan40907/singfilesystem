@@ -132,7 +132,7 @@ export default function ScheduleGrid({
   const TIME_COL_WIDTH = 72;
 
   return (
-    <div style={{ display: "flex", overflowX: "auto", overflowY: "auto", maxHeight: "calc(100vh - 280px)", alignItems: "stretch" }}>
+    <div style={{ display: "flex", overflowX: "auto", alignItems: "stretch" }}>
       {/* Time column */}
       <div
         style={{

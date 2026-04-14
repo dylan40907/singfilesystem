@@ -29,6 +29,8 @@ import { useDialog } from "@/components/ui/useDialog";
 interface ScheduleGridEditorProps {
   scheduleId: string;
   onBack: () => void;
+  /** When true, disables all editing regardless of schedule status (for supervisor view) */
+  forceReadOnly?: boolean;
 }
 
 type ContextMenuState = {
@@ -85,7 +87,7 @@ type BlockFormState = {
   editBlockId?: string; // set when editing existing block
 } | null;
 
-export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridEditorProps) {
+export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly = false }: ScheduleGridEditorProps) {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [rooms, setRooms] = useState<ScheduleRoom[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlockType[]>([]);
@@ -155,7 +157,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
   const [clearUnassigned, setClearUnassigned] = useState<ClearUnassignedState | null>(null);
 
   const { confirm, modal: dialogModal } = useDialog();
-  const readOnly = schedule?.status === "published";
+  const readOnly = forceReadOnly || schedule?.status === "published";
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // No document listener needed — outside clicks handled by backdrop divs
 
@@ -349,9 +352,28 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
     }
   }, [redoStack, scheduleId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard shortcuts: Ctrl/⌘+Z → undo, Ctrl/⌘+Shift+Z → redo
+  // Fullscreen: measure window size directly and use inline px values
+  const [windowSize, setWindowSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    if (!isFullscreen) return;
+    function measure() {
+      setWindowSize({ w: window.innerWidth, h: window.innerHeight });
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    // Lock body scroll
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("resize", measure);
+      document.body.style.overflow = prev;
+    };
+  }, [isFullscreen]);
+
+  // Keyboard shortcuts: Ctrl/⌘+Z → undo, Ctrl/⌘+Shift+Z → redo, Escape → exit fullscreen
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") { setIsFullscreen(false); return; }
       if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -1321,10 +1343,22 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
               </button>
             </>
           )}
-          <button className="btn btn-pink" onClick={togglePublish}>
-            {schedule.status === "published" ? "Unpublish" : "Publish"}
+          {!forceReadOnly && (
+            <button className="btn btn-pink" onClick={togglePublish}>
+              {schedule.status === "published" ? "Unpublish" : "Publish"}
+            </button>
+          )}
+          {!forceReadOnly && (
+            <button className="btn" onClick={handleDeleteSchedule} style={{ color: "#dc2626", borderColor: "#fca5a5" }}>Delete</button>
+          )}
+          <button
+            className="btn"
+            onClick={() => setIsFullscreen(true)}
+            title="Fullscreen (Esc to exit)"
+            style={{ padding: "6px 10px", fontSize: 16, lineHeight: 1 }}
+          >
+            ⛶
           </button>
-          <button className="btn" onClick={handleDeleteSchedule} style={{ color: "#dc2626", borderColor: "#fca5a5" }}>Delete</button>
         </div>
       </div>
 
@@ -1487,6 +1521,82 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
         </div>
       )}
 
+      {/* Fullscreen overlay — uses window.innerWidth/Height in px to avoid CSS viewport bugs */}
+      {isFullscreen && windowSize.h > 0 && (
+        <div style={{
+          position: "fixed", top: 0, left: 0,
+          width: windowSize.w, height: windowSize.h,
+          zIndex: 9999, background: "white", overflow: "hidden",
+        }}>
+          {/* Top bar — 48px */}
+          <div style={{
+            height: 48,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "0 16px", borderBottom: "1px solid #e5e7eb", background: "white",
+          }}>
+            <div style={{ display: "flex", gap: 4 }}>
+              {DAY_NUMBERS.map((dayNum, idx) => (
+                <button
+                  key={dayNum}
+                  onClick={() => setActiveDay(dayNum)}
+                  style={{
+                    padding: "6px 16px", borderRadius: 10,
+                    border: activeDay === dayNum ? "1.5px solid rgba(230,23,141,0.35)" : "1.5px solid #e5e7eb",
+                    background: activeDay === dayNum ? "rgba(230,23,141,0.06)" : "white",
+                    color: activeDay === dayNum ? "#e6178d" : "#111827",
+                    fontWeight: 700, fontSize: 13, cursor: "pointer",
+                  }}
+                >
+                  {DAY_LABELS[idx]}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setIsFullscreen(false)}
+              title="Exit fullscreen (Esc)"
+              style={{ background: "none", border: "1px solid #e5e7eb", borderRadius: 8, padding: "5px 12px", fontSize: 13, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
+            >
+              ✕ Exit Fullscreen
+            </button>
+          </div>
+
+          {/* Scrollable grid — explicit px height = window height minus top bar */}
+          <div style={{ height: windowSize.h - 48, overflowY: "auto", overflowX: "auto" }}>
+            <div data-schedule-grid style={{ position: "relative" }}>
+              <ScheduleGrid
+                rooms={rooms}
+                blocks={blocks}
+                employees={employees}
+                day={activeDay}
+                readOnly={readOnly}
+                onCellClick={handleCellClick}
+                onBlockContextMenu={(blockId, x, y) => { if (!readOnly) setContextMenu({ blockId, x, y }); }}
+                onBlockResize={handleBlockResize}
+                onBlockMoveToColumn={handleBlockMoveToColumn}
+                onRoomUpdate={handleRoomEditTrigger}
+                onRoomDelete={deleteRoom}
+                paintMode={paintMode}
+                cellColors={cellColors[activeDay] ?? {}}
+                onPaintCells={handlePaintCells}
+                blockWarnings={blockWarnings}
+              />
+            </div>
+          </div>
+
+          {/* Context menu — inside the fullscreen overlay so it's visible */}
+          {contextMenu && (
+            <BlockContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              onEdit={handleEditBlock}
+              onDuplicate={handleDuplicate}
+              onDelete={() => deleteBlock(contextMenu.blockId)}
+              onClose={() => setContextMenu(null)}
+            />
+          )}
+        </div>
+      )}
+
       {/* Day tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
         {DAY_NUMBERS.map((dayNum, idx) => (
@@ -1507,7 +1617,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack }: ScheduleGridE
       </div>
 
       {/* Grid */}
-      <div data-schedule-grid style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
+      <div data-schedule-grid style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, maxHeight: "calc(100vh - 280px)", overflow: "auto" }}>
         <ScheduleGrid
           rooms={rooms}
           blocks={blocks}

@@ -170,8 +170,9 @@ function SessionModal({
       .from("schedules")
       .select("id")
       .eq("week_start", monday)
-      .eq("status", "published")
-      .single();
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (!sched) { setShiftLoading((prev) => { const n = new Set(prev); n.delete(key); return n; }); return; }
 
@@ -603,7 +604,8 @@ export default function TimesheetsPage() {
                       const color = colorMap?.get(ds);
                       const isYellow = color === "yellow";
                       const isGreen = color === "green";
-                      const hasData = mins > 0;
+                      // Show button whenever entries exist, even if computed mins ≤ 0 (e.g. after editing times)
+                      const hasData = !!color;
 
                       const dateLabel = `${DAY_ABBRS[i]} ${workingDays[i].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}`;
 

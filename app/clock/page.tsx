@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 import { formatEmployeeName, getDisplayName, timeToMinutes } from "@/lib/scheduleUtils";
 import { useDialog } from "@/components/ui/useDialog";
@@ -425,8 +426,8 @@ export default function ClockPage() {
       {screen === "pin" && (
         <div style={{ width: "100%", maxWidth: 360 }}>
           <div style={{ textAlign: "center", marginBottom: 32 }}>
-            <div style={{ fontSize: 26, fontWeight: 900, color: "#111827", marginBottom: 4 }}>
-              Sing Portal
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+              <Image src="/logo.png" alt="Sing Portal" width={120} height={84} style={{ objectFit: "contain" }} priority />
             </div>
             <div style={{ fontSize: 15, color: "#6b7280" }}>Enter your 4-digit hours PIN</div>
           </div>
@@ -500,6 +501,10 @@ export default function ClockPage() {
       {/* ── CLOCK IN SCREEN ── */}
       {(screen === "clockin" || screen === "clocking") && employee && currentSession && (
         <div style={{ width: "100%", maxWidth: 420 }}>
+          {/* Logo (small) */}
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+            <Image src="/logo.png" alt="Sing Portal" width={56} height={40} style={{ objectFit: "contain" }} />
+          </div>
           {/* Employee name */}
           <div style={{ textAlign: "center", marginBottom: 24 }}>
             <div style={{ fontSize: 22, fontWeight: 900, color: "#111827" }}>
