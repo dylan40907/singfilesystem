@@ -1607,17 +1607,6 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
             </div>
           </div>
 
-          {/* Context menu — inside the fullscreen overlay so it's visible */}
-          {contextMenu && (
-            <BlockContextMenu
-              x={contextMenu.x}
-              y={contextMenu.y}
-              onEdit={handleEditBlock}
-              onDuplicate={handleDuplicate}
-              onDelete={() => deleteBlock(contextMenu.blockId)}
-              onClose={() => setContextMenu(null)}
-            />
-          )}
         </div>
       )}
 

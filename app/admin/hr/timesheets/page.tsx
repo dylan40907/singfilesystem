@@ -136,7 +136,9 @@ function SessionModal({
   onClose: () => void;
   onEntriesChanged: (updated: ClockEntry[]) => void;
 }) {
-  const [entries, setEntries] = useState<ClockEntry[]>(initialEntries);
+  const [entries, setEntries] = useState<ClockEntry[]>(
+    [...initialEntries].sort((a, b) => a.session_start.localeCompare(b.session_start))
+  );
   const [editTimes, setEditTimes] = useState<Record<string, { in: string; out: string }>>(() => {
     const map: Record<string, { in: string; out: string }> = {};
     for (const e of initialEntries) {
@@ -238,6 +240,8 @@ function SessionModal({
       baseDateStr = `${orig.getFullYear()}-${String(orig.getMonth() + 1).padStart(2, "0")}-${String(orig.getDate()).padStart(2, "0")}`;
     }
     const iso = buildISO(baseDateStr, timeVal);
+    // Skip save if the time didn't actually change (prevents accidental onBlur saves)
+    if (originalIso && isoToTimeInput(originalIso) === timeVal) return;
     setSaving((prev) => new Set(prev).add(entryId + field));
     const { error } = await supabase.from("clock_entries").update({ [col]: iso }).eq("id", entryId);
     setSaving((prev) => { const n = new Set(prev); n.delete(entryId + field); return n; });
@@ -548,7 +552,7 @@ export default function TimesheetsPage() {
   function handleEntriesChanged(empId: string, dateStr: string, updated: ClockEntry[]) {
     setEntries((prev) => {
       const unchanged = prev.filter((e) => !(e.employee_id === empId && e.session_date === dateStr));
-      return [...unchanged, ...updated];
+      return [...unchanged, ...updated].sort((a, b) => a.session_start.localeCompare(b.session_start));
     });
   }
 
@@ -562,7 +566,9 @@ export default function TimesheetsPage() {
   });
 
   const modalEntries = modal
-    ? (entriesByEmpDay.get(modal.employeeId)?.get(modal.dateStr) ?? [])
+    ? [...(entriesByEmpDay.get(modal.employeeId)?.get(modal.dateStr) ?? [])].sort(
+        (a, b) => a.session_start.localeCompare(b.session_start)
+      )
     : [];
 
   return (
