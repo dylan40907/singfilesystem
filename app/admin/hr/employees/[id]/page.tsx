@@ -1014,6 +1014,61 @@ function EmployeePerformanceReviewsTab({
 
   const initialAnsweredIdsRef = useRef<Set<string>>(new Set());
   const [publishingReviewId, setPublishingReviewId] = useState<string>("");
+
+  type CopiedReviewData = {
+    sourceLabel: string;
+    formId: string;
+    formType: ReviewFormType;
+    formTitle: string;
+    values: Record<string, number | null>;
+    answerNotes: Record<string, string>;
+    notes: string;
+  };
+  const [copiedReview, setCopiedReview] = useState<CopiedReviewData | null>(null);
+  const [copyingReviewId, setCopyingReviewId] = useState<string>("");
+
+  async function copyReview(r: HrReview) {
+    setCopyingReviewId(r.id);
+    try {
+      const { data: ans } = await supabase
+        .from("hr_review_answers")
+        .select("question_id, score, note")
+        .eq("review_id", r.id);
+      const vals: Record<string, number | null> = {};
+      const notes: Record<string, string> = {};
+      for (const a of (ans ?? []) as any[]) {
+        vals[a.question_id] = typeof a.score === "number" ? a.score : null;
+        if (typeof a.note === "string" && a.note) notes[a.question_id] = a.note;
+      }
+      const formTitle = formById.get(r.form_id)?.title ?? r.form_id;
+      setCopiedReview({
+        sourceLabel: formatReviewLabel(r),
+        formId: r.form_id,
+        formType: r.form_type,
+        formTitle,
+        values: vals,
+        answerNotes: notes,
+        notes: r.notes ?? "",
+      });
+    } finally {
+      setCopyingReviewId("");
+    }
+  }
+
+  async function pasteReview() {
+    if (!copiedReview) return;
+    if (copiedReview.formId !== effectiveFormId) return;
+    const hasExisting = initialAnsweredIdsRef.current.size > 0 || Object.keys(values).length > 0;
+    if (hasExisting) {
+      const ok = await confirm(
+        `This review already has answers. Pasting will overwrite all scores and notes from "${copiedReview.sourceLabel}". Continue?`
+      );
+      if (!ok) return;
+    }
+    setValues({ ...copiedReview.values } as Record<string, number>);
+    setAnswerNotes({ ...copiedReview.answerNotes });
+    if (!reviewNotes) setReviewNotes(copiedReview.notes);
+  }
   const [reviewNotes, setReviewNotes] = useState<string>("");
   const modalRef = useRef<HTMLDivElement | null>(null);
 
@@ -2271,6 +2326,19 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                     <button className="btn" type="button" onClick={() => openEdit(r)} style={{ padding: "6px 10px" }}>
                     Edit
                   </button>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => void copyReview(r)}
+                    disabled={copyingReviewId === r.id}
+                    style={{
+                      padding: "6px 10px",
+                      background: copiedReview?.sourceLabel === formatReviewLabel(r) && copiedReview?.formId === r.form_id ? "rgba(230,23,141,0.08)" : undefined,
+                      borderColor: copiedReview?.sourceLabel === formatReviewLabel(r) && copiedReview?.formId === r.form_id ? "rgba(230,23,141,0.4)" : undefined,
+                    }}
+                  >
+                    {copyingReviewId === r.id ? "Copying..." : "Copy"}
+                  </button>
                   <button className="btn" type="button" onClick={() => void deleteReview(r)} style={{ padding: "6px 10px" }}>
                     Delete
                   </button>
@@ -2332,6 +2400,48 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
             </div>
 
             <div className="hr" />
+
+            {/* Paste banner — shown when there's a copied review */}
+            {copiedReview && (() => {
+              const compatible = copiedReview.formId === effectiveFormId;
+              const incompatibleReason = !compatible
+                ? `Cannot paste: copied review uses form "${copiedReview.formTitle}" but this review uses a different form. Select the same form to enable pasting.`
+                : null;
+              return (
+                <div style={{
+                  display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                  padding: "8px 12px", borderRadius: 10, marginBottom: 12,
+                  background: compatible ? "rgba(230,23,141,0.05)" : "#fff7ed",
+                  border: compatible ? "1px solid rgba(230,23,141,0.25)" : "1px solid #fed7aa",
+                }}>
+                  <div style={{ flex: 1, fontSize: 13 }}>
+                    <b>Clipboard:</b> {copiedReview.sourceLabel} ({copiedReview.formTitle})
+                    {incompatibleReason && (
+                      <span style={{ color: "#c2410c", marginLeft: 8 }}>{incompatibleReason}</span>
+                    )}
+                  </div>
+                  {compatible && (
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => void pasteReview()}
+                      style={{ padding: "5px 12px", fontSize: 13 }}
+                    >
+                      Paste
+                    </button>
+                  )}
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => setCopiedReview(null)}
+                    style={{ padding: "5px 10px", fontSize: 13 }}
+                    title="Clear clipboard"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })()}
 
             {/* Type + period selection */}
             <div

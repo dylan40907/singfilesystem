@@ -57,7 +57,8 @@ function getPeriodIndex(date: Date): number {
   return Math.floor((utc - ANCHOR_MS) / MS_PER_PERIOD);
 }
 function getPeriodStart(index: number): Date {
-  return new Date(ANCHOR_MS + index * MS_PER_PERIOD);
+  // Use UTC noon so that local date methods in any timezone return the correct calendar date
+  return new Date(ANCHOR_MS + index * MS_PER_PERIOD + 12 * 3600000);
 }
 function getWorkingDays(periodStart: Date): Date[] {
   const days: Date[] = [];
@@ -68,11 +69,12 @@ function getWorkingDays(periodStart: Date): Date[] {
   return days;
 }
 function toDateStr(d: Date): string {
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  // Use local date methods so dates match the employee's local session_date
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function formatPeriodLabel(s: Date): string {
   const e = new Date(s.getTime() + 13 * MS_PER_DAY);
-  const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" });
+  const fmt = (d: Date) => d.toLocaleDateString("en-US", { month: "numeric", day: "numeric" });
   return `${fmt(s)} – ${fmt(e)}`;
 }
 const DAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Mon", "Tue", "Wed", "Thu", "Fri"];
@@ -176,18 +178,41 @@ function SessionModal({
 
     if (!sched) { setShiftLoading((prev) => { const n = new Set(prev); n.delete(key); return n; }); return; }
 
-    const { data: blocks } = await supabase
+    // Fetch ALL blocks for this employee+day (including lunch_break separators)
+    const { data: allBlocks } = await supabase
       .from("schedule_blocks")
       .select("id, start_time, end_time, block_type, label, room_id, schedule_rooms(name)")
       .eq("schedule_id", sched.id)
       .eq("employee_id", entry.employee_id)
       .eq("day_of_week", dow)
-      .gte("start_time", entry.session_start)
-      .lte("end_time", entry.session_end)
-      .neq("block_type", "lunch_break")
       .order("start_time");
 
-    const mapped: ShiftBlock[] = (blocks ?? []).map((b: any) => ({
+    // Group into sessions using the same logic as the clock page
+    type RawBlock = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; room_id: string; schedule_rooms: { name: string } | null };
+    const sorted = [...((allBlocks ?? []) as RawBlock[])].sort(
+      (a, b) => a.start_time.localeCompare(b.start_time)
+    );
+    const sessions: { start: string; end: string; blocks: RawBlock[] }[] = [];
+    let cur: RawBlock[] = [];
+    for (const b of sorted) {
+      if (b.block_type === "lunch_break") {
+        if (cur.length > 0) {
+          sessions.push({ start: cur[0].start_time, end: cur[cur.length - 1].end_time, blocks: cur });
+          cur = [];
+        }
+      } else {
+        cur.push(b);
+      }
+    }
+    if (cur.length > 0) {
+      sessions.push({ start: cur[0].start_time, end: cur[cur.length - 1].end_time, blocks: cur });
+    }
+
+    // Find the session matching this clock entry
+    const matchedSession = sessions.find((s) => s.start === entry.session_start) ?? null;
+    const sessionBlocks = matchedSession ? matchedSession.blocks : [];
+
+    const mapped: ShiftBlock[] = sessionBlocks.map((b) => ({
       id: b.id,
       start_time: b.start_time,
       end_time: b.end_time,
@@ -205,7 +230,14 @@ function SessionModal({
     const timeVal = editTimes[entryId]?.[field];
     if (!timeVal) return;
     const col = field === "in" ? "clocked_in_at" : "clocked_out_at";
-    const iso = buildISO(entry.session_date, timeVal);
+    // Use the LOCAL date from the original ISO so the rebuilt timestamp matches what was displayed
+    const originalIso = field === "in" ? entry.clocked_in_at : entry.clocked_out_at;
+    let baseDateStr = entry.session_date;
+    if (originalIso) {
+      const orig = new Date(originalIso);
+      baseDateStr = `${orig.getFullYear()}-${String(orig.getMonth() + 1).padStart(2, "0")}-${String(orig.getDate()).padStart(2, "0")}`;
+    }
+    const iso = buildISO(baseDateStr, timeVal);
     setSaving((prev) => new Set(prev).add(entryId + field));
     const { error } = await supabase.from("clock_entries").update({ [col]: iso }).eq("id", entryId);
     setSaving((prev) => { const n = new Set(prev); n.delete(entryId + field); return n; });
@@ -246,13 +278,13 @@ function SessionModal({
           position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
           zIndex: 301, background: "white", borderRadius: 16,
           boxShadow: "0 8px 40px rgba(0,0,0,0.2)",
-          width: "min(580px, 95vw)", maxHeight: "85vh",
-          display: "flex", flexDirection: "column", overflow: "hidden",
+          width: "min(580px, 95vw)", maxHeight: "92vh",
+          overflowY: "auto",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 16 }}>{target.employeeName}</div>
             <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>{target.dateLabel}</div>
@@ -261,7 +293,7 @@ function SessionModal({
         </div>
 
         {/* Sessions */}
-        <div style={{ overflowY: "auto", flex: 1, padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
           {entries.length === 0 && (
             <div style={{ color: "#6b7280", fontSize: 14 }}>No clock entries for this day.</div>
           )}
@@ -414,7 +446,7 @@ function SessionModal({
         </div>
 
         {/* Footer total */}
-        <div style={{ padding: "12px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
+        <div style={{ padding: "12px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Total paid time</span>
           <span style={{ fontSize: 17, fontWeight: 900, color: "#111827" }}>{minsToHHMM(totalMins)}</span>
         </div>
@@ -607,7 +639,7 @@ export default function TimesheetsPage() {
                       // Show button whenever entries exist, even if computed mins ≤ 0 (e.g. after editing times)
                       const hasData = !!color;
 
-                      const dateLabel = `${DAY_ABBRS[i]} ${workingDays[i].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}`;
+                      const dateLabel = `${DAY_ABBRS[i]} ${workingDays[i].toLocaleDateString("en-US", { month: "numeric", day: "numeric" })}`;
 
                       return (
                         <td key={i} style={cell({ textAlign: "center", padding: "6px 8px" })}>

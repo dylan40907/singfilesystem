@@ -156,8 +156,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   };
   const [clearUnassigned, setClearUnassigned] = useState<ClearUnassignedState | null>(null);
 
+  // Copy week picker
+  const [copyPickerOpen, setCopyPickerOpen] = useState(false);
+  const [copyPickerSchedules, setCopyPickerSchedules] = useState<{ id: string; week_start: string; status: string }[]>([]);
+  const [copyPickerSelected, setCopyPickerSelected] = useState<string | null>(null);
+  const [copyPickerLoading, setCopyPickerLoading] = useState(false);
+
   const { confirm, modal: dialogModal } = useDialog();
-  const readOnly = forceReadOnly || schedule?.status === "published";
+  const readOnly = forceReadOnly;
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // No document listener needed — outside clicks handled by backdrop divs
@@ -182,7 +188,17 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       setColorLabels((schedRes.data.color_labels as Record<string, string>) ?? {});
     }
     if (roomsRes.data) setRooms(roomsRes.data);
-    if (blocksRes.data) setBlocks(blocksRes.data);
+    if (blocksRes.data) {
+      // Deduplicate: if two blocks share room/column/day/start/end/employee they're ghosts; keep the one with the lowest id
+      const seen = new Set<string>();
+      const deduped = (blocksRes.data as ScheduleBlockType[]).filter((b) => {
+        const key = `${b.room_id}:${b.column_index}:${b.day_of_week}:${b.start_time}:${b.end_time}:${b.employee_id ?? ""}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setBlocks(deduped);
+    }
     if (empRes.data) setEmployees(empRes.data);
     if (colorsRes.data) {
       const cm: Record<number, Record<string, string>> = {};
@@ -1124,24 +1140,32 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     await proceedPublish();
   }
 
-  // --- Copy Previous Week (includes rooms, blocks, and cell colors) ---
-  async function copyPreviousWeek() {
+  // --- Copy Week picker ---
+  async function openCopyPicker() {
+    if (!schedule) return;
+    setCopyPickerLoading(true);
+    setCopyPickerOpen(true);
+    const { data } = await supabase
+      .from("schedules")
+      .select("id, week_start, status")
+      .neq("id", scheduleId)
+      .order("week_start", { ascending: false });
+    const rows = (data ?? []) as { id: string; week_start: string; status: string }[];
+    setCopyPickerSchedules(rows);
+    // Default to most recent before current week
+    const prev = rows.find((s) => s.week_start < schedule.week_start);
+    setCopyPickerSelected(prev?.id ?? (rows[0]?.id ?? null));
+    setCopyPickerLoading(false);
+  }
+
+  // --- Copy Week (includes rooms, blocks, and cell colors) ---
+  async function copyFromWeek(sourceId: string) {
     if (!schedule) return;
     setSaving(true);
+    setCopyPickerOpen(false);
 
-    const { data: prevSchedule } = await supabase
-      .from("schedules")
-      .select("id")
-      .lt("week_start", schedule.week_start)
-      .order("week_start", { ascending: false })
-      .limit(1)
-      .single();
+    const prevSchedule = { id: sourceId };
 
-    if (!prevSchedule) {
-      setWarning("No previous schedule found to copy from.");
-      setSaving(false);
-      return;
-    }
 
     const [prevRoomsRes, prevBlocksRes, prevColorsRes, prevSchedRes] = await Promise.all([
       supabase.from("schedule_rooms").select("*").eq("schedule_id", prevSchedule.id).order("sort_order"),
@@ -1155,13 +1179,13 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     const prevColors = prevColorsRes.data ?? [];
 
     if (prevRooms.length === 0) {
-      setWarning("Previous schedule has no rooms to copy.");
+      setWarning("Selected schedule has no rooms to copy.");
       setSaving(false);
       return;
     }
 
     if (rooms.length > 0) {
-      if (!await confirm("This will remove all current rooms, blocks, and paint colors for this week and replace them with the previous week's data. Continue?", { title: "Copy Previous Week", confirmLabel: "Yes, replace" })) {
+      if (!await confirm("This will remove all current rooms, blocks, and paint colors for this week and replace them with the selected week's data. Continue?", { title: "Copy Week", confirmLabel: "Yes, replace" })) {
         setSaving(false);
         return;
       }
@@ -1304,7 +1328,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!readOnly && (
             <>
-              <button className="btn" onClick={copyPreviousWeek} disabled={saving}>Copy Previous Week</button>
+              <button className="btn" onClick={openCopyPicker} disabled={saving}>Copy Week</button>
               <button className="btn" onClick={addRoom}>+ Add Room</button>
             </>
           )}
@@ -1638,17 +1662,77 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       </div>
 
       {/* Type picker popup */}
+      {/* Copy week picker modal */}
+      {copyPickerOpen && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.45)" }} onClick={() => setCopyPickerOpen(false)} />
+          <div style={{
+            position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+            zIndex: 10001, background: "white", borderRadius: 14,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.18)", width: "min(480px,95vw)",
+            maxHeight: "80vh", display: "flex", flexDirection: "column", overflow: "hidden",
+            padding: 20,
+          }}>
+            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 14 }}>Copy Week</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 12 }}>
+              Select a week to copy rooms, blocks, and paint colors from:
+            </div>
+            {copyPickerLoading ? (
+              <div style={{ color: "#9ca3af", padding: "20px 0", textAlign: "center" }}>Loading…</div>
+            ) : copyPickerSchedules.length === 0 ? (
+              <div style={{ color: "#9ca3af" }}>No other schedules found.</div>
+            ) : (
+              <div style={{ overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+                {copyPickerSchedules.map((s) => {
+                  const isSelected = s.id === copyPickerSelected;
+                  const isPublished = s.status === "published";
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => setCopyPickerSelected(s.id)}
+                      style={{
+                        display: "flex", alignItems: "center", justifyContent: "space-between",
+                        padding: "10px 14px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                        border: isSelected ? "2px solid #e6178d" : "1.5px solid #e5e7eb",
+                        background: isSelected ? "rgba(230,23,141,0.05)" : "white",
+                      }}
+                    >
+                      <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{formatWeekRange(s.week_start)}</span>
+                      <span style={{
+                        padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                        background: isPublished ? "#dcfce7" : "#fef3c7",
+                        color: isPublished ? "#16a34a" : "#d97706",
+                      }}>{isPublished ? "Published" : "Draft"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setCopyPickerOpen(false)}>Cancel</button>
+              <button
+                className="btn btn-primary"
+                onClick={() => { if (copyPickerSelected) copyFromWeek(copyPickerSelected); }}
+                disabled={!copyPickerSelected || copyPickerLoading}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {typePicker && (
         <>
           <div
-            style={{ position: "fixed", inset: 0, zIndex: 59 }}
+            style={{ position: "fixed", inset: 0, zIndex: 10000 }}
             onMouseDown={() => setTypePicker(null)}
           />
           <div
             style={{
               position: "fixed",
               ...popupPos(typePicker.x, typePicker.y, 200, 130),
-              zIndex: 60,
+              zIndex: 10001,
               background: "white",
               border: "1.5px solid #e5e7eb",
               borderRadius: 10,
@@ -1682,14 +1766,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       {blockForm && (
         <>
           <div
-            style={{ position: "fixed", inset: 0, zIndex: 59 }}
+            style={{ position: "fixed", inset: 0, zIndex: 10000 }}
             onMouseDown={() => setBlockForm(null)}
           />
           <div
             style={{
               position: "fixed",
               ...popupPos(blockForm.x, blockForm.y, 280, blockForm.blockType === "shift" ? 260 : 200),
-              zIndex: 60,
+              zIndex: 10001,
               background: "white",
               border: "1.5px solid #e5e7eb",
               borderRadius: 12,

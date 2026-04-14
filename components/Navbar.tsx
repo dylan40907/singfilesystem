@@ -73,8 +73,10 @@ export default function Navbar() {
   const showTeachers = !!sessionEmail && isAdminOrSupervisor;
   const showReviewQueue = !!sessionEmail && isAdminOrSupervisor;
 
+  const isSupervisor = !!profile?.is_active && profile.role === "supervisor";
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const showSupervisors = !!sessionEmail && isAdmin;
+  const showSchedules = !!sessionEmail && isSupervisor;
 
   // ✅ HR visible to ALL active users (admin goes to /admin/hr, everyone else to /hr)
   const showHr = !!sessionEmail && isActive;
@@ -168,6 +170,7 @@ export default function Navbar() {
 
   const activeTab = useMemo(() => {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
+    if (pathname.startsWith("/schedules")) return "schedules";
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname === "/teachers") return "teachers";
     if (pathname === "/review-queue") return "review-queue";
@@ -223,6 +226,7 @@ export default function Navbar() {
               {showSupervisors && (
                 <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />
               )}
+              {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
             </div>
           </div>
