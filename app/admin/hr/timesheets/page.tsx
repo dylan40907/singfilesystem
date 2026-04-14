@@ -188,8 +188,8 @@ function SessionModal({
       .order("start_time");
 
     // Group into sessions using the same logic as the clock page
-    type RawBlock = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; room_id: string; schedule_rooms: { name: string } | null };
-    const sorted = [...((allBlocks ?? []) as RawBlock[])].sort(
+    type RawBlock = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; room_id: string; schedule_rooms: { name: string } | { name: string }[] | null };
+    const sorted = [...((allBlocks ?? []) as unknown as RawBlock[])].sort(
       (a, b) => a.start_time.localeCompare(b.start_time)
     );
     const sessions: { start: string; end: string; blocks: RawBlock[] }[] = [];
@@ -218,7 +218,7 @@ function SessionModal({
       end_time: b.end_time,
       block_type: b.block_type,
       label: b.label,
-      room_name: b.schedule_rooms?.name ?? "—",
+      room_name: (Array.isArray(b.schedule_rooms) ? b.schedule_rooms[0]?.name : b.schedule_rooms?.name) ?? "—",
     }));
     setShiftBlocks((prev) => ({ ...prev, [key]: mapped }));
     setShiftLoading((prev) => { const n = new Set(prev); n.delete(key); return n; });
