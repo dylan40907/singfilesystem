@@ -91,19 +91,22 @@ function getDisplayName(e: Employee): string {
 }
 function isoToTimeInput(iso: string): string {
   const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
 }
 function isoToDisplayTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
 }
-function buildISO(dateStr: string, timeHHMM: string): string {
+function buildISO(dateStr: string, timeHHMMSS: string): string {
   const [y, mo, d] = dateStr.split("-").map(Number);
-  const [h, m] = timeHHMM.split(":").map(Number);
-  return new Date(y, mo - 1, d, h, m, 0).toISOString();
+  const parts = timeHHMMSS.split(":").map(Number);
+  const [h, m, s] = [parts[0], parts[1], parts[2] ?? 0];
+  return new Date(y, mo - 1, d, h, m, s).toISOString();
 }
 function entryPaidMins(e: ClockEntry): number {
   if (!e.clocked_in_at || !e.clocked_out_at) return 0;
-  return Math.ceil((new Date(e.clocked_out_at).getTime() - new Date(e.clocked_in_at).getTime()) / 60_000);
+  // Round half-up: ≥30 seconds remainder → next minute, <30 → current minute
+  const totalSeconds = Math.round((new Date(e.clocked_out_at).getTime() - new Date(e.clocked_in_at).getTime()) / 1000);
+  return Math.round(totalSeconds / 60);
 }
 function getMondayOfWeek(dateStr: string): string {
   const d = new Date(dateStr + "T12:00:00");
@@ -336,6 +339,7 @@ function SessionModal({
                           <>
                             <input
                               type="time"
+                              step="1"
                               value={inTime}
                               onChange={(e) => setEditTimes((prev) => ({ ...prev, [entry.id]: { ...prev[entry.id], in: e.target.value } }))}
                               onBlur={() => saveTime(entry.id, "in")}
@@ -382,6 +386,7 @@ function SessionModal({
                           <>
                             <input
                               type="time"
+                              step="1"
                               value={outTime}
                               onChange={(e) => setEditTimes((prev) => ({ ...prev, [entry.id]: { ...prev[entry.id], out: e.target.value } }))}
                               onBlur={() => saveTime(entry.id, "out")}

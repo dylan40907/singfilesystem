@@ -153,6 +153,7 @@ export default function ClockPage() {
   const [timerStr, setTimerStr] = useState("0:00");
   const [successMsg, setSuccessMsg] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoLogoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Rolling timer
   useEffect(() => {
@@ -163,6 +164,24 @@ export default function ClockPage() {
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [screen, clockEntry]);
+
+  // Auto-logout after 30 seconds of inactivity on clockin/clocking screens
+  useEffect(() => {
+    if (screen !== "clockin" && screen !== "clocking") {
+      if (autoLogoutRef.current) clearTimeout(autoLogoutRef.current);
+      return;
+    }
+    if (autoLogoutRef.current) clearTimeout(autoLogoutRef.current);
+    autoLogoutRef.current = setTimeout(() => resetToPin(), 30_000);
+    return () => { if (autoLogoutRef.current) clearTimeout(autoLogoutRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen]);
+
+  function resetAutoLogoutTimer() {
+    if (screen !== "clockin" && screen !== "clocking") return;
+    if (autoLogoutRef.current) clearTimeout(autoLogoutRef.current);
+    autoLogoutRef.current = setTimeout(() => resetToPin(), 30_000);
+  }
 
   // ── PIN input ──
   function pressDigit(d: string) {
@@ -203,8 +222,9 @@ export default function ClockPage() {
       return;
     }
 
-    // Get the most recent published schedule covering today
-    const today = new Date().toISOString().slice(0, 10);
+    // Get the most recent published schedule covering today (use LOCAL date, not UTC)
+    const _now = new Date();
+    const today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}-${String(_now.getDate()).padStart(2, "0")}`;
     const { data: schedules } = await supabase
       .from("schedules")
       .select("id, week_start")
@@ -317,7 +337,8 @@ export default function ClockPage() {
 
   async function handleClockIn() {
     if (!employee || !currentSession) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const _d = new Date();
+    const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
     const { data, error } = await supabase
       .from("clock_entries")
       .insert({
@@ -500,7 +521,7 @@ export default function ClockPage() {
 
       {/* ── CLOCK IN SCREEN ── */}
       {(screen === "clockin" || screen === "clocking") && employee && currentSession && (
-        <div style={{ width: "100%", maxWidth: 420 }}>
+        <div style={{ width: "100%", maxWidth: 420 }} onPointerDown={resetAutoLogoutTimer}>
           {/* Logo (small) */}
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
             <Image src="/logo.png" alt="Sing Portal" width={56} height={40} style={{ objectFit: "contain" }} />
@@ -615,11 +636,11 @@ export default function ClockPage() {
             onClick={resetToPin}
             style={{
               display: "block", width: "100%", marginTop: 12, padding: "12px 0",
-              background: "none", border: "none", color: "#9ca3af",
-              fontSize: 14, fontWeight: 600, cursor: "pointer",
+              background: "none", border: "1.5px solid #e5e7eb", borderRadius: 12,
+              color: "#6b7280", fontSize: 15, fontWeight: 700, cursor: "pointer",
             }}
           >
-            ← Back to PIN pad
+            Cancel
           </button>
         </div>
       )}
