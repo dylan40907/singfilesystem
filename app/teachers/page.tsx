@@ -1539,7 +1539,7 @@ setWorkbookKey(`${planId}:${Date.now()}`);
     if (!ok) return;
     const { error } = await supabase.from("lesson_plans").delete().eq("id", planId);
     if (error) { await alert("Failed to delete plan: " + error.message); return; }
-    if (selectedPlanId === planId) setSelectedPlanId(null);
+    if (selectedPlanId === planId) setSelectedPlanId("");
     if (selectedTeacherId) refreshTeacherPlans(selectedTeacherId);
   }
 
