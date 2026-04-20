@@ -1534,6 +1534,15 @@ setWorkbookKey(`${planId}:${Date.now()}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlanId]);
 
+  async function deletePlan(planId: string, planTitle: string) {
+    const ok = await confirm(`Delete "${planTitle}"?\n\nThis cannot be undone.`, { danger: true });
+    if (!ok) return;
+    const { error } = await supabase.from("lesson_plans").delete().eq("id", planId);
+    if (error) { await alert("Failed to delete plan: " + error.message); return; }
+    if (selectedPlanId === planId) setSelectedPlanId(null);
+    if (selectedTeacherId) refreshTeacherPlans(selectedTeacherId);
+  }
+
   if (!isAdminOrSupervisor) {
     return (
       <main className="stack">
@@ -1849,7 +1858,17 @@ setWorkbookKey(`${planId}:${Date.now()}`);
                       >
                         <div className="row-between" style={{ alignItems: "flex-start" }}>
                           <div style={{ fontWeight: 900 }}>{p.title}</div>
-                          <StatusBadge status={p.status} />
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <StatusBadge status={p.status} />
+                            <button
+                              title="Delete plan"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => { e.stopPropagation(); deletePlan(p.id, p.title); }}
+                              style={{ background: "none", border: "none", cursor: "pointer", padding: "2px 4px", color: "#dc2626", lineHeight: 1 }}
+                            >
+                              🗑
+                            </button>
+                          </div>
                         </div>
 
                         <div className="subtle" style={{ marginTop: 6 }}>
