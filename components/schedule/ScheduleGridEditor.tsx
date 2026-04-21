@@ -1585,7 +1585,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
           </div>
 
           {/* Scrollable grid — explicit px height = window height minus top bar */}
-          <div style={{ height: windowSize.h - 48, overflowY: "auto", overflowX: "auto" }}>
+          <div data-grid-scroll style={{ height: windowSize.h - 48, overflowY: "auto", overflowX: "auto" }}>
             <div data-schedule-grid style={{ position: "relative" }}>
               <ScheduleGrid
                 rooms={rooms}
@@ -1630,7 +1630,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       </div>
 
       {/* Grid */}
-      <div data-schedule-grid style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, maxHeight: "calc(100vh - 280px)", overflow: "auto" }}>
+      <div data-schedule-grid data-grid-scroll style={{ position: "relative", border: "1.5px solid #e5e7eb", borderRadius: 10, maxHeight: "calc(100vh - 280px)", overflow: "auto" }}>
         <ScheduleGrid
           rooms={rooms}
           blocks={blocks}

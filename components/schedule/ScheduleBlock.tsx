@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import {
   ScheduleBlock as ScheduleBlockType,
   EmployeeLite,
   formatTime,
   getFirstName,
+  getDisplayName,
   timeToMinutes,
   minutesToTime,
   snapMinutes,
@@ -40,12 +41,12 @@ export default function ScheduleBlock({
   warnings,
 }: ScheduleBlockProps) {
   const elRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const didInteractRef = useRef(false);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
   const isUnassigned = !block.employee_id;
   const isLabelWithEmployee = !!block.employee_id && !!block.label;
-  // For unassigned blocks, show "Unassigned" as the name; show the label as a note only if it's not the sentinel
   const displayName = isUnassigned
     ? "Unassigned"
     : employee
@@ -55,15 +56,74 @@ export default function ScheduleBlock({
 
   const leftBorderColor =
     block.block_type === "lunch_break"
-      ? "#f97316" // orange
+      ? "#f97316"
       : block.block_type === "break"
-      ? "#22c55e" // green
-      : "#6366f1"; // indigo for shift
+      ? "#22c55e"
+      : "#6366f1";
 
   const timeStart = formatTime(block.start_time);
   const timeEnd = formatTime(block.end_time);
 
-  // --- MOVE: pointer down on the block body ---
+  // Build tooltip text: warnings first (if any), then full details
+  const fullName = isUnassigned
+    ? "Unassigned"
+    : employee
+      ? getDisplayName(employee)
+      : "Unknown";
+  const tooltipLines: string[] = [];
+  if (warnings && warnings.length > 0) {
+    tooltipLines.push(warnings.join("\n"));
+    tooltipLines.push("────────────────");
+  }
+  tooltipLines.push(fullName);
+  tooltipLines.push(`${timeStart} – ${timeEnd}`);
+  const noteText = unassignedNote ?? (isLabelWithEmployee ? block.label : null);
+  if (noteText) tooltipLines.push(noteText);
+  const tooltipText = tooltipLines.join("\n");
+
+  // Scroll-tracking effect: push the content label down as the block top scrolls past the header.
+  // Uses rAF throttling to avoid scroll jank with many blocks.
+  useEffect(() => {
+    const el = elRef.current;
+    const content = contentRef.current;
+    if (!el || !content) return;
+
+    const scrollEl = el.closest<HTMLElement>("[data-grid-scroll]");
+    if (!scrollEl) return;
+
+    const HEADER_H = 36 + 4; // column header height + small gap
+    let rafId: number | null = null;
+
+    function update() {
+      rafId = null;
+      if (!el || !content || !scrollEl) return;
+      const containerRect = scrollEl.getBoundingClientRect();
+      const blockRect = el.getBoundingClientRect();
+      const stickyThreshold = containerRect.top + HEADER_H;
+      const scrolledPast = stickyThreshold - blockRect.top;
+      if (scrolledPast <= 0) {
+        content.style.transform = "";
+      } else {
+        const maxOffset = Math.max(0, heightPx - content.offsetHeight - 6);
+        const offset = Math.min(scrolledPast, maxOffset);
+        content.style.transform = `translateY(${offset}px)`;
+      }
+    }
+
+    function onScroll() {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(update);
+    }
+
+    scrollEl.addEventListener("scroll", onScroll, { passive: true });
+    update();
+    return () => {
+      scrollEl.removeEventListener("scroll", onScroll);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [topPx, heightPx]);
+
+  // --- MOVE ---
   const handleMoveDown = useCallback(
     (e: React.PointerEvent) => {
       if (readOnly) return;
@@ -78,17 +138,12 @@ export default function ScheduleBlock({
       const startX = e.clientX;
       let dragging = false;
 
-      // Capture pointer so we keep getting events even outside the element
       el.setPointerCapture(e.pointerId);
 
       const onMove = (ev: PointerEvent) => {
         const dy = ev.clientY - startY;
         const dx = ev.clientX - startX;
-
-        if (!dragging && (Math.abs(dy) > 3 || Math.abs(dx) > 3)) {
-          dragging = true;
-        }
-
+        if (!dragging && (Math.abs(dy) > 3 || Math.abs(dx) > 3)) dragging = true;
         if (dragging) {
           el.style.top = `${topPx + dy}px`;
           el.style.transform = `translateX(${dx}px)`;
@@ -102,21 +157,17 @@ export default function ScheduleBlock({
         el.removeEventListener("pointermove", onMove);
         el.removeEventListener("pointerup", onUp);
         el.releasePointerCapture(ev.pointerId);
-
-        // Reset visual
         el.style.top = `${topPx}px`;
         el.style.transform = "";
         el.style.opacity = "1";
         el.style.zIndex = "10";
         el.style.pointerEvents = "";
-
         if (dragging) {
           didInteractRef.current = true;
           const dy = ev.clientY - startY;
           const deltaSlots = Math.round(dy / PX_PER_SLOT);
           onDragEnd(block.id, deltaSlots, ev.clientX);
         } else {
-          // No drag happened — still suppress the cell click behind us
           onDragCancel();
         }
       };
@@ -127,13 +178,13 @@ export default function ScheduleBlock({
     [block.id, topPx, readOnly, onDragEnd, onDragCancel]
   );
 
-  // --- RESIZE: pointer down on top/bottom handle ---
+  // --- RESIZE ---
   const handleResizeDown = useCallback(
     (edge: "top" | "bottom", e: React.PointerEvent) => {
       if (readOnly) return;
       e.stopPropagation();
       e.preventDefault();
-      didInteractRef.current = true; // always suppress click after resize
+      didInteractRef.current = true;
 
       const el = elRef.current;
       if (!el) return;
@@ -157,8 +208,6 @@ export default function ScheduleBlock({
         el.removeEventListener("pointermove", onMove);
         el.removeEventListener("pointerup", onUp);
         el.releasePointerCapture(ev.pointerId);
-
-        // Reset visual
         el.style.top = `${topPx}px`;
         el.style.height = `${heightPx}px`;
 
@@ -192,6 +241,7 @@ export default function ScheduleBlock({
       onPointerDown={handleMoveDown}
       onClick={(e) => {
         e.stopPropagation();
+        setTooltipPos(null);
         if (didInteractRef.current) {
           didInteractRef.current = false;
           return;
@@ -200,8 +250,8 @@ export default function ScheduleBlock({
           onContextMenu(block.id, e.clientX, e.clientY);
         }
       }}
-      onMouseEnter={(e) => { if (warnings?.length) setTooltipPos({ x: e.clientX, y: e.clientY }); }}
-      onMouseMove={(e) => { if (warnings?.length) setTooltipPos({ x: e.clientX, y: e.clientY }); }}
+      onMouseEnter={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
+      onMouseMove={(e) => setTooltipPos({ x: e.clientX, y: e.clientY })}
       onMouseLeave={() => setTooltipPos(null)}
       style={{
         position: "absolute",
@@ -224,60 +274,48 @@ export default function ScheduleBlock({
       {/* Resize top handle */}
       {!readOnly && (
         <div
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            handleResizeDown("top", e);
-          }}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            height: 6,
-            cursor: "ns-resize",
-            zIndex: 11,
-          }}
+          onPointerDown={(e) => { e.stopPropagation(); handleResizeDown("top", e); }}
+          style={{ position: "absolute", top: 0, left: 0, right: 0, height: 6, cursor: "ns-resize", zIndex: 11 }}
         />
       )}
 
-      {/* Block content */}
-      <div
-        style={{
-          fontWeight: 900,
-          fontSize: isUnassigned ? 15 : 13,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          pointerEvents: "none",
-          color: "#1e293b",
-          lineHeight: "16px",
-        }}
-      >
-        {isUnassigned ? "⚠" : displayName}
-      </div>
-      {heightPx > 32 && (
-        <div style={{ pointerEvents: "none", marginTop: 2, lineHeight: "14px" }}>
-          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeStart}</div>
-          <div style={{ fontSize: 11, color: "#6b7280" }}>{timeEnd}</div>
-        </div>
-      )}
-      {(isLabelWithEmployee || unassignedNote) && heightPx > 50 && (
+      {/* Block content — translateY applied by scroll tracker to keep label in view */}
+      <div ref={contentRef} style={{ pointerEvents: "none" }}>
         <div
           style={{
-            fontSize: 11,
-            color: "#4f46e5",
-            fontWeight: 700,
-            pointerEvents: "none",
-            marginTop: 2,
-            wordBreak: "break-word",
+            fontWeight: 900,
+            fontSize: isUnassigned ? 15 : 13,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            color: "#1e293b",
+            lineHeight: "16px",
           }}
         >
-          {unassignedNote ?? block.label}
+          {isUnassigned ? "⚠" : displayName}
         </div>
-      )}
+        {heightPx > 32 && (
+          <div style={{ marginTop: 2, lineHeight: "14px" }}>
+            <div style={{ fontSize: 11, color: "#6b7280" }}>{timeStart}</div>
+            <div style={{ fontSize: 11, color: "#6b7280" }}>{timeEnd}</div>
+          </div>
+        )}
+        {(isLabelWithEmployee || unassignedNote) && heightPx > 50 && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "#4f46e5",
+              fontWeight: 700,
+              marginTop: 2,
+              wordBreak: "break-word",
+            }}
+          >
+            {unassignedNote ?? block.label}
+          </div>
+        )}
+      </div>
 
-
-      {/* Warning tooltip — rendered via portal to escape any stacking context */}
-      {tooltipPos && warnings && warnings.length > 0 && typeof document !== "undefined" && createPortal(
+      {/* Hover tooltip — always shown, warnings first if present */}
+      {tooltipPos && typeof document !== "undefined" && createPortal(
         <div
           style={{
             position: "fixed",
@@ -297,7 +335,17 @@ export default function ScheduleBlock({
             lineHeight: 1.5,
           }}
         >
-          {warnings.join("\n\n")}
+          {warnings && warnings.length > 0 && (
+            <>
+              <div style={{ color: "#fca5a5", fontWeight: 700, marginBottom: 4 }}>
+                {warnings.join("\n")}
+              </div>
+              <div style={{ borderTop: "1px solid rgba(255,255,255,0.15)", marginBottom: 6 }} />
+            </>
+          )}
+          <div>{fullName}</div>
+          <div style={{ color: "#94a3b8" }}>{timeStart} – {timeEnd}</div>
+          {noteText && <div style={{ color: "#a5b4fc", marginTop: 2 }}>{noteText}</div>}
         </div>,
         document.body
       )}
@@ -305,19 +353,8 @@ export default function ScheduleBlock({
       {/* Resize bottom handle */}
       {!readOnly && (
         <div
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            handleResizeDown("bottom", e);
-          }}
-          style={{
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            height: 6,
-            cursor: "ns-resize",
-            zIndex: 11,
-          }}
+          onPointerDown={(e) => { e.stopPropagation(); handleResizeDown("bottom", e); }}
+          style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 6, cursor: "ns-resize", zIndex: 11 }}
         />
       )}
     </div>
