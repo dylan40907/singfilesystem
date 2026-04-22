@@ -534,24 +534,58 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
         }
       }
 
-      // 6h+ shift time with < 2 qualifying breaks (union-of-intervals)
+      // Build union of shift intervals (reused by 4h early-break rule and 6h+ rule)
       const shiftIntervals = empBlocks
         .filter((b) => b.block_type === "shift")
         .map((b) => ({ start: timeToMinutes(b.start_time), end: timeToMinutes(b.end_time) }))
         .sort((a, b) => a.start - b.start);
-      let shiftMins = 0;
+      const shiftUnion: { start: number; end: number }[] = [];
       if (shiftIntervals.length > 0) {
-        let cur = shiftIntervals[0];
+        let cur = { ...shiftIntervals[0] };
         for (let i = 1; i < shiftIntervals.length; i++) {
           if (shiftIntervals[i].start < cur.end) {
-            cur = { start: cur.start, end: Math.max(cur.end, shiftIntervals[i].end) };
+            cur.end = Math.max(cur.end, shiftIntervals[i].end);
           } else {
-            shiftMins += cur.end - cur.start;
-            cur = shiftIntervals[i];
+            shiftUnion.push(cur);
+            cur = { ...shiftIntervals[i] };
           }
         }
-        shiftMins += cur.end - cur.start;
+        shiftUnion.push(cur);
       }
+      const shiftMins = shiftUnion.reduce((s, iv) => s + (iv.end - iv.start), 0);
+
+      // 4h+ shift without a 10-min break starting by the cumulative 3h 30m mark.
+      // Cumulative is measured by shift time only — gaps between shifts don't count.
+      if (shiftMins >= 240) {
+        let cumulative = 0;
+        let thresholdMinute: number | null = null;
+        for (const iv of shiftUnion) {
+          const dur = iv.end - iv.start;
+          if (cumulative + dur >= 210) {
+            thresholdMinute = iv.start + (210 - cumulative);
+            break;
+          }
+          cumulative += dur;
+        }
+        if (thresholdMinute !== null) {
+          const hasEarlyBreak = empBlocks.some(
+            (b) =>
+              b.block_type === "break" &&
+              timeToMinutes(b.end_time) - timeToMinutes(b.start_time) >= 10 &&
+              timeToMinutes(b.start_time) <= thresholdMinute!
+          );
+          if (!hasEarlyBreak) {
+            const msg = `${name} needs a 10 min break starting by the 3h 30m mark on ${dayLabel}.`;
+            for (const b of empBlocks.filter((b) => b.block_type === "shift")) {
+              const arr = warnings.get(b.id) ?? [];
+              arr.push(msg);
+              warnings.set(b.id, arr);
+            }
+          }
+        }
+      }
+
+      // 6h+ shift time with < 2 qualifying breaks
       if (shiftMins >= 360) {
         const qualBreaks = empBlocks.filter(
           (b) =>
