@@ -698,6 +698,11 @@ export default function MyPlansPage() {
   const [workbookKey, setWorkbookKey] = useState<string>("init");
   const textDirtyRef = useRef(false);
 
+  // Captures the server response from the most recent successful savePlan() call.
+  // Used by exitSheetFullscreen to push the authoritative saved content into the
+  // small-screen workbook without trusting a potentially-empty live snapshot.
+  const lastSavedPlanRef = useRef<any | null>(null);
+
   const [userLabelsById, setUserLabelsById] = useState<Record<string, UserLabelRow>>({});
 
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -755,9 +760,25 @@ export default function MyPlansPage() {
   async function exitSheetFullscreen() {
     // Always save before leaving fullscreen to avoid losing edits.
     await savePlan();
-    // After saving, ignore any immediate sheet re-emissions as it reflows.
     justSavedUntilRef.current = Date.now() + 1500;
     settleHydrationWindow();
+    // The plans-change hydration effect is gated on plan-switch (to avoid wiping
+    // in-flight typing during a save), so it won't push the saved content back
+    // into sheetDoc for us. Do it here explicitly, using the AUTHORITATIVE server
+    // response from savePlan — not a live workbook snapshot, because the snapshot
+    // can be empty/stale during transitions and would destroy the user's content.
+    const saved = lastSavedPlanRef.current;
+    if (saved?.sheet_doc) {
+      try {
+        const normalized = normalizeForFortune(saved.sheet_doc, DEFAULT_SHEET_DOC);
+        if (Array.isArray(normalized) && normalized.length > 0) {
+          setSheetDoc(normalized);
+          setWorkbookKey(`${selectedPlanId}:${Date.now()}`);
+        }
+      } catch {
+        // non-fatal — user can refresh if the small-screen view looks stale
+      }
+    }
     setSheetView(false);
   }
 
@@ -1051,8 +1072,10 @@ async function savePlan() {
       if (!latest) throw new Error("Save did not return data and re-fetch found no row.");
 
       setPlans((prev) => prev.map((p) => (p.id === planId ? latest : p)));
+      lastSavedPlanRef.current = latest;
     } else {
       setPlans((prev) => prev.map((p) => (p.id === planId ? updated : p)));
+      lastSavedPlanRef.current = updated;
     }
 
 // Post-save verification: ensure server stored the snapshot we intended
@@ -1079,6 +1102,7 @@ if (selectedPlan.plan_format === "sheet") {
       if (retryErr) throw retryErr;
       if (retryRow2) {
         setPlans((prev) => prev.map((p) => (p.id === planId ? retryRow2 : p)));
+        lastSavedPlanRef.current = retryRow2;
       }
     }
   } catch (e) {
@@ -1230,14 +1254,21 @@ if (selectedPlan.plan_format === "sheet") {
     const p = plans.find((x) => x.id === selectedPlanId);
     if (!p) return;
 
-    // Only reset fullscreen modes when the user switches plans.
+    // Only hydrate the editor and refetch comments when the user actually
+    // switches plans (or this plan is being loaded for the first time).
+    // If plans[] changed because of a save or a background reload, re-hydrating
+    // would wipe any characters the user typed while the save was in flight,
+    // and re-fetching comments every autosave would spam the server.
     const planSwitched = prevSelectedPlanIdRef.current !== selectedPlanId;
+    if (!planSwitched) return;
+
+    ensureUserLabels([p.last_edited_by ?? "", p.last_submitted_by ?? ""]);
+    loadComments(selectedPlanId);
+
     setTitle(p.title);
-    if (planSwitched) {
-      setSheetView(false);
-      setTextView(false);
-      prevSelectedPlanIdRef.current = selectedPlanId;
-    }
+    setSheetView(false);
+    setTextView(false);
+    prevSelectedPlanIdRef.current = selectedPlanId;
     setSheetDirty(false);
     setStatus("All changes saved.");
     // Hydration guard: the sheet editor may emit an initial change event while mounting
@@ -1250,9 +1281,6 @@ if (selectedPlan.plan_format === "sheet") {
         isHydratingRef.current = false;
       });
     });
-
-
-    ensureUserLabels([p.last_edited_by ?? "", p.last_submitted_by ?? ""]);
 
     if (p.plan_format === "sheet") {
       const normalized = normalizeForFortune(p.sheet_doc, DEFAULT_SHEET_DOC);
@@ -1268,8 +1296,6 @@ if (selectedPlan.plan_format === "sheet") {
       setSheetLoadedPlanId("");
       setContentHtml(normalizeContentToHtml(p.content ?? ""));
     }
-
-    loadComments(selectedPlanId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlanId, plans]);
 
