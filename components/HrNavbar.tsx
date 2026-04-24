@@ -100,6 +100,7 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/schedule" || pathname.startsWith("/admin/hr/schedule/")) return "schedule";
     if (pathname === "/admin/hr/org-chart" || pathname.startsWith("/admin/hr/org-chart/")) return "org-chart";
     if (pathname === "/admin/hr/timesheets" || pathname.startsWith("/admin/hr/timesheets/")) return "timesheets";
+    if (pathname === "/admin/hr/leave" || pathname.startsWith("/admin/hr/leave/")) return "leave";
     return "employees";
   }, [pathname]);
 
@@ -162,6 +163,7 @@ export default function HrNavbar() {
                     />
                     <NavLink href="/admin/hr/schedule" label="Schedule" active={activeTab === "schedule"} />
                     <NavLink href="/admin/hr/timesheets" label="Timesheets" active={activeTab === "timesheets"} />
+                    <NavLink href="/admin/hr/leave" label="Leave" active={activeTab === "leave"} />
                     <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
                   </>
                 ) : (
