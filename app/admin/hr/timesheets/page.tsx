@@ -24,6 +24,7 @@ type ClockEntry = {
   session_end: string;
   clocked_in_at: string | null;
   clocked_out_at: string | null;
+  auto_clocked_out: boolean;
   notes_in: string | null;
   notes_out: string | null;
   notes_in_resolved: boolean;
@@ -246,11 +247,15 @@ function SessionModal({
     // Skip save if the time didn't actually change (prevents accidental onBlur saves)
     if (originalIso && isoToTimeInput(originalIso) === timeVal) return;
     setSaving((prev) => new Set(prev).add(entryId + field));
-    const { error } = await supabase.from("clock_entries").update({ [col]: iso }).eq("id", entryId);
+    const updatePayload: Record<string, unknown> = { [col]: iso };
+    if (field === "out") updatePayload.auto_clocked_out = false;
+    const { error } = await supabase.from("clock_entries").update(updatePayload).eq("id", entryId);
     setSaving((prev) => { const n = new Set(prev); n.delete(entryId + field); return n; });
     if (!error) {
       const updated = entries.map((e) =>
-        e.id === entryId ? { ...e, [col]: iso } : e
+        e.id === entryId
+          ? { ...e, [col]: iso, ...(field === "out" ? { auto_clocked_out: false } : {}) }
+          : e
       );
       setEntries(updated);
       onEntriesChanged(updated);
@@ -390,10 +395,18 @@ function SessionModal({
                               value={outTime}
                               onChange={(e) => setEditTimes((prev) => ({ ...prev, [entry.id]: { ...prev[entry.id], out: e.target.value } }))}
                               onBlur={() => saveTime(entry.id, "out")}
-                              style={{ padding: "3px 8px", borderRadius: 7, border: "1.5px solid #d1d5db", fontSize: 13, fontWeight: 600 }}
+                              style={{
+                                padding: "3px 8px", borderRadius: 7, fontSize: 13, fontWeight: 600,
+                                border: entry.auto_clocked_out ? "1.5px solid #fca5a5" : "1.5px solid #d1d5db",
+                                background: entry.auto_clocked_out ? "#fee2e2" : undefined,
+                                color: entry.auto_clocked_out ? "#991b1b" : undefined,
+                              }}
                             />
-                            <span style={{ fontSize: 12, color: "#9ca3af" }}>
-                              {outSaving ? "saving…" : `(${isoToDisplayTime(entry.clocked_out_at)})`}
+                            <span
+                              style={{ fontSize: 12, color: entry.auto_clocked_out ? "#991b1b" : "#9ca3af", fontWeight: entry.auto_clocked_out ? 700 : 400 }}
+                              title={entry.auto_clocked_out ? `Auto clocked out on ${entry.session_date} — edit to correct` : undefined}
+                            >
+                              {outSaving ? "saving…" : entry.auto_clocked_out ? `⚠ Auto (${isoToDisplayTime(entry.clocked_out_at)})` : `(${isoToDisplayTime(entry.clocked_out_at)})`}
                             </span>
                           </>
                         ) : (
@@ -490,7 +503,7 @@ export default function TimesheetsPage() {
     setLoading(true);
     supabase
       .from("clock_entries")
-      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
       .gte("session_date", dateStrs[0])
       .lte("session_date", dateStrs[dateStrs.length - 1])
       .not("clocked_in_at", "is", null)
@@ -526,18 +539,19 @@ export default function TimesheetsPage() {
     return map;
   }, [entriesByEmpDay]);
 
-  // employeeId → dateStr → "green" | "yellow"
+  // employeeId → dateStr → "green" | "yellow" | "red"
   const cellColor = useMemo(() => {
-    const map = new Map<string, Map<string, "green" | "yellow">>();
+    const map = new Map<string, Map<string, "green" | "yellow" | "red">>();
     for (const [empId, dayMap] of entriesByEmpDay) {
       map.set(empId, new Map());
       for (const [dateStr, dayEntries] of dayMap) {
+        const hasAutoClockOut = dayEntries.some((e) => e.auto_clocked_out);
         const hasUnresolved = dayEntries.some(
           (e) =>
             (e.notes_in && !e.notes_in_resolved) ||
             (e.notes_out && !e.notes_out_resolved)
         );
-        map.get(empId)!.set(dateStr, hasUnresolved ? "yellow" : "green");
+        map.get(empId)!.set(dateStr, hasAutoClockOut ? "red" : hasUnresolved ? "yellow" : "green");
       }
     }
     return map;
@@ -645,8 +659,8 @@ export default function TimesheetsPage() {
                     {dateStrs.map((ds, i) => {
                       const mins = dayMins[i];
                       const color = colorMap?.get(ds);
+                      const isRed = color === "red";
                       const isYellow = color === "yellow";
-                      const isGreen = color === "green";
                       // Show button whenever entries exist, even if computed mins ≤ 0 (e.g. after editing times)
                       const hasData = !!color;
 
@@ -659,9 +673,9 @@ export default function TimesheetsPage() {
                               onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), dateStr: ds, dateLabel })}
                               style={{
                                 display: "inline-block",
-                                background: isYellow ? "#fef3c7" : "#dcfce7",
-                                color: isYellow ? "#92400e" : "#15803d",
-                                border: `1.5px solid ${isYellow ? "#fde68a" : "#86efac"}`,
+                                background: isRed ? "#fee2e2" : isYellow ? "#fef3c7" : "#dcfce7",
+                                color: isRed ? "#991b1b" : isYellow ? "#92400e" : "#15803d",
+                                border: `1.5px solid ${isRed ? "#fca5a5" : isYellow ? "#fde68a" : "#86efac"}`,
                                 borderRadius: 8, padding: "4px 10px",
                                 fontWeight: 700, fontSize: 13, minWidth: 48,
                                 cursor: "pointer",

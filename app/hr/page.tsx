@@ -261,7 +261,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule";
+  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
   const [pinRevealed, setPinRevealed] = useState(false);
 
@@ -1359,6 +1359,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             <TabButton active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
               Schedule
             </TabButton>
+            <TabButton active={activeTab === "leave"} onClick={() => setActiveTab("leave")}>
+              Leave
+            </TabButton>
           </div>
 
           {/* Right content */}
@@ -1969,6 +1972,17 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   <div className="subtle">Loading employee data…</div>
                 )}
               </div>
+            ) : null}
+
+            {activeTab === "leave" ? (
+              employee?.id ? (
+                <EmployeeLeaveTab employeeId={employee.id} />
+              ) : (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                  <div style={{ fontWeight: 950, fontSize: 18 }}>Leave</div>
+                  <div className="subtle" style={{ marginTop: 6 }}>No employee record linked to your account.</div>
+                </div>
+              )
             ) : null}
           </div>
         </div>
@@ -4616,6 +4630,269 @@ function EmployeePerformanceReviewsTab({
       ) : null}
 
       {modal}
+    </div>
+  );
+}
+
+// ─── Employee Leave Tab ───────────────────────────────────────────────────────
+
+type LeaveBalanceRow = {
+  id: string;
+  employee_id: string;
+  year: number;
+  pto_active: boolean;
+  pto_plan_hours: number;
+  pto_weeks: number;
+  sick_frontloaded: boolean;
+  sick_annual_cap: number;
+  pto_initial_balance: number;
+  sick_initial_balance: number;
+  sick_carryover: number;
+  pto_carryover: number;
+};
+
+type LeaveEntryRow = {
+  id: string;
+  employee_id: string;
+  entry_type: string;
+  start_date: string;
+  end_date: string;
+  hours: number;
+  notes: string | null;
+  created_at: string;
+};
+
+type LeaveRequestRow = {
+  id: string;
+  employee_id: string;
+  entry_type: string;
+  start_date: string;
+  end_date: string;
+  hours: number;
+  notes: string | null;
+  status: "pending" | "approved" | "denied";
+  review_notes: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+};
+
+type ClockHoursRow = { clocked_in_at: string; clocked_out_at: string };
+
+const MAX_LEAVE_BALANCE = 80;
+
+function hoursWorked(rows: ClockHoursRow[]): number {
+  let ms = 0;
+  for (const r of rows) {
+    if (r.clocked_in_at && r.clocked_out_at)
+      ms += new Date(r.clocked_out_at).getTime() - new Date(r.clocked_in_at).getTime();
+  }
+  return ms / 3_600_000;
+}
+
+function calcSickBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entries: LeaveEntryRow[]) {
+  const worked = hoursWorked(clockRows);
+  const accrued = bal.sick_frontloaded ? bal.sick_annual_cap : Math.min(Math.floor(worked / 30), bal.sick_annual_cap);
+  const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + e.hours, 0);
+  const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + e.hours, 0);
+  return Math.min(bal.sick_carryover + bal.sick_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
+}
+
+function calcPtoBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entries: LeaveEntryRow[]) {
+  if (!bal.pto_active || !bal.pto_plan_hours || !bal.pto_weeks) return 0;
+  const worked = hoursWorked(clockRows);
+  const rate = (bal.pto_weeks * 40) / bal.pto_plan_hours;
+  const accrued = Math.min(Math.floor(worked / rate), bal.pto_plan_hours);
+  const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + e.hours, 0);
+  const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + e.hours, 0);
+  return Math.min(bal.pto_carryover + bal.pto_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
+}
+
+function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
+  const year = new Date().getFullYear();
+
+  const [balance, setBalance] = useState<LeaveBalanceRow | null>(null);
+  const [clockRows, setClockRows] = useState<ClockHoursRow[]>([]);
+  const [entries, setEntries] = useState<LeaveEntryRow[]>([]);
+  const [requests, setRequests] = useState<LeaveRequestRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitBusy, setSubmitBusy] = useState(false);
+  const [submitMsg, setSubmitMsg] = useState("");
+
+  const [reqType, setReqType] = useState<"sick_paid" | "pto" | "unpaid">("sick_paid");
+  const [reqStart, setReqStart] = useState("");
+  const [reqEnd, setReqEnd] = useState("");
+  const [reqHours, setReqHours] = useState("");
+  const [reqNotes, setReqNotes] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const yearStart = `${year}-01-01`;
+      const yearEnd = `${year}-12-31`;
+
+      const [{ data: balData }, { data: clockData }, { data: entryData }, { data: reqData }] = await Promise.all([
+        supabase.from("hr_leave_balances").select("*").eq("employee_id", employeeId).eq("year", year).maybeSingle(),
+        supabase.from("clock_entries").select("clocked_in_at, clocked_out_at").eq("employee_id", employeeId).gte("session_date", yearStart).lte("session_date", yearEnd).not("clocked_in_at", "is", null).not("clocked_out_at", "is", null),
+        supabase.from("hr_leave_entries").select("*").eq("employee_id", employeeId).gte("start_date", yearStart).lte("end_date", yearEnd),
+        supabase.from("hr_leave_requests").select("*").eq("employee_id", employeeId).order("created_at", { ascending: false }),
+      ]);
+
+      setBalance(balData ?? null);
+      setClockRows((clockData ?? []) as ClockHoursRow[]);
+      setEntries((entryData ?? []) as LeaveEntryRow[]);
+      setRequests((reqData ?? []) as LeaveRequestRow[]);
+      setLoading(false);
+    })();
+  }, [employeeId, year]);
+
+  async function submitRequest() {
+    if (!reqStart || !reqEnd || !reqHours) { setSubmitMsg("Please fill in all required fields."); return; }
+    const hrs = parseFloat(reqHours);
+    if (isNaN(hrs) || hrs <= 0) { setSubmitMsg("Hours must be a positive number."); return; }
+    setSubmitBusy(true);
+    setSubmitMsg("");
+    const { error } = await supabase.from("hr_leave_requests").insert({
+      employee_id: employeeId,
+      entry_type: reqType,
+      start_date: reqStart,
+      end_date: reqEnd,
+      hours: hrs,
+      notes: reqNotes.trim() || null,
+      status: "pending",
+    });
+    setSubmitBusy(false);
+    if (error) { setSubmitMsg(error.message); return; }
+    const { data: fresh } = await supabase.from("hr_leave_requests").select("*").eq("employee_id", employeeId).order("created_at", { ascending: false });
+    setRequests((fresh ?? []) as LeaveRequestRow[]);
+    setReqType("sick_paid"); setReqStart(""); setReqEnd(""); setReqHours(""); setReqNotes("");
+    setSubmitMsg("Request submitted successfully.");
+  }
+
+  const sickBal = balance ? calcSickBalance(balance, clockRows, entries) : null;
+  const ptoBal = balance ? calcPtoBalance(balance, clockRows, entries) : null;
+
+  const statusBadge = (s: string) => {
+    const colors: Record<string, { bg: string; color: string; border: string }> = {
+      pending: { bg: "#fef3c7", color: "#92400e", border: "#fde68a" },
+      approved: { bg: "#dcfce7", color: "#15803d", border: "#86efac" },
+      denied: { bg: "#fee2e2", color: "#991b1b", border: "#fca5a5" },
+    };
+    const c = colors[s] ?? { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb" };
+    return (
+      <span style={{ padding: "2px 10px", borderRadius: 999, fontSize: 12, fontWeight: 700, background: c.bg, color: c.color, border: `1.5px solid ${c.border}` }}>
+        {s.charAt(0).toUpperCase() + s.slice(1)}
+      </span>
+    );
+  };
+
+  const entryTypeLabel = (t: string) =>
+    t === "sick_paid" ? "Sick (Paid)" : t === "pto" ? "PTO" : t === "unpaid" ? "Unpaid" : t;
+
+  if (loading) return <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}><div className="subtle">Loading…</div></div>;
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Balance cards */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+        <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>Leave Balances — {year}</div>
+        {!balance ? (
+          <div className="subtle">No leave balance record for this year. Contact your administrator.</div>
+        ) : (
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 200px", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 18px", background: "#f0fdf4" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#15803d", marginBottom: 4 }}>Sick Leave</div>
+              <div style={{ fontSize: 28, fontWeight: 900, color: "#111827" }}>{sickBal !== null ? sickBal.toFixed(1) : "—"}</div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>hours available</div>
+            </div>
+            <div style={{ flex: "1 1 200px", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 18px", background: balance.pto_active ? "#f0f9ff" : "#f9fafb" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: balance.pto_active ? "#0369a1" : "#9ca3af", marginBottom: 4 }}>PTO</div>
+              <div style={{ fontSize: 28, fontWeight: 900, color: balance.pto_active ? "#111827" : "#9ca3af" }}>
+                {balance.pto_active ? (ptoBal !== null ? ptoBal.toFixed(1) : "—") : "Inactive"}
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                {balance.pto_active ? "hours available" : "Not yet activated by admin"}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Request form */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+        <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>Request Leave</div>
+        <div style={{ display: "grid", gap: 12, maxWidth: 520 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Type</div>
+            <select
+              className="input"
+              value={reqType}
+              onChange={(e) => setReqType(e.target.value as "sick_paid" | "pto" | "unpaid")}
+              style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px", background: "white" }}
+            >
+              <option value="sick_paid">Sick (Paid)</option>
+              <option value="pto">PTO</option>
+              <option value="unpaid">Unpaid</option>
+            </select>
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 180px" }}>
+              <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Start Date</div>
+              <input type="date" className="input" value={reqStart} onChange={(e) => setReqStart(e.target.value)}
+                style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+            </div>
+            <div style={{ flex: "1 1 180px" }}>
+              <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>End Date</div>
+              <input type="date" className="input" value={reqEnd} onChange={(e) => setReqEnd(e.target.value)}
+                style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Hours</div>
+            <input type="number" className="input" value={reqHours} onChange={(e) => setReqHours(e.target.value)}
+              min={0.5} step={0.5} placeholder="e.g. 8"
+              style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Notes (optional)</div>
+            <textarea className="input" value={reqNotes} onChange={(e) => setReqNotes(e.target.value)}
+              placeholder="Any additional info for your manager…"
+              style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", minHeight: 72 }} />
+          </div>
+          {submitMsg && <div style={{ fontSize: 13, color: submitMsg.includes("success") ? "#15803d" : "#991b1b" }}>{submitMsg}</div>}
+          <div>
+            <button className="btn btn-primary" onClick={() => void submitRequest()} disabled={submitBusy}>
+              {submitBusy ? "Submitting…" : "Submit Request"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Request history */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+        <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>My Requests</div>
+        {requests.length === 0 ? (
+          <div className="subtle">(No leave requests yet.)</div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {requests.map((r) => (
+              <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  {statusBadge(r.status)}
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{entryTypeLabel(r.entry_type)}</span>
+                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date} – {r.end_date} · {r.hours}h</span>
+                </div>
+                {r.notes && <div className="subtle" style={{ marginTop: 6, fontSize: 13 }}>{r.notes}</div>}
+                {r.review_notes && (
+                  <div style={{ marginTop: 6, fontSize: 13, color: "#6b7280", fontStyle: "italic" }}>
+                    Admin note: {r.review_notes}
+                  </div>
+                )}
+                <div className="subtle" style={{ marginTop: 4, fontSize: 11 }}>Requested {new Date(r.created_at).toLocaleDateString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

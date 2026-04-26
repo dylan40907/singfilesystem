@@ -273,6 +273,22 @@ export default function ClockPage() {
     const allSessions = buildSessions((blocks as BlockRow[]) ?? []);
     setSessions(allSessions);
 
+    // Auto-clock-out any open entries from previous days
+    const { data: openPrevEntries } = await supabase
+      .from("clock_entries")
+      .select("id, session_date")
+      .eq("employee_id", emp.id)
+      .is("clocked_out_at", null)
+      .not("clocked_in_at", "is", null)
+      .lt("session_date", today);
+
+    for (const e of openPrevEntries ?? []) {
+      await supabase
+        .from("clock_entries")
+        .update({ clocked_out_at: new Date().toISOString(), auto_clocked_out: true })
+        .eq("id", e.id);
+    }
+
     // Fetch ALL clock entries for this employee today to determine session state
     const { data: allEntries } = await supabase
       .from("clock_entries")
