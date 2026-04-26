@@ -221,3 +221,101 @@ a {
   padding: 0;
   font: inherit;
 }
+
+/* ── Responsive utilities ── */
+@media (max-width: 640px) {
+  .hide-mobile { display: none !important; }
+  .hr-page-grid { grid-template-columns: 1fr !important; }
+}
+@media (min-width: 641px) {
+  .hide-desktop { display: none !important; }
+  .hr-page-mobile-tabs { display: none !important; }
+}
+
+/* ── Hamburger button ── */
+.nav-hamburger-btn {
+  background: none;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+}
+.nav-hamburger-btn span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: #374151;
+  border-radius: 2px;
+  transition: opacity 0.15s;
+}
+
+/* ── Mobile nav dropdown panel ── */
+.nav-mobile-panel {
+  border-top: 1px solid #e5e7eb;
+  padding: 8px 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-mobile-link {
+  display: block;
+  padding: 12px 8px;
+  font-weight: 700;
+  font-size: 15px;
+  color: #111827;
+  border-radius: 10px;
+  text-decoration: none;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.nav-mobile-link:hover { background: #f9fafb; }
+.nav-mobile-link.active {
+  color: #e6178d;
+  background: rgba(230,23,141,0.06);
+  border-color: rgba(230,23,141,0.35);
+}
+.nav-mobile-divider {
+  height: 1px;
+  background: #f3f4f6;
+  margin: 6px 0;
+}
+
+/* ── HR page horizontal mobile tabs ── */
+.hr-page-mobile-tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  display: flex;
+  gap: 6px;
+  padding: 2px 0 10px;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 4px;
+}
+.hr-page-mobile-tabs::-webkit-scrollbar { display: none; }
+
+.hr-mobile-tab {
+  flex-shrink: 0;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1.5px solid #e5e7eb;
+  background: white;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  color: #374151;
+}
+.hr-mobile-tab:hover { background: #f9fafb; }
+.hr-mobile-tab.active {
+  background: rgba(0,0,0,0.05);
+  border-color: #9ca3af;
+  color: #111827;
+}

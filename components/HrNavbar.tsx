@@ -41,6 +41,7 @@ export default function HrNavbar() {
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const isActive = !!profile?.is_active;
   const isAdmin = isActive && profile?.role === "admin";
@@ -48,6 +49,8 @@ export default function HrNavbar() {
 
   // ✅ HR access: admin OR supervisor
   const canUseHr = !!sessionEmail && isActive && (isAdmin || isSupervisor);
+
+  useEffect(() => { setMenuOpen(false); }, [pathname]);
 
   const pathnameRef = useRef(pathname);
   useEffect(() => {
@@ -115,78 +118,88 @@ export default function HrNavbar() {
     return "No HR access";
   }, [sessionEmail, isActive, isAdmin, isSupervisor]);
 
+  const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
+
+  const adminLinks = canUseHr && isAdmin ? [
+    { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
+    { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
+    { href: "/admin/hr/org-chart", label: "Org Chart", tab: "org-chart" },
+    { href: "/admin/hr/employee-meetings", label: "Meetings", tab: "employee-meetings" },
+    { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
+    { href: "/admin/hr/timesheets", label: "Timesheets", tab: "timesheets" },
+    { href: "/admin/hr/leave", label: "Leave", tab: "leave" },
+    { href: "/admin/hr/settings", label: "Settings", tab: "settings" },
+  ] : canUseHr && isSupervisor ? [
+    { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
+  ] : [];
+
   return (
-    <div
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 50,
-        background: "white",
-        borderBottom: "1px solid #e5e7eb",
-      }}
-    >
+    <div style={{ position: "sticky", top: 0, zIndex: 50, background: "white", borderBottom: "1px solid #e5e7eb" }}>
       <div className="container">
         <div className="row-between" style={{ padding: "12px 0" }}>
+          {/* Logo + title */}
           <div className="row" style={{ gap: 14 }}>
-            <Link
-              href={hrHomeHref}
-              aria-label="Go to HR home"
-              style={{ display: "block", width: 48, height: 34, position: "relative" }}
-            >
-              <Image
-                src="/logo.png"
-                alt="SING Portal logo"
-                fill
-                priority
-                sizes="48px"
-                style={{ objectFit: "contain" }}
-              />
+            <Link href={hrHomeHref} aria-label="Go to HR home" style={{ display: "block", width: 48, height: 34, position: "relative" }}>
+              <Image src="/logo.png" alt="SING Portal logo" fill priority sizes="48px" style={{ objectFit: "contain" }} />
             </Link>
-
             <div>
               <div style={{ fontWeight: 800, fontSize: 15 }}>HR Portal</div>
               <div className="subtle">{subtitle}</div>
             </div>
 
-            {/* ✅ Admin sees all tabs; Supervisor sees Attendance + Performance Review */}
+            {/* Desktop tabs */}
             {canUseHr && (
-              <div className="row" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
-                {isAdmin ? (
-                  <>
-                    <NavLink href="/admin/hr/employees" label="Employees" active={activeTab === "employees"} />
-                    <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
-                    <NavLink href="/admin/hr/org-chart" label="Org Chart" active={activeTab === "org-chart"} />
-                    <NavLink
-                      href="/admin/hr/employee-meetings"
-                      label="Meetings"
-                      active={activeTab === "employee-meetings"}
-                    />
-                    <NavLink href="/admin/hr/schedule" label="Schedule" active={activeTab === "schedule"} />
-                    <NavLink href="/admin/hr/timesheets" label="Timesheets" active={activeTab === "timesheets"} />
-                    <NavLink href="/admin/hr/leave" label="Leave" active={activeTab === "leave"} />
-                    <NavLink href="/admin/hr/settings" label="Settings" active={activeTab === "settings"} />
-                  </>
-                ) : (
-                  <>
-                    <NavLink href="/admin/hr/attendance" label="Attendance" active={activeTab === "attendance"} />
-                  </>
-                )}
+              <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
+                {adminLinks.map((l) => (
+                  <NavLink key={l.tab} href={l.href} label={l.label} active={activeTab === l.tab} />
+                ))}
               </div>
             )}
           </div>
 
-          <div className="row" style={{ gap: 10 }}>
-            <button className="btn" onClick={() => router.push("/")}>
-              Curriculum
-            </button>
-
+          {/* Desktop right controls */}
+          <div className="row hide-mobile" style={{ gap: 10 }}>
+            <button className="btn" onClick={() => router.push("/")}>Curriculum</button>
             {sessionEmail ? (
-              <span className="badge badge-pink">{(profile?.full_name ?? "").trim() || sessionEmail}</span>
+              <span className="badge badge-pink">{displayName}</span>
             ) : (
               <span className="subtle">Not signed in</span>
             )}
           </div>
+
+          {/* Mobile hamburger */}
+          <button
+            className="nav-hamburger-btn hide-desktop"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+          >
+            <span style={{ opacity: menuOpen ? 0.4 : 1 }} />
+            <span />
+            <span style={{ opacity: menuOpen ? 0.4 : 1 }} />
+          </button>
         </div>
+
+        {/* Mobile dropdown */}
+        {menuOpen && (
+          <div className="nav-mobile-panel hide-desktop">
+            {adminLinks.map((l) => (
+              <Link key={l.tab} href={l.href} className={`nav-mobile-link${activeTab === l.tab ? " active" : ""}`}>
+                {l.label}
+              </Link>
+            ))}
+            <div className="nav-mobile-divider" />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px 0", gap: 10 }}>
+              {sessionEmail ? (
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>
+              ) : (
+                <span className="subtle">Not signed in</span>
+              )}
+              <button className="btn" onClick={() => { setMenuOpen(false); router.push("/"); }} style={{ flexShrink: 0 }}>
+                Curriculum
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

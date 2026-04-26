@@ -63,6 +63,7 @@ export default function Navbar() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const isActive = !!profile?.is_active;
 
@@ -141,6 +142,9 @@ export default function Navbar() {
     }
   }
 
+  // Close menu on route change
+  useEffect(() => { setMenuOpen(false); }, [pathname]);
+
   useEffect(() => {
     // Initial session load once
     supabase.auth
@@ -178,66 +182,39 @@ export default function Navbar() {
     return "home";
   }, [pathname]);
 
+  const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
+
   return (
-    <div
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 50,
-        background: "white",
-        borderBottom: "1px solid #e5e7eb",
-      }}
-    >
+    <div style={{ position: "sticky", top: 0, zIndex: 50, background: "white", borderBottom: "1px solid #e5e7eb" }}>
       <div className="container">
         <div className="row-between" style={{ padding: "12px 0" }}>
+          {/* Logo + title */}
           <div className="row" style={{ gap: 14 }}>
-            <Link
-              href="/"
-              aria-label="Go to home"
-              style={{
-                display: "block",
-                width: 48,
-                height: 34,
-                position: "relative",
-              }}
-            >
-              <Image
-                src="/logo.png"
-                alt="SING Portal logo"
-                fill
-                priority
-                sizes="48px"
-                style={{ objectFit: "contain" }}
-              />
+            <Link href="/" aria-label="Go to home" style={{ display: "block", width: 48, height: 34, position: "relative" }}>
+              <Image src="/logo.png" alt="SING Portal logo" fill priority sizes="48px" style={{ objectFit: "contain" }} />
             </Link>
-
             <div>
               <div style={{ fontWeight: 800, fontSize: 15 }}>SING Portal</div>
               <div className="subtle">Files + Lesson Plans</div>
             </div>
 
-            <div className="row" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
+            {/* Desktop nav links */}
+            <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
               <NavLink href="/" label="Home" active={activeTab === "home"} />
               {showMyPlans && <NavLink href="/my-plans" label="My Plans" active={activeTab === "my-plans"} />}
               {showTeachers && <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />}
-              {showReviewQueue && (
-                <NavLink href="/review-queue" label="Review Queue" active={activeTab === "review-queue"} />
-              )}
-              {showSupervisors && (
-                <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />
-              )}
+              {showReviewQueue && <NavLink href="/review-queue" label="Review Queue" active={activeTab === "review-queue"} />}
+              {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
             </div>
           </div>
 
-          <div className="row" style={{ gap: 10 }}>
+          {/* Desktop right controls */}
+          <div className="row hide-mobile" style={{ gap: 10 }}>
             {sessionEmail ? (
               <>
-                <span className="badge badge-pink">
-                  {(profile?.full_name ?? "").trim() || sessionEmail}
-                </span>
-
+                <span className="badge badge-pink">{displayName}</span>
                 <button className="btn btn-primary" onClick={signOut} disabled={signingOut}>
                   {signingOut ? "Signing out..." : "Sign out"}
                 </button>
@@ -246,7 +223,42 @@ export default function Navbar() {
               <span className="subtle">Not signed in</span>
             )}
           </div>
+
+          {/* Mobile hamburger */}
+          <button
+            className="nav-hamburger-btn hide-desktop"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+          >
+            <span style={{ opacity: menuOpen ? 0.4 : 1 }} />
+            <span />
+            <span style={{ opacity: menuOpen ? 0.4 : 1 }} />
+          </button>
         </div>
+
+        {/* Mobile dropdown */}
+        {menuOpen && (
+          <div className="nav-mobile-panel hide-desktop">
+            <Link href="/" className={`nav-mobile-link${activeTab === "home" ? " active" : ""}`}>Home</Link>
+            {showMyPlans && <Link href="/my-plans" className={`nav-mobile-link${activeTab === "my-plans" ? " active" : ""}`}>My Plans</Link>}
+            {showTeachers && <Link href="/teachers" className={`nav-mobile-link${activeTab === "teachers" ? " active" : ""}`}>Teachers</Link>}
+            {showReviewQueue && <Link href="/review-queue" className={`nav-mobile-link${activeTab === "review-queue" ? " active" : ""}`}>Review Queue</Link>}
+            {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
+            {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
+            {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
+            <div className="nav-mobile-divider" />
+            {sessionEmail ? (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px 0" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>
+                <button className="btn btn-primary" onClick={signOut} disabled={signingOut} style={{ flexShrink: 0, marginLeft: 12 }}>
+                  {signingOut ? "Signing out..." : "Sign out"}
+                </button>
+              </div>
+            ) : (
+              <span className="subtle" style={{ padding: "8px 8px 0" }}>Not signed in</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1337,21 +1337,31 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>
-          {/* Left nav */}
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, display: "grid", gap: 10 }}>
+        {/* Mobile horizontal tab strip */}
+        <div className="hr-page-mobile-tabs">
+          <button className={`hr-mobile-tab${activeTab === "attendance" ? " active" : ""}`} onClick={() => setActiveTab("attendance")}>Attendance</button>
+          <button className={`hr-mobile-tab${activeTab === "reviews" ? " active" : ""}`} onClick={() => setActiveTab("reviews")}>Reviews</button>
+          {isSupervisor && <button className={`hr-mobile-tab${activeTab === "meetings" ? " active" : ""}`} onClick={() => setActiveTab("meetings")}>Meetings</button>}
+          {canReviewOthers && <button className={`hr-mobile-tab${activeTab === "employeeReviews" ? " active" : ""}`} onClick={() => setActiveTab("employeeReviews")}>Employee Reviews</button>}
+          <button className={`hr-mobile-tab${activeTab === "schedule" ? " active" : ""}`} onClick={() => setActiveTab("schedule")}>Schedule</button>
+          <button className={`hr-mobile-tab${activeTab === "leave" ? " active" : ""}`} onClick={() => setActiveTab("leave")}>Leave</button>
+        </div>
+
+        <div className="hr-page-grid" style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>
+          {/* Left nav — desktop only */}
+          <div className="hide-mobile" style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, display: "grid", gap: 10 }}>
             <TabButton active={activeTab === "attendance"} onClick={() => setActiveTab("attendance")}>
               Attendance
             </TabButton>
             <TabButton active={activeTab === "reviews"} onClick={() => setActiveTab("reviews")}>
               Performance Reviews
             </TabButton>
-			{isSupervisor ? (
+            {isSupervisor ? (
               <TabButton active={activeTab === "meetings"} onClick={() => setActiveTab("meetings")}>
                 Meetings
               </TabButton>
             ) : null}
-			{canReviewOthers ? (
+            {canReviewOthers ? (
               <TabButton active={activeTab === "employeeReviews"} onClick={() => setActiveTab("employeeReviews")}>
                 Employee Reviews
               </TabButton>
