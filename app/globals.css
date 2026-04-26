@@ -319,3 +319,24 @@ a {
   border-color: #9ca3af;
   color: #111827;
 }
+
+/* ── Date input pair grid — 2 columns on desktop, stacked on mobile ── */
+.date-pair-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  min-width: 0;
+}
+.date-pair-grid > div {
+  min-width: 0;
+  overflow: hidden;
+}
+.date-pair-grid input[type="date"] {
+  min-width: 0;
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .date-pair-grid {
+    grid-template-columns: 1fr;
+  }
+}

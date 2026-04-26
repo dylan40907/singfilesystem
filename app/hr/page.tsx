@@ -4844,16 +4844,16 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
               <option value="unpaid">Unpaid</option>
             </select>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="date-pair-grid">
             <div>
               <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Start Date</div>
               <input type="date" className="input" value={reqStart} onChange={(e) => setReqStart(e.target.value)}
-                style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
             </div>
             <div>
               <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>End Date</div>
               <input type="date" className="input" value={reqEnd} onChange={(e) => setReqEnd(e.target.value)}
-                style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
             </div>
           </div>
           <div>
