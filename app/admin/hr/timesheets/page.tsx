@@ -11,8 +11,6 @@ type Employee = {
   legal_middle_name: string | null;
   legal_last_name: string;
   nicknames: string[] | null;
-  rate_type: string | null;
-  rate: number | null;
   is_active: boolean;
 };
 
@@ -20,7 +18,7 @@ type ClockEntry = {
   id: string;
   employee_id: string;
   session_date: string;
-  session_start: string; // HH:MM:SS scheduled
+  session_start: string;
   session_end: string;
   clocked_in_at: string | null;
   clocked_out_at: string | null;
@@ -29,6 +27,30 @@ type ClockEntry = {
   notes_out: string | null;
   notes_in_resolved: boolean;
   notes_out_resolved: boolean;
+};
+
+type LeaveEntry = {
+  id: string;
+  employee_id: string;
+  entry_type: string;
+  start_date: string;
+  end_date: string;
+  hours: number;
+  notes: string | null;
+};
+
+type ClockEditRequest = {
+  id: string;
+  clock_entry_id: string;
+  employee_id: string;
+  field: "clocked_in_at" | "clocked_out_at";
+  old_value: string | null;
+  new_value: string;
+  reason: string;
+  status: "pending" | "approved" | "denied";
+  created_at: string;
+  employee_name?: string;
+  session_date?: string;
 };
 
 type ShiftBlock = {
@@ -47,6 +69,12 @@ type ModalTarget = {
   dateLabel: string;
 };
 
+type LeaveModalTarget = {
+  employeeName: string;
+  dateLabel: string;
+  entries: LeaveEntry[];
+};
+
 // ─── Pay period helpers ───────────────────────────────────────────────────────
 
 const ANCHOR_MS = Date.UTC(2026, 2, 30);
@@ -58,7 +86,6 @@ function getPeriodIndex(date: Date): number {
   return Math.floor((utc - ANCHOR_MS) / MS_PER_PERIOD);
 }
 function getPeriodStart(index: number): Date {
-  // Use UTC noon so that local date methods in any timezone return the correct calendar date
   return new Date(ANCHOR_MS + index * MS_PER_PERIOD + 12 * 3600000);
 }
 function getWorkingDays(periodStart: Date): Date[] {
@@ -70,7 +97,6 @@ function getWorkingDays(periodStart: Date): Date[] {
   return days;
 }
 function toDateStr(d: Date): string {
-  // Use local date methods so dates match the employee's local session_date
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function formatPeriodLabel(s: Date): string {
@@ -85,6 +111,12 @@ const DAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Mon", "Tue", "Wed", "Thu"
 function minsToHHMM(m: number): string {
   if (m < 1) return "--";
   return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+}
+function minsToHDecimal(m: number): string {
+  if (m <= 0) return "--";
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  return min === 0 ? `${h}h` : `${h}h ${min}m`;
 }
 function getDisplayName(e: Employee): string {
   const nick = Array.isArray(e.nicknames) && e.nicknames.length > 0 ? e.nicknames[0] : null;
@@ -105,7 +137,6 @@ function buildISO(dateStr: string, timeHHMMSS: string): string {
 }
 function entryPaidMins(e: ClockEntry): number {
   if (!e.clocked_in_at || !e.clocked_out_at) return 0;
-  // Round half-up: ≥30 seconds remainder → next minute, <30 → current minute
   const totalSeconds = Math.round((new Date(e.clocked_out_at).getTime() - new Date(e.clocked_in_at).getTime()) / 1000);
   return Math.round(totalSeconds / 60);
 }
@@ -125,6 +156,9 @@ function fmtScheduled(hms: string): string {
   const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
   const ampm = h < 12 ? "AM" : "PM";
   return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+function leaveTypeLabel(t: string): string {
+  return t === "sick_paid" ? "Sick" : t === "pto" ? "PTO" : t === "unpaid" ? "Unpaid" : t;
 }
 
 // ─── Session Detail Modal ─────────────────────────────────────────────────────
@@ -184,7 +218,6 @@ function SessionModal({
 
     if (!sched) { setShiftLoading((prev) => { const n = new Set(prev); n.delete(key); return n; }); return; }
 
-    // Fetch ALL blocks for this employee+day (including lunch_break separators)
     const { data: allBlocks } = await supabase
       .from("schedule_blocks")
       .select("id, start_time, end_time, block_type, label, room_id, schedule_rooms(name)")
@@ -193,7 +226,6 @@ function SessionModal({
       .eq("day_of_week", dow)
       .order("start_time");
 
-    // Group into sessions using the same logic as the clock page
     type RawBlock = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; room_id: string; schedule_rooms: { name: string } | { name: string }[] | null };
     const sorted = [...((allBlocks ?? []) as unknown as RawBlock[])].sort(
       (a, b) => a.start_time.localeCompare(b.start_time)
@@ -214,7 +246,6 @@ function SessionModal({
       sessions.push({ start: cur[0].start_time, end: cur[cur.length - 1].end_time, blocks: cur });
     }
 
-    // Find the session matching this clock entry
     const matchedSession = sessions.find((s) => s.start === entry.session_start) ?? null;
     const sessionBlocks = matchedSession ? matchedSession.blocks : [];
 
@@ -236,7 +267,6 @@ function SessionModal({
     const timeVal = editTimes[entryId]?.[field];
     if (!timeVal) return;
     const col = field === "in" ? "clocked_in_at" : "clocked_out_at";
-    // Use the LOCAL date from the original ISO so the rebuilt timestamp matches what was displayed
     const originalIso = field === "in" ? entry.clocked_in_at : entry.clocked_out_at;
     let baseDateStr = entry.session_date;
     if (originalIso) {
@@ -244,7 +274,6 @@ function SessionModal({
       baseDateStr = `${orig.getFullYear()}-${String(orig.getMonth() + 1).padStart(2, "0")}-${String(orig.getDate()).padStart(2, "0")}`;
     }
     const iso = buildISO(baseDateStr, timeVal);
-    // Skip save if the time didn't actually change (prevents accidental onBlur saves)
     if (originalIso && isoToTimeInput(originalIso) === timeVal) return;
     setSaving((prev) => new Set(prev).add(entryId + field));
     const updatePayload: Record<string, unknown> = { [col]: iso };
@@ -266,7 +295,7 @@ function SessionModal({
     const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
     const col = field === "in" ? "notes_in_resolved" : "notes_out_resolved";
-    const newVal = !(entry as any)[col];
+    const newVal = !(entry as Record<string, unknown>)[col];
     const { error } = await supabase.from("clock_entries").update({ [col]: newVal }).eq("id", entryId);
     if (!error) {
       const updated = entries.map((e) =>
@@ -295,7 +324,6 @@ function SessionModal({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
         <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 16 }}>{target.employeeName}</div>
@@ -304,7 +332,6 @@ function SessionModal({
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
         </div>
 
-        {/* Sessions */}
         <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
           {entries.length === 0 && (
             <div style={{ color: "#6b7280", fontSize: 14 }}>No clock entries for this day.</div>
@@ -320,16 +347,17 @@ function SessionModal({
             const blocksLoading = shiftLoading.has(entry.id);
             const hasNoteIn = !!entry.notes_in;
             const hasNoteOut = !!entry.notes_out;
+            const isOpen = !entry.clocked_out_at;
 
             return (
               <div key={entry.id} style={{ border: "1.5px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
-                {/* Session header */}
                 <div style={{ padding: "10px 14px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div style={{ fontWeight: 700, fontSize: 13, color: "#374151" }}>
                     Session {idx + 1} — scheduled {fmtScheduled(entry.session_start)} – {fmtScheduled(entry.session_end)}
+                    {isOpen && <span style={{ marginLeft: 8, color: "#0369a1", fontWeight: 800, fontSize: 12 }}>● Currently clocked in</span>}
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#6366f1" }}>
-                    {mins > 0 ? minsToHHMM(mins) : "—"}
+                  <div style={{ fontSize: 13, fontWeight: 700, color: isOpen ? "#0369a1" : "#6366f1" }}>
+                    {isOpen ? "Active" : mins > 0 ? minsToHHMM(mins) : "—"}
                   </div>
                 </div>
 
@@ -410,7 +438,7 @@ function SessionModal({
                             </span>
                           </>
                         ) : (
-                          <span style={{ fontSize: 13, color: "#9ca3af" }}>Not clocked out</span>
+                          <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 700 }}>Still clocked in</span>
                         )}
                       </div>
                       {hasNoteOut && (
@@ -436,7 +464,6 @@ function SessionModal({
                     </div>
                   </div>
 
-                  {/* Shift details toggle */}
                   <button
                     onClick={() => toggleShiftDetails(entry)}
                     style={{ alignSelf: "flex-start", background: "none", border: "1px solid #e5e7eb", borderRadius: 7, padding: "4px 12px", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
@@ -467,10 +494,182 @@ function SessionModal({
           })}
         </div>
 
-        {/* Footer total */}
         <div style={{ padding: "12px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Total paid time</span>
           <span style={{ fontSize: 17, fontWeight: 900, color: "#111827" }}>{minsToHHMM(totalMins)}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Leave Detail Modal ───────────────────────────────────────────────────────
+
+function LeaveModal({ target, onClose }: { target: LeaveModalTarget; onClose: () => void }) {
+  return (
+    <>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }} onClick={onClose} />
+      <div
+        style={{
+          position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+          zIndex: 301, background: "white", borderRadius: 16,
+          boxShadow: "0 8px 40px rgba(0,0,0,0.2)",
+          width: "min(420px, 95vw)", maxHeight: "80vh", overflowY: "auto",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{target.employeeName}</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>{target.dateLabel} — Leave</div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
+          {target.entries.map((e) => (
+            <div key={e.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "10px 14px" }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{leaveTypeLabel(e.entry_type)}</div>
+              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>
+                {e.entry_type === "unpaid"
+                  ? `${Math.round(Number(e.hours))} day${Math.round(Number(e.hours)) !== 1 ? "s" : ""}`
+                  : `${Number(e.hours)}h`}
+              </div>
+              {e.notes && <div style={{ fontSize: 13, color: "#374151", marginTop: 4, fontStyle: "italic" }}>{e.notes}</div>}
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ─── Clock Edit Requests Modal ────────────────────────────────────────────────
+
+function EditRequestsModal({
+  requests: initialRequests,
+  onClose,
+  onUpdate,
+  onGoTo,
+  onRefresh,
+}: {
+  requests: ClockEditRequest[];
+  onClose: () => void;
+  onUpdate: (reqId: string, entryId?: string, field?: string, newValue?: string) => void;
+  onGoTo: (sessionDate: string) => void;
+  onRefresh: () => void;
+}) {
+  const [requests, setRequests] = useState(initialRequests);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+
+  // Sync when parent refreshes (e.g. after Refresh button)
+  useEffect(() => { setRequests(initialRequests); }, [initialRequests]);
+
+  async function approve(req: ClockEditRequest) {
+    setBusy((p) => new Set(p).add(req.id));
+    const updateFields: Record<string, unknown> = { [req.field]: req.new_value };
+    if (req.field === "clocked_out_at") updateFields.auto_clocked_out = false;
+    const { error: updateErr } = await supabase
+      .from("clock_entries")
+      .update(updateFields)
+      .eq("id", req.clock_entry_id);
+    if (!updateErr) {
+      await supabase
+        .from("clock_edit_requests")
+        .update({ status: "approved", reviewed_at: new Date().toISOString() })
+        .eq("id", req.id);
+      onUpdate(req.id, req.clock_entry_id, req.field, req.new_value);
+    }
+    setBusy((p) => { const n = new Set(p); n.delete(req.id); return n; });
+  }
+
+  async function deny(req: ClockEditRequest) {
+    setBusy((p) => new Set(p).add(req.id));
+    await supabase
+      .from("clock_edit_requests")
+      .update({ status: "denied", reviewed_at: new Date().toISOString() })
+      .eq("id", req.id);
+    onUpdate(req.id);
+    setBusy((p) => { const n = new Set(p); n.delete(req.id); return n; });
+  }
+
+  return (
+    <>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }} onClick={onClose} />
+      <div
+        style={{
+          position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+          zIndex: 301, background: "white", borderRadius: 16,
+          boxShadow: "0 8px 40px rgba(0,0,0,0.2)",
+          width: "min(560px, 95vw)", maxHeight: "88vh", overflowY: "auto",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>Employee Clock Edit Requests</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              onClick={onRefresh}
+              style={{ padding: "4px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontSize: 13, color: "#6b7280", fontWeight: 600 }}
+            >
+              Refresh
+            </button>
+            <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
+          </div>
+        </div>
+        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
+          {requests.length === 0 ? (
+            <div style={{ color: "#6b7280", fontSize: 14 }}>No pending clock edit requests.</div>
+          ) : requests.map((req) => {
+            const isBusy = busy.has(req.id);
+            const fieldLabel = req.field === "clocked_in_at" ? "Clock In" : "Clock Out";
+            return (
+              <div key={req.id} style={{ border: "1.5px solid #e5e7eb", borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 14 }}>{req.employee_name ?? req.employee_id}</div>
+                    <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>
+                      {req.session_date} · {fieldLabel}
+                    </div>
+                    <div style={{ fontSize: 13, marginTop: 4 }}>
+                      <span style={{ color: "#6b7280", textDecoration: "line-through", marginRight: 6 }}>
+                        {req.old_value ? isoToDisplayTime(req.old_value) : "—"}
+                      </span>
+                      →
+                      <span style={{ marginLeft: 6, fontWeight: 700, color: "#111827" }}>{isoToDisplayTime(req.new_value)}</span>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#374151", marginTop: 4, fontStyle: "italic" }}>{req.reason}</div>
+                    <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>
+                      {new Date(req.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+                    {req.session_date && (
+                      <button
+                        onClick={() => onGoTo(req.session_date!)}
+                        style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #d1d5db", background: "white", color: "#374151", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                      >
+                        Go to
+                      </button>
+                    )}
+                    <button
+                      onClick={() => approve(req)}
+                      disabled={isBusy}
+                      style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #86efac", background: "#dcfce7", color: "#15803d", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => deny(req)}
+                      disabled={isBusy}
+                      style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                    >
+                      Deny
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </>
@@ -482,9 +681,13 @@ function SessionModal({
 export default function TimesheetsPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [entries, setEntries] = useState<ClockEntry[]>([]);
+  const [leaveEntries, setLeaveEntries] = useState<LeaveEntry[]>([]);
+  const [editRequests, setEditRequests] = useState<ClockEditRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [periodIndex, setPeriodIndex] = useState(() => getPeriodIndex(new Date()));
   const [modal, setModal] = useState<ModalTarget | null>(null);
+  const [leaveModal, setLeaveModal] = useState<LeaveModalTarget | null>(null);
+  const [editRequestsOpen, setEditRequestsOpen] = useState(false);
 
   const periodStart = useMemo(() => getPeriodStart(periodIndex), [periodIndex]);
   const workingDays = useMemo(() => getWorkingDays(periodStart), [periodStart]);
@@ -493,28 +696,65 @@ export default function TimesheetsPage() {
   useEffect(() => {
     supabase
       .from("hr_employees")
-      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, rate_type, rate, is_active")
+      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active")
       .eq("is_active", true)
       .order("legal_first_name")
       .then(({ data }) => setEmployees((data as Employee[]) ?? []));
   }, []);
 
+  async function fetchEditRequests() {
+    const { data: reqData } = await supabase
+      .from("clock_edit_requests")
+      .select("id, clock_entry_id, employee_id, field, old_value, new_value, reason, status, created_at, session_date")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true });
+    if (!reqData) return;
+    const empIds = [...new Set(reqData.map((r: Record<string, unknown>) => r.employee_id as string))];
+    const { data: empData } = await supabase
+      .from("hr_employees")
+      .select("id, legal_first_name, legal_last_name, nicknames")
+      .in("id", empIds);
+    const empMap = new Map((empData ?? []).map((e: Record<string, unknown>) => [
+      e.id,
+      (() => {
+        const nick = Array.isArray(e.nicknames) && (e.nicknames as string[]).length > 0 ? (e.nicknames as string[])[0] : null;
+        return `${nick ?? e.legal_first_name} ${e.legal_last_name}`;
+      })(),
+    ]));
+    const enriched = reqData.map((r: Record<string, unknown>) => ({
+      ...(r as unknown as ClockEditRequest),
+      employee_name: empMap.get(r.employee_id as string) ?? undefined,
+    }));
+    setEditRequests(enriched as ClockEditRequest[]);
+  }
+
+  useEffect(() => { fetchEditRequests(); }, []);
+
   useEffect(() => {
     setLoading(true);
-    supabase
-      .from("clock_entries")
-      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
-      .gte("session_date", dateStrs[0])
-      .lte("session_date", dateStrs[dateStrs.length - 1])
-      .not("clocked_in_at", "is", null)
-      .not("clocked_out_at", "is", null)
-      .then(({ data }) => {
-        setEntries((data as ClockEntry[]) ?? []);
-        setLoading(false);
-      });
+    const start = dateStrs[0];
+    const end = dateStrs[dateStrs.length - 1];
+    Promise.all([
+      supabase
+        .from("clock_entries")
+        .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+        .gte("session_date", start)
+        .lte("session_date", end)
+        .not("clocked_in_at", "is", null),
+      supabase
+        .from("hr_leave_entries")
+        .select("id, employee_id, entry_type, start_date, end_date, hours, notes")
+        .gte("start_date", start)
+        .lte("start_date", end)
+        .in("entry_type", ["sick_paid", "pto", "unpaid"]),
+    ]).then(([clockRes, leaveRes]) => {
+      setEntries((clockRes.data as ClockEntry[]) ?? []);
+      setLeaveEntries((leaveRes.data as LeaveEntry[]) ?? []);
+      setLoading(false);
+    });
   }, [dateStrs]);
 
-  // employeeId → dateStr → entries[]
+  // empId → dateStr → ClockEntry[]
   const entriesByEmpDay = useMemo(() => {
     const map = new Map<string, Map<string, ClockEntry[]>>();
     for (const e of entries) {
@@ -526,7 +766,7 @@ export default function TimesheetsPage() {
     return map;
   }, [entries]);
 
-  // employeeId → dateStr → paid minutes
+  // empId → dateStr → paid minutes (completed entries only)
   const minuteMap = useMemo(() => {
     const map = new Map<string, Map<string, number>>();
     for (const [empId, dayMap] of entriesByEmpDay) {
@@ -539,35 +779,87 @@ export default function TimesheetsPage() {
     return map;
   }, [entriesByEmpDay]);
 
-  // employeeId → dateStr → "green" | "yellow" | "red"
+  // empId → dateStr → cell status
   const cellColor = useMemo(() => {
-    const map = new Map<string, Map<string, "green" | "yellow" | "red">>();
+    const map = new Map<string, Map<string, "green" | "yellow" | "red" | "open">>();
     for (const [empId, dayMap] of entriesByEmpDay) {
       map.set(empId, new Map());
       for (const [dateStr, dayEntries] of dayMap) {
+        const hasOpen = dayEntries.some((e) => !e.clocked_out_at);
         const hasAutoClockOut = dayEntries.some((e) => e.auto_clocked_out);
         const hasUnresolved = dayEntries.some(
           (e) =>
             (e.notes_in && !e.notes_in_resolved) ||
             (e.notes_out && !e.notes_out_resolved)
         );
-        map.get(empId)!.set(dateStr, hasAutoClockOut ? "red" : hasUnresolved ? "yellow" : "green");
+        const status: "green" | "yellow" | "red" | "open" =
+          hasOpen ? "open" :
+          hasAutoClockOut ? "red" :
+          hasUnresolved ? "yellow" :
+          "green";
+        map.get(empId)!.set(dateStr, status);
       }
     }
     return map;
   }, [entriesByEmpDay]);
 
+  // empId → dateStr → LeaveEntry[]
+  const leaveByEmpDay = useMemo(() => {
+    const map = new Map<string, Map<string, LeaveEntry[]>>();
+    const dateSet = new Set(dateStrs);
+    for (const entry of leaveEntries) {
+      // Expand date range across period days
+      const [sy, sm, sd] = entry.start_date.split("-").map(Number);
+      const [ey, em, ed] = entry.end_date.split("-").map(Number);
+      let cur = new Date(Date.UTC(sy, sm - 1, sd));
+      const endDate = new Date(Date.UTC(ey, em - 1, ed));
+      while (cur <= endDate) {
+        const ds = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, "0")}-${String(cur.getUTCDate()).padStart(2, "0")}`;
+        if (dateSet.has(ds)) {
+          if (!map.has(entry.employee_id)) map.set(entry.employee_id, new Map());
+          const dayMap = map.get(entry.employee_id)!;
+          if (!dayMap.has(ds)) dayMap.set(ds, []);
+          dayMap.get(ds)!.push(entry);
+        }
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    }
+    return map;
+  }, [leaveEntries, dateStrs]);
+
+  // Per-employee period summaries
+  const leaveSummaryByEmp = useMemo(() => {
+    const map = new Map<string, { ptoMins: number; sickMins: number }>();
+    const dateSet = new Set(dateStrs);
+    for (const entry of leaveEntries) {
+      if (!dateSet.has(entry.start_date)) continue;
+      if (!map.has(entry.employee_id)) map.set(entry.employee_id, { ptoMins: 0, sickMins: 0 });
+      const s = map.get(entry.employee_id)!;
+      if (entry.entry_type === "pto") s.ptoMins += Math.round(Number(entry.hours) * 60);
+      else if (entry.entry_type === "sick_paid") s.sickMins += Math.round(Number(entry.hours) * 60);
+    }
+    return map;
+  }, [leaveEntries, dateStrs]);
+
+  const clockSummaryByEmp = useMemo(() => {
+    const map = new Map<string, { regularMins: number; otMins: number }>();
+    for (const [empId, dayMap] of entriesByEmpDay) {
+      let regularMins = 0; let otMins = 0;
+      for (const [, dayEntries] of dayMap) {
+        const dayMins = dayEntries.reduce((s, e) => s + entryPaidMins(e), 0);
+        regularMins += Math.min(dayMins, 480);
+        otMins += Math.max(0, dayMins - 480);
+      }
+      map.set(empId, { regularMins, otMins });
+    }
+    return map;
+  }, [entriesByEmpDay]);
+
   const activeEmployees = useMemo(
-    () => employees.filter((e) => minuteMap.has(e.id)),
-    [employees, minuteMap]
+    () => employees.filter((e) => entriesByEmpDay.has(e.id) || leaveByEmpDay.has(e.id)),
+    [employees, entriesByEmpDay, leaveByEmpDay]
   );
 
-  const anyHourly = useMemo(
-    () => activeEmployees.some((e) => e.rate_type === "hourly" && e.rate),
-    [activeEmployees]
-  );
-
-  // When modal edits entries, patch the local state
   function handleEntriesChanged(empId: string, dateStr: string, updated: ClockEntry[]) {
     setEntries((prev) => {
       const unchanged = prev.filter((e) => !(e.employee_id === empId && e.session_date === dateStr));
@@ -590,10 +882,12 @@ export default function TimesheetsPage() {
       )
     : [];
 
+  const pendingEditCount = editRequests.length;
+
   return (
     <div style={{ padding: "24px 32px", fontFamily: "system-ui, sans-serif" }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Timesheets</h2>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={() => setPeriodIndex((i) => i - 1)} style={{ padding: "5px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>‹</button>
@@ -601,12 +895,23 @@ export default function TimesheetsPage() {
           <button onClick={() => setPeriodIndex((i) => i + 1)} style={{ padding: "5px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>›</button>
           <button onClick={() => setPeriodIndex(getPeriodIndex(new Date()))} style={{ padding: "5px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontSize: 13, color: "#6b7280" }}>Current</button>
         </div>
+        <button
+          onClick={() => setEditRequestsOpen(true)}
+          style={{
+            padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer",
+            border: pendingEditCount > 0 ? "1.5px solid #fde68a" : "1.5px solid #e5e7eb",
+            background: pendingEditCount > 0 ? "#fef3c7" : "white",
+            color: pendingEditCount > 0 ? "#92400e" : "#6b7280",
+          }}
+        >
+          Edit Requests{pendingEditCount > 0 ? ` (${pendingEditCount})` : ""}
+        </button>
       </div>
 
       {loading ? (
         <div style={{ color: "#6b7280", padding: 20 }}>Loading…</div>
       ) : activeEmployees.length === 0 ? (
-        <div style={{ color: "#6b7280", padding: 20 }}>No clock entries found for this pay period.</div>
+        <div style={{ color: "#6b7280", padding: 20 }}>No clock entries or leave records found for this pay period.</div>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", background: "white", border: "1.5px solid #e5e7eb", borderRadius: 12, overflow: "hidden", minWidth: "max-content" }}>
@@ -621,7 +926,7 @@ export default function TimesheetsPage() {
                   Week 2 · {workingDays[5].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })} – {workingDays[9].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}
                 </th>
                 <th style={cell({ background: "#f9fafb" })} />
-                {anyHourly && <><th style={cell({ background: "#fdf2f8" })} /><th style={cell({ background: "#fdf2f8", borderRight: "none" })} /></>}
+                <th colSpan={4} style={cell({ background: "#fdf4ff", fontWeight: 700, textAlign: "center", color: "#7c3aed", fontSize: 12 })}>Hours Breakdown</th>
               </tr>
               {/* Day headers */}
               <tr>
@@ -633,22 +938,19 @@ export default function TimesheetsPage() {
                   </th>
                 ))}
                 <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "center", minWidth: 80 })}>Total</th>
-                {anyHourly && (
-                  <>
-                    <th style={cell({ background: "#fdf2f8", fontWeight: 800, textAlign: "center", minWidth: 72, color: "#9d174d" })}>Rate</th>
-                    <th style={cell({ background: "#fdf2f8", fontWeight: 800, textAlign: "center", minWidth: 90, color: "#9d174d", borderRight: "none" })}>Est. Pay</th>
-                  </>
-                )}
+                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#0369a1" })}>PTO</th>
+                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#e6178d" })}>Sick</th>
+                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#374151" })}>Regular</th>
+                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#b45309", borderRight: "none" })}>OT</th>
               </tr>
             </thead>
             <tbody>
               {activeEmployees.map((emp, rowIdx) => {
-                const dayMap = minuteMap.get(emp.id);
                 const colorMap = cellColor.get(emp.id);
-                const dayMins = dateStrs.map((ds) => dayMap?.get(ds) ?? 0);
-                const totalMins = dayMins.reduce((s, m) => s + m, 0);
-                const isHourly = emp.rate_type === "hourly" && typeof emp.rate === "number";
-                const pay = isHourly ? (totalMins / 60) * emp.rate! : null;
+                const dayMap = minuteMap.get(emp.id);
+                const leave = leaveSummaryByEmp.get(emp.id) ?? { ptoMins: 0, sickMins: 0 };
+                const clock = clockSummaryByEmp.get(emp.id) ?? { regularMins: 0, otMins: 0 };
+                const totalMins = clock.regularMins + clock.otMins + leave.ptoMins + leave.sickMins;
                 const rowBg = rowIdx % 2 === 0 ? "white" : "#fafafa";
 
                 return (
@@ -657,31 +959,56 @@ export default function TimesheetsPage() {
                       {getDisplayName(emp)}
                     </td>
                     {dateStrs.map((ds, i) => {
-                      const mins = dayMins[i];
-                      const color = colorMap?.get(ds);
-                      const isRed = color === "red";
-                      const isYellow = color === "yellow";
-                      // Show button whenever entries exist, even if computed mins ≤ 0 (e.g. after editing times)
-                      const hasData = !!color;
-
+                      const status = colorMap?.get(ds);
+                      const mins = dayMap?.get(ds) ?? 0;
+                      const dayLeaveEntries = leaveByEmpDay.get(emp.id)?.get(ds);
+                      const hasClockData = !!status;
+                      const hasLeaveOnly = !hasClockData && !!dayLeaveEntries?.length;
                       const dateLabel = `${DAY_ABBRS[i]} ${workingDays[i].toLocaleDateString("en-US", { month: "numeric", day: "numeric" })}`;
 
                       return (
                         <td key={i} style={cell({ textAlign: "center", padding: "6px 8px" })}>
-                          {hasData ? (
+                          {hasClockData ? (
                             <button
                               onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), dateStr: ds, dateLabel })}
                               style={{
                                 display: "inline-block",
-                                background: isRed ? "#fee2e2" : isYellow ? "#fef3c7" : "#dcfce7",
-                                color: isRed ? "#991b1b" : isYellow ? "#92400e" : "#15803d",
-                                border: `1.5px solid ${isRed ? "#fca5a5" : isYellow ? "#fde68a" : "#86efac"}`,
+                                background:
+                                  status === "open" ? "#dbeafe" :
+                                  status === "red" ? "#fee2e2" :
+                                  status === "yellow" ? "#fef3c7" :
+                                  "#dcfce7",
+                                color:
+                                  status === "open" ? "#1e40af" :
+                                  status === "red" ? "#991b1b" :
+                                  status === "yellow" ? "#92400e" :
+                                  "#15803d",
+                                border: `1.5px solid ${
+                                  status === "open" ? "#93c5fd" :
+                                  status === "red" ? "#fca5a5" :
+                                  status === "yellow" ? "#fde68a" :
+                                  "#86efac"
+                                }`,
                                 borderRadius: 8, padding: "4px 10px",
                                 fontWeight: 700, fontSize: 13, minWidth: 48,
                                 cursor: "pointer",
                               }}
                             >
-                              {minsToHHMM(mins)}
+                              {status === "open" ? "Clocked in" : minsToHHMM(mins)}
+                            </button>
+                          ) : hasLeaveOnly ? (
+                            <button
+                              onClick={() => setLeaveModal({ employeeName: getDisplayName(emp), dateLabel, entries: dayLeaveEntries })}
+                              style={{
+                                display: "inline-block",
+                                background: "#f3f4f6", color: "#374151",
+                                border: "1.5px solid #d1d5db",
+                                borderRadius: 8, padding: "4px 10px",
+                                fontWeight: 700, fontSize: 12,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {dayLeaveEntries.length === 1 ? leaveTypeLabel(dayLeaveEntries[0].entry_type) : "Leave"}
                             </button>
                           ) : (
                             <span style={{ color: "#d1d5db", fontSize: 13 }}>--</span>
@@ -692,16 +1019,18 @@ export default function TimesheetsPage() {
                     <td style={cell({ textAlign: "center", fontWeight: 800, fontSize: 14, color: totalMins > 0 ? "#111827" : "#d1d5db" })}>
                       {minsToHHMM(totalMins)}
                     </td>
-                    {anyHourly && (
-                      <>
-                        <td style={cell({ textAlign: "center", color: isHourly ? "#9d174d" : "#d1d5db", fontWeight: 600 })}>
-                          {isHourly ? `$${emp.rate!.toFixed(2)}/hr` : "--"}
-                        </td>
-                        <td style={cell({ textAlign: "center", fontWeight: 700, color: pay != null ? "#9d174d" : "#d1d5db", borderRight: "none" })}>
-                          {pay != null ? `$${pay.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "--"}
-                        </td>
-                      </>
-                    )}
+                    <td style={cell({ textAlign: "center", color: leave.ptoMins > 0 ? "#0369a1" : "#d1d5db", fontWeight: 600 })}>
+                      {minsToHDecimal(leave.ptoMins)}
+                    </td>
+                    <td style={cell({ textAlign: "center", color: leave.sickMins > 0 ? "#e6178d" : "#d1d5db", fontWeight: 600 })}>
+                      {minsToHDecimal(leave.sickMins)}
+                    </td>
+                    <td style={cell({ textAlign: "center", color: clock.regularMins > 0 ? "#374151" : "#d1d5db", fontWeight: 600 })}>
+                      {minsToHDecimal(clock.regularMins)}
+                    </td>
+                    <td style={cell({ textAlign: "center", color: clock.otMins > 0 ? "#b45309" : "#d1d5db", fontWeight: 600, borderRight: "none" })}>
+                      {minsToHDecimal(clock.otMins)}
+                    </td>
                   </tr>
                 );
               })}
@@ -717,23 +1046,73 @@ export default function TimesheetsPage() {
                     </td>
                   );
                 })}
-                <td style={cell({ textAlign: "center", fontWeight: 800, color: "#111827" })}>
-                  {minsToHHMM(activeEmployees.reduce((s, emp) => s + dateStrs.reduce((ds, d) => ds + (minuteMap.get(emp.id)?.get(d) ?? 0), 0), 0))}
-                </td>
-                {anyHourly && <td style={cell({ borderRight: "none" })} colSpan={2} />}
+                {(() => {
+                  const totPto = activeEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.ptoMins ?? 0), 0);
+                  const totSick = activeEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.sickMins ?? 0), 0);
+                  const totReg = activeEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.regularMins ?? 0), 0);
+                  const totOt = activeEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.otMins ?? 0), 0);
+                  const grandTotal = totPto + totSick + totReg + totOt;
+                  return (
+                    <>
+                      <td style={cell({ textAlign: "center", fontWeight: 800, color: "#111827" })}>{minsToHHMM(grandTotal)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totPto > 0 ? "#0369a1" : "#d1d5db" })}>{minsToHDecimal(totPto)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totSick > 0 ? "#e6178d" : "#d1d5db" })}>{minsToHDecimal(totSick)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totReg > 0 ? "#374151" : "#d1d5db" })}>{minsToHDecimal(totReg)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totOt > 0 ? "#b45309" : "#d1d5db", borderRight: "none" })}>{minsToHDecimal(totOt)}</td>
+                    </>
+                  );
+                })()}
               </tr>
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Day detail modal */}
       {modal && (
         <SessionModal
           target={modal}
           entries={modalEntries}
           onClose={() => setModal(null)}
           onEntriesChanged={(updated) => handleEntriesChanged(modal.employeeId, modal.dateStr, updated)}
+        />
+      )}
+
+      {leaveModal && (
+        <LeaveModal target={leaveModal} onClose={() => setLeaveModal(null)} />
+      )}
+
+      {editRequestsOpen && (
+        <EditRequestsModal
+          requests={editRequests}
+          onClose={() => setEditRequestsOpen(false)}
+          onRefresh={() => fetchEditRequests()}
+          onGoTo={(sessionDate) => {
+            const d = new Date(sessionDate + "T12:00:00");
+            setPeriodIndex(getPeriodIndex(d));
+            setEditRequestsOpen(false);
+          }}
+          onUpdate={(reqId, entryId, field, newValue) => {
+            // Remove resolved request from parent state (useEffect syncs modal)
+            setEditRequests((prev) => prev.filter((r) => r.id !== reqId));
+            // Optimistically update the affected entry so grid refreshes immediately
+            if (entryId && field && newValue) {
+              setEntries((prev) => prev.map((e) =>
+                e.id === entryId
+                  ? { ...e, [field]: newValue, ...(field === "clocked_out_at" ? { auto_clocked_out: false } : {}) }
+                  : e
+              ));
+            }
+            // Also reload from DB to sync
+            const start = dateStrs[0];
+            const end = dateStrs[dateStrs.length - 1];
+            supabase
+              .from("clock_entries")
+              .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+              .gte("session_date", start)
+              .lte("session_date", end)
+              .not("clocked_in_at", "is", null)
+              .then(({ data }) => setEntries((data as ClockEntry[]) ?? []));
+          }}
         />
       )}
     </div>

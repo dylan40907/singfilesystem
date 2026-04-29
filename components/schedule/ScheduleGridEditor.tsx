@@ -75,6 +75,14 @@ type TypePickerState = {
   time: string;
 } | null;
 
+type TeacherGap = {
+  employeeId: string;
+  day: number;
+  gapStart: string;
+  gapEnd: string;
+  prevBlockId: string;
+};
+
 // State for the block creation/edit form popup
 type BlockFormState = {
   x: number;
@@ -116,6 +124,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   const [paintErase, setPaintErase] = useState(false);
   const [cellColors, setCellColors] = useState<Record<number, Record<string, string>>>({});
   const colorSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Unified undo/redo stacks
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
@@ -132,6 +141,12 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   // Weekly hours view
   const [showHoursView, setShowHoursView] = useState(false);
   const [hoursSearch, setHoursSearch] = useState("");
+
+  // Individual teacher view
+  const [indivTeacherOpen, setIndivTeacherOpen] = useState(false);
+  const [indivTeacherId, setIndivTeacherId] = useState<string | null>(null);
+  const [indivTeacherDay, setIndivTeacherDay] = useState<number>(1);
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
 
   // Unassigned blocks publish confirmation
   type UnassignedItem = { day: string; room: string; start: string; end: string; label: string | null };
@@ -465,6 +480,49 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [blocks, employees]);
+
+  // Gap detection: for each teacher, find unassigned time between consecutive blocks per day
+  const teacherGapsMap = useMemo(() => {
+    const result = new Map<string, TeacherGap[]>();
+    const byEmpDay = new Map<string, ScheduleBlockType[]>();
+    for (const b of blocks) {
+      if (!b.employee_id) continue;
+      const key = `${b.employee_id}:${b.day_of_week}`;
+      if (!byEmpDay.has(key)) byEmpDay.set(key, []);
+      byEmpDay.get(key)!.push(b);
+    }
+    for (const [key, empBlocks] of byEmpDay) {
+      const [empId, dayStr] = key.split(":");
+      const day = parseInt(dayStr);
+      const sorted = [...empBlocks].sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const endMins = timeToMinutes(sorted[i].end_time);
+        const nextStartMins = timeToMinutes(sorted[i + 1].start_time);
+        if (endMins < nextStartMins) {
+          if (!result.has(empId)) result.set(empId, []);
+          result.get(empId)!.push({ employeeId: empId, day, gapStart: sorted[i].end_time, gapEnd: sorted[i + 1].start_time, prevBlockId: sorted[i].id });
+        }
+      }
+    }
+    return result;
+  }, [blocks]);
+
+  const anyTeacherHasGap = teacherGapsMap.size > 0;
+
+  const teachersInSchedule = useMemo(() => {
+    const empIds = new Set<string>();
+    for (const b of blocks) {
+      if (b.employee_id) empIds.add(b.employee_id);
+    }
+    return [...empIds]
+      .map((id) => ({ id, emp: employees.find((e) => e.id === id), hasGap: teacherGapsMap.has(id) }))
+      .filter((t) => !!t.emp)
+      .sort((a, b) => {
+        if (a.hasGap && !b.hasGap) return -1;
+        if (!a.hasGap && b.hasGap) return 1;
+        return getDisplayName(a.emp!).localeCompare(getDisplayName(b.emp!));
+      });
+  }, [blocks, employees, teacherGapsMap]);
 
   // Compute per-block warnings. Overtime takes priority: if overtime exists for an
   // employee on a given day, only the overtime warning is shown (5h / break warnings suppressed).
@@ -1340,6 +1398,14 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   const blockTypeLabel = (t: BlockType) =>
     t === "lunch_break" ? "Lunch Break" : t === "break" ? "Break" : "Shift";
 
+  const handleGoToGap = (gap: TeacherGap) => {
+    setIndivTeacherOpen(false);
+    setActiveDay(gap.day);
+    if (highlightTimeoutRef.current) clearTimeout(highlightTimeoutRef.current);
+    setHighlightedBlockId(gap.prevBlockId);
+    highlightTimeoutRef.current = setTimeout(() => setHighlightedBlockId(null), 3000);
+  };
+
   // Smart popup position: offset from cursor, clamped
   function popupPos(x: number, y: number, w = 260, h = 200) {
     const maxX = typeof window !== "undefined" ? window.innerWidth - w - 8 : x;
@@ -1367,6 +1433,18 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
             </>
           )}
           <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>
+          <button
+            className="btn"
+            onClick={() => {
+              setIndivTeacherOpen(true);
+              setIndivTeacherDay(activeDay);
+              const firstGapped = teachersInSchedule.find((t) => t.hasGap);
+              setIndivTeacherId(firstGapped?.id ?? teachersInSchedule[0]?.id ?? null);
+            }}
+            style={anyTeacherHasGap ? { background: "#fef3c7", borderColor: "#fbbf24", color: "#92400e" } : {}}
+          >
+            {anyTeacherHasGap ? "⚠ " : ""}👤 Teachers
+          </button>
           {!readOnly && (
             <>
               <button
@@ -1637,6 +1715,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
                 cellColors={cellColors[activeDay] ?? {}}
                 onPaintCells={handlePaintCells}
                 blockWarnings={blockWarnings}
+                highlightedBlockId={highlightedBlockId}
               />
             </div>
           </div>
@@ -1681,6 +1760,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
           cellColors={cellColors[activeDay] ?? {}}
           onPaintCells={handlePaintCells}
           blockWarnings={blockWarnings}
+          highlightedBlockId={highlightedBlockId}
         />
       </div>
 
@@ -2185,6 +2265,153 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn" onClick={runClearUnassigned} disabled={clearUnassigned.selectedRoomIds.size === 0 || clearUnassigned.selectedDays.size === 0} style={{ flex: 1, padding: "9px 0", fontSize: 13, fontWeight: 700, color: "#dc2626", borderColor: "#fca5a5" }}>Clear Unassigned</button>
                 <button className="btn" onClick={() => setClearUnassigned(null)} style={{ padding: "9px 16px", fontSize: 13 }}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Individual teacher view modal */}
+      {indivTeacherOpen && (
+        <>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", zIndex: 90 }} onClick={() => setIndivTeacherOpen(false)} />
+          <div
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)", zIndex: 91, background: "white", borderRadius: 14, boxShadow: "0 8px 40px rgba(0,0,0,0.18)", width: "min(760px,95vw)", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ padding: "14px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 }}>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>
+                Teacher Schedules
+                {anyTeacherHasGap && <span style={{ marginLeft: 10, fontSize: 12, color: "#d97706", fontWeight: 700 }}>⚠ Some teachers have unassigned gaps</span>}
+              </div>
+              <button className="btn" onClick={() => setIndivTeacherOpen(false)} style={{ padding: "4px 12px", fontSize: 13 }}>✕</button>
+            </div>
+
+            <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+              {/* Teacher list */}
+              <div style={{ width: 200, flexShrink: 0, borderRight: "1px solid #e5e7eb", overflowY: "auto", padding: "8px 6px" }}>
+                {teachersInSchedule.length === 0 ? (
+                  <div style={{ color: "#9ca3af", fontSize: 13, padding: 12 }}>No teachers assigned.</div>
+                ) : teachersInSchedule.map(({ id, emp, hasGap }) => {
+                  const isSelected = indivTeacherId === id;
+                  return (
+                    <button
+                      key={id}
+                      onClick={() => {
+                        setIndivTeacherId(id);
+                        if (hasGap) {
+                          const firstGap = teacherGapsMap.get(id)?.[0];
+                          if (firstGap) setIndivTeacherDay(firstGap.day);
+                        }
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left",
+                        padding: "8px 10px", borderRadius: 8, border: "none",
+                        background: isSelected ? (hasGap ? "#fef3c7" : "rgba(230,23,141,0.08)") : "transparent",
+                        color: isSelected ? (hasGap ? "#92400e" : "#e6178d") : (hasGap ? "#d97706" : "#111827"),
+                        fontWeight: isSelected ? 800 : 600, cursor: "pointer", fontSize: 13,
+                      }}
+                    >
+                      {hasGap && <span style={{ flexShrink: 0 }}>⚠</span>}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{emp ? getDisplayName(emp) : id}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Schedule detail */}
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                {/* Day tabs */}
+                <div style={{ display: "flex", gap: 4, padding: "10px 12px", borderBottom: "1px solid #e5e7eb", flexShrink: 0, flexWrap: "wrap" }}>
+                  {DAY_NUMBERS.map((dayNum, idx) => {
+                    const dayHasGap = indivTeacherId ? (teacherGapsMap.get(indivTeacherId)?.some((g) => g.day === dayNum) ?? false) : false;
+                    const isActive = indivTeacherDay === dayNum;
+                    return (
+                      <button
+                        key={dayNum}
+                        onClick={() => setIndivTeacherDay(dayNum)}
+                        style={{
+                          padding: "6px 12px", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer",
+                          border: isActive ? (dayHasGap ? "1.5px solid #fbbf24" : "1.5px solid rgba(230,23,141,0.35)") : "1.5px solid #e5e7eb",
+                          background: isActive ? (dayHasGap ? "#fef3c7" : "rgba(230,23,141,0.06)") : "white",
+                          color: isActive ? (dayHasGap ? "#92400e" : "#e6178d") : (dayHasGap ? "#d97706" : "#111827"),
+                        }}
+                      >
+                        {dayHasGap && "⚠ "}{DAY_LABELS[idx]}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Block list */}
+                <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+                  {!indivTeacherId ? (
+                    <div style={{ color: "#9ca3af", fontSize: 13 }}>Select a teacher on the left.</div>
+                  ) : (() => {
+                    const teacherBlocks = blocks
+                      .filter((b) => b.employee_id === indivTeacherId && b.day_of_week === indivTeacherDay)
+                      .sort((a, b) => timeToMinutes(a.start_time) - timeToMinutes(b.start_time));
+
+                    if (teacherBlocks.length === 0) {
+                      return <div style={{ color: "#9ca3af", fontSize: 13 }}>No blocks on this day.</div>;
+                    }
+
+                    type BlockItem = { type: "block"; block: ScheduleBlockType };
+                    type GapItem = { type: "gap"; gap: TeacherGap };
+                    const items: (BlockItem | GapItem)[] = [];
+                    for (let i = 0; i < teacherBlocks.length; i++) {
+                      items.push({ type: "block", block: teacherBlocks[i] });
+                      if (i < teacherBlocks.length - 1) {
+                        const endMins = timeToMinutes(teacherBlocks[i].end_time);
+                        const nextStartMins = timeToMinutes(teacherBlocks[i + 1].start_time);
+                        if (endMins < nextStartMins) {
+                          items.push({ type: "gap", gap: { employeeId: indivTeacherId, day: indivTeacherDay, gapStart: teacherBlocks[i].end_time, gapEnd: teacherBlocks[i + 1].start_time, prevBlockId: teacherBlocks[i].id } });
+                        }
+                      }
+                    }
+
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {items.map((item, idx) => {
+                          if (item.type === "gap") {
+                            const { gap } = item;
+                            const gapMins = timeToMinutes(gap.gapEnd) - timeToMinutes(gap.gapStart);
+                            const h = Math.floor(gapMins / 60), m = gapMins % 60;
+                            const durStr = m === 0 ? `${h}h` : h === 0 ? `${m}m` : `${h}h ${m}m`;
+                            return (
+                              <div key={`gap-${idx}`} style={{ padding: "10px 14px", borderRadius: 10, background: "#fef3c7", border: "1.5px solid #fbbf24", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                <div>
+                                  <div style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>⚠ Unassigned Gap</div>
+                                  <div style={{ fontSize: 12, color: "#b45309", marginTop: 2 }}>{formatTime(gap.gapStart)} – {formatTime(gap.gapEnd)} ({durStr})</div>
+                                </div>
+                                <button className="btn" onClick={() => handleGoToGap(gap)} style={{ padding: "5px 12px", fontSize: 12, fontWeight: 700, color: "#92400e", borderColor: "#fbbf24", background: "white", flexShrink: 0 }}>
+                                  Go to ↗
+                                </button>
+                              </div>
+                            );
+                          } else {
+                            const { block } = item;
+                            const leftColor = block.block_type === "lunch_break" ? "#f97316" : block.block_type === "break" ? "#22c55e" : "#6366f1";
+                            const typeLabel = block.block_type === "lunch_break" ? "Lunch Break" : block.block_type === "break" ? "Break" : "Shift";
+                            const blockMins = timeToMinutes(block.end_time) - timeToMinutes(block.start_time);
+                            const bh = Math.floor(blockMins / 60), bm = blockMins % 60;
+                            const durStr = bm === 0 ? `${bh}h` : bh === 0 ? `${bm}m` : `${bh}h ${bm}m`;
+                            const room = rooms.find((r) => r.id === block.room_id);
+                            return (
+                              <div key={block.id} style={{ padding: "10px 14px", borderRadius: 10, background: "white", border: "1px solid #e5e7eb", borderLeft: `4px solid ${leftColor}` }}>
+                                <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{typeLabel}</div>
+                                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{formatTime(block.start_time)} – {formatTime(block.end_time)} ({durStr})</div>
+                                {block.label && <div style={{ fontSize: 12, color: "#4f46e5", fontWeight: 600, marginTop: 2 }}>{block.label}</div>}
+                                {room && <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 1 }}>{room.name}</div>}
+                              </div>
+                            );
+                          }
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
           </div>

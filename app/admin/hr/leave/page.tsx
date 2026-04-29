@@ -154,8 +154,11 @@ function fmtRange(s: string, e: string): string {
 }
 
 function fmtHours(h: number): string {
-  const r = Math.round(h * 10) / 10;
-  return Number.isInteger(r) ? `${r}` : r.toFixed(1);
+  const totalMins = Math.round(h * 60);
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hrs === 0) return `${mins}m`;
+  return mins === 0 ? `${hrs}h` : `${hrs}h ${mins}m`;
 }
 
 function sumClockedHours(entries: ClockEntryRow[], startYmd: string, endYmd: string): number {
@@ -252,6 +255,8 @@ export default function LeavePage() {
   const [logType, setLogType] = useState<LeaveEntryType>("sick_paid");
   const [logStart, setLogStart] = useState<string>(todayYmd());
   const [logEnd, setLogEnd] = useState<string>(todayYmd());
+  const [logStartTime, setLogStartTime] = useState<string>("09:00");
+  const [logEndTime, setLogEndTime] = useState<string>("17:00");
   const [logHours, setLogHours] = useState<string>("8");
   const [logNotes, setLogNotes] = useState<string>("");
   const [logBusy, setLogBusy] = useState(false);
@@ -414,12 +419,12 @@ export default function LeavePage() {
   }, [selectedEmployee]);
 
   const hoursWorkedYtdRaw = useMemo(() => sumClockedHours(clockEntries, `${year}-01-01`, `${year}-12-31`), [clockEntries, year]);
-  const hoursWorkedYtd = balance?.hours_worked_override ?? hoursWorkedYtdRaw;
+  const hoursWorkedYtd = hoursWorkedYtdRaw + (balance?.hours_worked_override ?? 0);
 
   const sickCalc = useMemo(() => computeSickBalance(balance, hoursWorkedYtd, entries), [balance, hoursWorkedYtd, entries]);
   const ptoCalc = useMemo(() => computePtoBalance(balance, hoursWorkedYtd, entries), [balance, hoursWorkedYtd, entries]);
   const unpaidUsedRaw = useMemo(() => entries.filter((e) => e.entry_type === "unpaid").reduce((s, e) => s + Number(e.hours), 0), [entries]);
-  const unpaidUsed = balance?.unpaid_override ?? unpaidUsedRaw;
+  const unpaidUsed = unpaidUsedRaw + (balance?.unpaid_override ?? 0);
 
   // Enrich pending requests with employee names
   const enrichedPending = useMemo(() =>
@@ -477,16 +482,35 @@ export default function LeavePage() {
 
   async function logLeave() {
     if (!selectedEmployeeId) return;
-    const hours = Number(logHours);
-    if (!Number.isFinite(hours) || hours === 0) {
-      await alert("Hours must be a non-zero number.");
-      return;
+    const isUnpaid = logType === "unpaid";
+    const isSingleDay = logType === "sick_paid" || logType === "pto";
+
+    let hours: number;
+    if (isUnpaid) {
+      if (!logStart || !logEnd) { await alert("Please select start and end dates."); return; }
+      if (logEnd < logStart) { await alert("End date must be on or after start date."); return; }
+      const startD = new Date(logStart + "T12:00:00");
+      const endD = new Date(logEnd + "T12:00:00");
+      hours = Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1;
+    } else if (isSingleDay) {
+      if (!logStartTime || !logEndTime) { await alert("Please enter start and end times."); return; }
+      const [sh, sm] = logStartTime.split(":").map(Number);
+      const [eh, em] = logEndTime.split(":").map(Number);
+      hours = (eh * 60 + em - (sh * 60 + sm)) / 60;
+      if (hours <= 0) { await alert("End time must be after start time."); return; }
+    } else {
+      hours = Number(logHours);
+      if (!Number.isFinite(hours) || hours === 0) {
+        await alert("Hours must be a non-zero number.");
+        return;
+      }
+      if (logType !== "sick_adjustment" && logType !== "pto_adjustment" && hours < 0) {
+        await alert("Usage entries cannot be negative. Use an adjustment type to remove hours.");
+        return;
+      }
     }
-    if (logType !== "sick_adjustment" && logType !== "pto_adjustment" && hours < 0) {
-      await alert("Usage entries cannot be negative. Use an adjustment type to remove hours.");
-      return;
-    }
-    if (logEnd < logStart) { await alert("End date must be on or after start date."); return; }
+
+    const effectiveEnd = isSingleDay ? logStart : logEnd;
 
     if (logType === "sick_paid" && probation && !probation.passed) {
       const ok = await confirm(`This employee is still in probation (ends ${fmtYmd(probation.endDate)}). Log paid sick anyway?`);
@@ -498,11 +522,11 @@ export default function LeavePage() {
       await ensureBalanceRow();
       const { error } = await supabase.from("hr_leave_entries").insert({
         employee_id: selectedEmployeeId, entry_type: logType,
-        start_date: logStart, end_date: logEnd, hours,
+        start_date: logStart, end_date: effectiveEnd, hours,
         notes: logNotes.trim() || null, created_by: me?.id ?? null,
       });
       if (error) throw error;
-      setLogHours("8"); setLogNotes("");
+      setLogHours("8"); setLogStartTime("09:00"); setLogEndTime("17:00"); setLogNotes("");
       const yearStart = `${year}-01-01`;
       const yearEnd = `${year}-12-31`;
       const { data, error: reErr } = await supabase.from("hr_leave_entries").select("*").eq("employee_id", selectedEmployeeId).gte("start_date", yearStart).lte("start_date", yearEnd).order("start_date", { ascending: false });
@@ -529,7 +553,8 @@ export default function LeavePage() {
 
   async function approveRequest(req: LeaveRequestRow & { employee?: EmployeeRow }) {
     const empName = req.employee ? getDisplayName(req.employee) : req.employee_id;
-    const ok = await confirm(`Approve ${REQUEST_LABELS[req.entry_type]} request for ${empName} (${fmtRange(req.start_date, req.end_date)}, ${fmtHours(Number(req.hours))}h)?`);
+    const durationStr = req.entry_type === "unpaid" ? `${Math.round(Number(req.hours))} day${Math.round(Number(req.hours)) !== 1 ? "s" : ""}` : fmtHours(Number(req.hours));
+    const ok = await confirm(`Approve ${REQUEST_LABELS[req.entry_type]} request for ${empName} (${fmtRange(req.start_date, req.end_date)}, ${durationStr})?`);
     if (!ok) return;
     try {
       // Create a leave entry (deducts from balance)
@@ -641,17 +666,19 @@ export default function LeavePage() {
         setBalance(data as LeaveBalanceRow);
         setCfgPtoInitial(String(newInitial));
       } else if (editField === "unpaid") {
+        const delta = newVal - unpaidUsedRaw;
         const { data, error } = await supabase
           .from("hr_leave_balances")
-          .update({ unpaid_override: newVal })
+          .update({ unpaid_override: delta === 0 ? null : delta })
           .eq("id", balRow.id)
           .select("*").single();
         if (error) throw error;
         setBalance(data as LeaveBalanceRow);
       } else if (editField === "hours_worked") {
+        const delta = newVal - hoursWorkedYtdRaw;
         const { data, error } = await supabase
           .from("hr_leave_balances")
-          .update({ hours_worked_override: newVal })
+          .update({ hours_worked_override: delta === 0 ? null : delta })
           .eq("id", balRow.id)
           .select("*").single();
         if (error) throw error;
@@ -712,7 +739,7 @@ export default function LeavePage() {
             <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <div style={{ fontWeight: 800, fontSize: 16 }}>
-                  Edit {editField === "sick" ? "Sick Balance" : editField === "pto" ? "PTO Balance" : editField === "unpaid" ? "Unpaid Hours" : "Hours Worked YTD"}
+                  Edit {editField === "sick" ? "Sick Balance" : editField === "pto" ? "PTO Balance" : editField === "unpaid" ? "Unpaid Days" : "Hours Worked YTD"}
                 </div>
                 <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>
                   {selectedEmployee ? getDisplayName(selectedEmployee) : ""} · {year}
@@ -724,7 +751,7 @@ export default function LeavePage() {
             <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
                 <FieldLabel>
-                  {editField === "unpaid" ? "Total unpaid hours used" : editField === "hours_worked" ? "Total hours worked YTD" : "New balance (hours)"}
+                  {editField === "unpaid" ? "Total unpaid days used" : editField === "hours_worked" ? "Total hours worked YTD" : "New balance (hours)"}
                 </FieldLabel>
                 <TextInput
                   type="number"
@@ -847,7 +874,7 @@ export default function LeavePage() {
                         </span>
                       </div>
                       <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
-                        {fmtRange(req.start_date, req.end_date)} · {fmtHours(Number(req.hours))}h
+                        {fmtRange(req.start_date, req.end_date)} · {req.entry_type === "unpaid" ? `${Math.round(Number(req.hours))} day${Math.round(Number(req.hours)) !== 1 ? "s" : ""}` : fmtHours(Number(req.hours))}
                         {req.notes && <> · <em>{req.notes}</em></>}
                       </div>
                       <div className="subtle" style={{ fontSize: 12, marginTop: 2 }}>
@@ -904,7 +931,7 @@ export default function LeavePage() {
               lines={ptoCalc.active ? [
                 ...(ptoCalc.carryover > 0 ? [["Carryover", fmtHours(ptoCalc.carryover)] as [string, string]] : []),
                 ["Initial", fmtHours(ptoCalc.initial)],
-                ["Accrued YTD", `${fmtHours(ptoCalc.accrued)}${ptoCalc.accrualRate > 0 ? ` (1h per ${fmtHours(ptoCalc.accrualRate)}h, cap ${ptoCalc.plan})` : ""}`],
+                ["Accrued YTD", `${fmtHours(ptoCalc.accrued)}${ptoCalc.accrualRate > 0 ? ` (1h per ${fmtHours(ptoCalc.accrualRate)}, cap ${ptoCalc.plan}h)` : ""}`],
                 ["Used", `−${fmtHours(ptoCalc.used)}`],
                 ...(ptoCalc.adjustments !== 0 ? [[`Adjustments`, `${ptoCalc.adjustments >= 0 ? "+" : ""}${fmtHours(ptoCalc.adjustments)}`] as [string, string]] : []),
                 ...(ptoCalc.balance >= MAX_BALANCE ? [["Max balance reached", `(${MAX_BALANCE}h cap)`] as [string, string]] : []),
@@ -915,7 +942,7 @@ export default function LeavePage() {
               title="Unpaid time off"
               balance={unpaidUsed}
               accent="#6b7280"
-              balanceLabel="hrs used YTD"
+              balanceLabel="days used YTD"
               lines={[
                 ["", "Logged for record-keeping; no balance tracked."],
                 ...(balance?.unpaid_override != null ? [["Override active", ""] as [string, string]] : []),
@@ -926,7 +953,7 @@ export default function LeavePage() {
               title="Hours worked YTD"
               balance={hoursWorkedYtd}
               accent="#16a34a"
-              balanceLabel="hrs (timesheet)"
+              balanceLabel="worked (timesheet)"
               lines={[
                 ["Probation ends", probation ? fmtYmd(probation.endDate) : "—"],
                 ["Probation status", probation ? (probation.passed ? "Passed" : "Active") : "—"],
@@ -939,36 +966,71 @@ export default function LeavePage() {
           {/* Log leave + Settings */}
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 16, marginBottom: 16 }}>
             <Card title="Log leave / adjustment">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <FieldLabel>Type</FieldLabel>
-                  <Select value={logType} onChange={(e) => setLogType(e.target.value as LeaveEntryType)}>
-                    <option value="sick_paid">Sick — paid</option>
-                    <option value="pto">PTO</option>
-                    <option value="unpaid">Unpaid time off</option>
-                    <option value="sick_adjustment">Adjust SICK total (+/−)</option>
-                    <option value="pto_adjustment">Adjust PTO total (+/−)</option>
-                  </Select>
-                </div>
-                <div>
-                  <FieldLabel>Hours</FieldLabel>
-                  <TextInput type="number" step="0.25" value={logHours} onChange={(e) => setLogHours(e.target.value)} />
-                </div>
-                <div>
-                  <FieldLabel>Start date</FieldLabel>
-                  <TextInput type="date" value={logStart} onChange={(e) => { setLogStart(e.target.value); if (logEnd < e.target.value) setLogEnd(e.target.value); }} />
-                </div>
-                <div>
-                  <FieldLabel>End date</FieldLabel>
-                  <TextInput type="date" value={logEnd} onChange={(e) => setLogEnd(e.target.value)} />
-                </div>
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <FieldLabel>Notes (optional)</FieldLabel>
-                  <TextInput type="text" value={logNotes} onChange={(e) => setLogNotes(e.target.value)} placeholder="Reason, ticket #, etc." />
-                </div>
-              </div>
+              {(() => {
+                const isSingleDay = logType === "sick_paid" || logType === "pto";
+                const isUnpaidType = logType === "unpaid";
+                const isAdjustment = logType === "sick_adjustment" || logType === "pto_adjustment";
+                const calcHours = (() => {
+                  if (!isSingleDay || !logStartTime || !logEndTime) return null;
+                  const [sh, sm] = logStartTime.split(":").map(Number);
+                  const [eh, em] = logEndTime.split(":").map(Number);
+                  const h = (eh * 60 + em - (sh * 60 + sm)) / 60;
+                  return h > 0 ? h : null;
+                })();
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <FieldLabel>Type</FieldLabel>
+                      <Select value={logType} onChange={(e) => setLogType(e.target.value as LeaveEntryType)}>
+                        <option value="sick_paid">Sick — paid</option>
+                        <option value="pto">PTO</option>
+                        <option value="unpaid">Unpaid time off</option>
+                        <option value="sick_adjustment">Adjust SICK total (+/−)</option>
+                        <option value="pto_adjustment">Adjust PTO total (+/−)</option>
+                      </Select>
+                    </div>
+                    {isAdjustment && (
+                      <div>
+                        <FieldLabel>Hours (+/−)</FieldLabel>
+                        <TextInput type="number" step="0.25" value={logHours} onChange={(e) => setLogHours(e.target.value)} />
+                      </div>
+                    )}
+                    {isSingleDay ? (
+                      <>
+                        <div style={{ gridColumn: "1 / -1" }}>
+                          <FieldLabel>Date</FieldLabel>
+                          <TextInput type="date" value={logStart} onChange={(e) => { setLogStart(e.target.value); setLogEnd(e.target.value); }} />
+                        </div>
+                        <div>
+                          <FieldLabel>Start time</FieldLabel>
+                          <TextInput type="time" value={logStartTime} onChange={(e) => setLogStartTime(e.target.value)} />
+                        </div>
+                        <div>
+                          <FieldLabel>End time{calcHours !== null ? ` — ${fmtHours(calcHours)}` : ""}</FieldLabel>
+                          <TextInput type="time" value={logEndTime} onChange={(e) => setLogEndTime(e.target.value)} />
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ gridColumn: isUnpaidType ? "1 / 2" : undefined }}>
+                          <FieldLabel>Start date</FieldLabel>
+                          <TextInput type="date" value={logStart} onChange={(e) => { setLogStart(e.target.value); if (logEnd < e.target.value) setLogEnd(e.target.value); }} />
+                        </div>
+                        <div>
+                          <FieldLabel>End date</FieldLabel>
+                          <TextInput type="date" value={logEnd} onChange={(e) => setLogEnd(e.target.value)} />
+                        </div>
+                      </>
+                    )}
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <FieldLabel>Notes (optional)</FieldLabel>
+                      <TextInput type="text" value={logNotes} onChange={(e) => setLogNotes(e.target.value)} placeholder="Reason, ticket #, etc." />
+                    </div>
+                  </div>
+                );
+              })()}
               <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-                <button className="btn btn-primary" onClick={logLeave} disabled={logBusy || !selectedEmployeeId} style={{ minWidth: 140 }}>
+                <button className="btn btn-primary" onClick={() => void logLeave()} disabled={logBusy || !selectedEmployeeId} style={{ minWidth: 140 }}>
                   {logBusy ? "Saving…" : "Save entry"}
                 </button>
               </div>
@@ -1004,6 +1066,7 @@ export default function LeavePage() {
                   <FieldLabel>Plan (hrs/year)</FieldLabel>
                   <Select value={cfgPtoPlan} onChange={(e) => setCfgPtoPlan(Number(e.target.value))} disabled={!cfgPtoActive}>
                     <option value={0}>—</option>
+                    <option value={16}>16</option>
                     <option value={24}>24</option>
                     <option value={32}>32</option>
                     <option value={40}>40</option>
@@ -1051,7 +1114,7 @@ export default function LeavePage() {
                         <tr key={e.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
                           <Td>{fmtRange(e.start_date, e.end_date)}</Td>
                           <Td><TypePill type={e.entry_type} /></Td>
-                          <Td align="right">{e.entry_type.endsWith("_adjustment") && Number(e.hours) >= 0 ? "+" : ""}{fmtHours(Number(e.hours))}</Td>
+                          <Td align="right">{e.entry_type === "unpaid" ? `${Math.round(Number(e.hours))} day${Math.round(Number(e.hours)) !== 1 ? "s" : ""}` : `${e.entry_type.endsWith("_adjustment") && Number(e.hours) >= 0 ? "+" : ""}${fmtHours(Number(e.hours))}`}</Td>
                           <Td>{e.notes || <span className="subtle">—</span>}</Td>
                           <Td align="right" subtle>{new Date(e.created_at).toLocaleDateString()}</Td>
                           <Td align="right">
@@ -1081,7 +1144,7 @@ function Card({ title, children, style }: { title: string; children: React.React
   );
 }
 
-function BalanceCard({ title, balance, accent, lines, balanceLabel = "hrs available", onEdit }: {
+function BalanceCard({ title, balance, accent, lines, balanceLabel = "available", onEdit }: {
   title: string; balance: number; accent: string; lines: Array<[string, string]>; balanceLabel?: string; onEdit?: () => void;
 }) {
   return (

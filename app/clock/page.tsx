@@ -283,9 +283,12 @@ export default function ClockPage() {
       .lt("session_date", today);
 
     for (const e of openPrevEntries ?? []) {
+      // Auto clock-out at 11:59:59 PM on the session date (not at current login time)
+      const [sy, sm, sd] = e.session_date.split("-").map(Number);
+      const autoOut = new Date(sy, sm - 1, sd, 23, 59, 59);
       await supabase
         .from("clock_entries")
-        .update({ clocked_out_at: new Date().toISOString(), auto_clocked_out: true })
+        .update({ clocked_out_at: autoOut.toISOString(), auto_clocked_out: true })
         .eq("id", e.id);
     }
 

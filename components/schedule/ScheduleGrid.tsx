@@ -33,6 +33,7 @@ interface ScheduleGridProps {
   cellColors?: Record<string, string>; // "roomId:colIdx:timeSlot" -> color
   onPaintCells?: (cellKeys: string[]) => void;
   blockWarnings?: Map<string, string[]>;
+  highlightedBlockId?: string | null;
 }
 
 // Shared flag: when a block drag/resize ends, suppress the next cell click
@@ -54,6 +55,7 @@ export default function ScheduleGrid({
   cellColors = {},
   onPaintCells,
   blockWarnings = new Map(),
+  highlightedBlockId = null,
 }: ScheduleGridProps) {
   const paintingRef = useRef(false);
   const paintedKeysRef = useRef<Set<string>>(new Set());
@@ -386,6 +388,7 @@ export default function ScheduleGrid({
                     heightPx={heightPx}
                     readOnly={readOnly || paintMode}
                     warnings={blockWarnings.get(block.id)}
+                    highlighted={highlightedBlockId === block.id}
                     onContextMenu={onBlockContextMenu}
                     onResizeEnd={(blockId, s, e) => {
                       suppressNextCellClick = true;

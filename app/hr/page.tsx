@@ -261,7 +261,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave";
+  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
   const [pinRevealed, setPinRevealed] = useState(false);
 
@@ -1345,6 +1345,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           {canReviewOthers && <button className={`hr-mobile-tab${activeTab === "employeeReviews" ? " active" : ""}`} onClick={() => setActiveTab("employeeReviews")}>Employee Reviews</button>}
           <button className={`hr-mobile-tab${activeTab === "schedule" ? " active" : ""}`} onClick={() => setActiveTab("schedule")}>Schedule</button>
           <button className={`hr-mobile-tab${activeTab === "leave" ? " active" : ""}`} onClick={() => setActiveTab("leave")}>Leave</button>
+          <button className={`hr-mobile-tab${activeTab === "timesheetLog" ? " active" : ""}`} onClick={() => setActiveTab("timesheetLog")}>Timesheet Log</button>
         </div>
 
         <div className="hr-page-grid" style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>
@@ -1371,6 +1372,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             </TabButton>
             <TabButton active={activeTab === "leave"} onClick={() => setActiveTab("leave")}>
               Leave
+            </TabButton>
+            <TabButton active={activeTab === "timesheetLog"} onClick={() => setActiveTab("timesheetLog")}>
+              Timesheet Log
             </TabButton>
           </div>
 
@@ -1990,6 +1994,17 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
               ) : (
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                   <div style={{ fontWeight: 950, fontSize: 18 }}>Leave</div>
+                  <div className="subtle" style={{ marginTop: 6 }}>No employee record linked to your account.</div>
+                </div>
+              )
+            ) : null}
+
+            {activeTab === "timesheetLog" ? (
+              employee?.id ? (
+                <EmployeeTimesheetLogTab employeeId={employee.id} />
+              ) : (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                  <div style={{ fontWeight: 950, fontSize: 18 }}>Timesheet Log</div>
                   <div className="subtle" style={{ marginTop: 6 }}>No employee record linked to your account.</div>
                 </div>
               )
@@ -4731,6 +4746,8 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
   const [reqType, setReqType] = useState<"sick_paid" | "pto" | "unpaid">("sick_paid");
   const [reqStart, setReqStart] = useState("");
   const [reqEnd, setReqEnd] = useState("");
+  const [reqStartTime, setReqStartTime] = useState("09:00");
+  const [reqEndTime, setReqEndTime] = useState("17:00");
   const [reqHours, setReqHours] = useState("");
   const [reqNotes, setReqNotes] = useState("");
 
@@ -4756,16 +4773,41 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
   }, [employeeId, year]);
 
   async function submitRequest() {
-    if (!reqStart || !reqEnd || !reqHours) { setSubmitMsg("Please fill in all required fields."); return; }
-    const hrs = parseFloat(reqHours);
-    if (isNaN(hrs) || hrs <= 0) { setSubmitMsg("Hours must be a positive number."); return; }
+    const isSingleDay = reqType === "sick_paid" || reqType === "pto";
+    const isUnpaid = reqType === "unpaid";
+
+    let hrs: number;
+    let endDate: string;
+
+    if (isUnpaid) {
+      if (!reqStart || !reqEnd) { setSubmitMsg("Please select start and end dates."); return; }
+      if (reqEnd < reqStart) { setSubmitMsg("End date must be on or after start date."); return; }
+      const startD = new Date(reqStart + "T12:00:00");
+      const endD = new Date(reqEnd + "T12:00:00");
+      hrs = Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1;
+      endDate = reqEnd;
+    } else if (isSingleDay) {
+      if (!reqStart) { setSubmitMsg("Please select a date."); return; }
+      if (!reqStartTime || !reqEndTime) { setSubmitMsg("Please enter start and end times."); return; }
+      const [sh, sm] = reqStartTime.split(":").map(Number);
+      const [eh, em] = reqEndTime.split(":").map(Number);
+      hrs = (eh * 60 + em - (sh * 60 + sm)) / 60;
+      if (hrs <= 0) { setSubmitMsg("End time must be after start time."); return; }
+      endDate = reqStart;
+    } else {
+      if (!reqStart || !reqEnd || !reqHours) { setSubmitMsg("Please fill in all required fields."); return; }
+      hrs = parseFloat(reqHours);
+      if (isNaN(hrs) || hrs <= 0) { setSubmitMsg("Hours must be a positive number."); return; }
+      endDate = reqEnd;
+    }
+
     setSubmitBusy(true);
     setSubmitMsg("");
     const { error } = await supabase.from("hr_leave_requests").insert({
       employee_id: employeeId,
       entry_type: reqType,
       start_date: reqStart,
-      end_date: reqEnd,
+      end_date: endDate,
       hours: hrs,
       notes: reqNotes.trim() || null,
       status: "pending",
@@ -4774,7 +4816,7 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
     if (error) { setSubmitMsg(error.message); return; }
     const { data: fresh } = await supabase.from("hr_leave_requests").select("*").eq("employee_id", employeeId).order("created_at", { ascending: false });
     setRequests((fresh ?? []) as LeaveRequestRow[]);
-    setReqType("sick_paid"); setReqStart(""); setReqEnd(""); setReqHours(""); setReqNotes("");
+    setReqType("sick_paid"); setReqStart(""); setReqEnd(""); setReqStartTime("09:00"); setReqEndTime("17:00"); setReqHours(""); setReqNotes("");
     setSubmitMsg("Request submitted successfully.");
   }
 
@@ -4811,13 +4853,13 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
             <div style={{ flex: "1 1 200px", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 18px", background: "#f0fdf4" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: "#15803d", marginBottom: 4 }}>Sick Leave</div>
-              <div style={{ fontSize: 28, fontWeight: 900, color: "#111827" }}>{sickBal !== null ? sickBal.toFixed(1) : "—"}</div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>hours available</div>
+              <div style={{ fontSize: 28, fontWeight: 900, color: "#111827" }}>{sickBal !== null ? (() => { const m = Math.round(sickBal * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })() : "—"}</div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>available</div>
             </div>
             <div style={{ flex: "1 1 200px", border: "1px solid #e5e7eb", borderRadius: 12, padding: "14px 18px", background: balance.pto_active ? "#f0f9ff" : "#f9fafb" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: balance.pto_active ? "#0369a1" : "#9ca3af", marginBottom: 4 }}>PTO</div>
               <div style={{ fontSize: 28, fontWeight: 900, color: balance.pto_active ? "#111827" : "#9ca3af" }}>
-                {balance.pto_active ? (ptoBal !== null ? ptoBal.toFixed(1) : "—") : "Inactive"}
+                {balance.pto_active ? (ptoBal !== null ? (() => { const m = Math.round(ptoBal * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })() : "—") : "Inactive"}
               </div>
               <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
                 {balance.pto_active ? "hours available" : "Not yet activated by admin"}
@@ -4830,51 +4872,91 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
       {/* Request form */}
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
         <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>Request Leave</div>
-        <div style={{ display: "grid", gap: 12, maxWidth: 520 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Type</div>
-            <select
-              className="input"
-              value={reqType}
-              onChange={(e) => setReqType(e.target.value as "sick_paid" | "pto" | "unpaid")}
-              style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px", background: "white" }}
-            >
-              <option value="sick_paid">Sick (Paid)</option>
-              <option value="pto">PTO</option>
-              <option value="unpaid">Unpaid</option>
-            </select>
-          </div>
-          <div className="date-pair-grid">
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Start Date</div>
-              <input type="date" className="input" value={reqStart} onChange={(e) => setReqStart(e.target.value)}
-                style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+        {(() => {
+          const isSingleDay = reqType === "sick_paid" || reqType === "pto";
+          const isUnpaid = reqType === "unpaid";
+          const calcHours = (() => {
+            if (!isSingleDay || !reqStartTime || !reqEndTime) return null;
+            const [sh, sm] = reqStartTime.split(":").map(Number);
+            const [eh, em] = reqEndTime.split(":").map(Number);
+            const h = (eh * 60 + em - (sh * 60 + sm)) / 60;
+            return h > 0 ? h : null;
+          })();
+          const fmtHrsHM = (h: number) => {
+            const totalMins = Math.round(h * 60);
+            const hrs = Math.floor(totalMins / 60);
+            const mins = totalMins % 60;
+            if (hrs === 0) return `${mins}m`;
+            return mins === 0 ? `${hrs}h` : `${hrs}h ${mins}m`;
+          };
+          return (
+            <div style={{ display: "grid", gap: 12, maxWidth: 520 }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Type</div>
+                <select
+                  className="input"
+                  value={reqType}
+                  onChange={(e) => setReqType(e.target.value as "sick_paid" | "pto" | "unpaid")}
+                  style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px", background: "white" }}
+                >
+                  <option value="sick_paid">Sick (Paid)</option>
+                  <option value="pto">PTO</option>
+                  <option value="unpaid">Unpaid</option>
+                </select>
+              </div>
+              {isSingleDay ? (
+                <>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Date</div>
+                    <input type="date" className="input" value={reqStart}
+                      onChange={(e) => { setReqStart(e.target.value); setReqEnd(e.target.value); }}
+                      style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>From</div>
+                      <input type="time" className="input" value={reqStartTime} onChange={(e) => setReqStartTime(e.target.value)}
+                        style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>
+                        To{calcHours !== null ? ` — ${fmtHrsHM(calcHours)}` : ""}
+                      </div>
+                      <input type="time" className="input" value={reqEndTime} onChange={(e) => setReqEndTime(e.target.value)}
+                        style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="date-pair-grid">
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Start Date</div>
+                    <input type="date" className="input" value={reqStart}
+                      onChange={(e) => { setReqStart(e.target.value); if (reqEnd < e.target.value) setReqEnd(e.target.value); }}
+                      style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>End Date</div>
+                    <input type="date" className="input" value={reqEnd} onChange={(e) => setReqEnd(e.target.value)}
+                      style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
+                  </div>
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Notes (optional)</div>
+                <textarea className="input" value={reqNotes} onChange={(e) => setReqNotes(e.target.value)}
+                  placeholder="Any additional info for your manager…"
+                  style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", minHeight: 72 }} />
+              </div>
+              {submitMsg && <div style={{ fontSize: 13, color: submitMsg.includes("success") ? "#15803d" : "#991b1b" }}>{submitMsg}</div>}
+              <div>
+                <button className="btn btn-primary" onClick={() => void submitRequest()} disabled={submitBusy}>
+                  {submitBusy ? "Submitting…" : "Submit Request"}
+                </button>
+              </div>
             </div>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>End Date</div>
-              <input type="date" className="input" value={reqEnd} onChange={(e) => setReqEnd(e.target.value)}
-                style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Hours</div>
-            <input type="number" className="input" value={reqHours} onChange={(e) => setReqHours(e.target.value)}
-              min={0.5} step={0.5} placeholder="e.g. 8"
-              style={{ width: "100%", height: 38, border: "1px solid #e5e7eb", borderRadius: 12, padding: "0 12px" }} />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Notes (optional)</div>
-            <textarea className="input" value={reqNotes} onChange={(e) => setReqNotes(e.target.value)}
-              placeholder="Any additional info for your manager…"
-              style={{ width: "100%", border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px", minHeight: 72 }} />
-          </div>
-          {submitMsg && <div style={{ fontSize: 13, color: submitMsg.includes("success") ? "#15803d" : "#991b1b" }}>{submitMsg}</div>}
-          <div>
-            <button className="btn btn-primary" onClick={() => void submitRequest()} disabled={submitBusy}>
-              {submitBusy ? "Submitting…" : "Submit Request"}
-            </button>
-          </div>
-        </div>
+          );
+        })()}
       </div>
 
       {/* Request history */}
@@ -4889,7 +4971,7 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   {statusBadge(r.status)}
                   <span style={{ fontWeight: 700, fontSize: 14 }}>{entryTypeLabel(r.entry_type)}</span>
-                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date} – {r.end_date} · {r.hours}h</span>
+                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date === r.end_date ? r.start_date : `${r.start_date} – ${r.end_date}`} · {r.entry_type === "unpaid" ? `${Math.round(Number(r.hours))} day${Math.round(Number(r.hours)) !== 1 ? "s" : ""}` : (() => { const m = Math.round(Number(r.hours) * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })()}</span>
                 </div>
                 {r.notes && <div className="subtle" style={{ marginTop: 6, fontSize: 13 }}>{r.notes}</div>}
                 {r.review_notes && (
@@ -4903,6 +4985,554 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Employee Timesheet Log Tab ───────────────────────────────────────────────
+
+type TsClockEntry = {
+  id: string;
+  employee_id: string;
+  session_date: string;
+  session_start: string;
+  session_end: string;
+  clocked_in_at: string | null;
+  clocked_out_at: string | null;
+  auto_clocked_out: boolean;
+};
+
+type TsShiftBlock = {
+  id: string;
+  start_time: string;
+  end_time: string;
+  block_type: string;
+  label: string | null;
+  room_name: string;
+};
+
+type EditRequestForm = {
+  entryId: string;
+  field: "clocked_in_at" | "clocked_out_at";
+  currentValue: string | null;
+  newTime: string;
+  reason: string;
+};
+
+// Pay period utilities (same anchor as admin page)
+const TS_ANCHOR_MS = Date.UTC(2026, 2, 30);
+const TS_MS_DAY = 86_400_000;
+const TS_MS_PERIOD = 14 * TS_MS_DAY;
+
+function tsPeriodIndex(d: Date) {
+  const utc = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  return Math.floor((utc - TS_ANCHOR_MS) / TS_MS_PERIOD);
+}
+function tsPeriodStart(idx: number) {
+  return new Date(TS_ANCHOR_MS + idx * TS_MS_PERIOD + 12 * 3600000);
+}
+function tsWorkingDays(ps: Date) {
+  const days: Date[] = [];
+  const base = ps.getTime();
+  for (let w = 0; w < 2; w++)
+    for (let d = 0; d < 5; d++)
+      days.push(new Date(base + (w * 7 + d) * TS_MS_DAY));
+  return days;
+}
+function tsDateStr(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function tsPeriodLabel(s: Date) {
+  const e = new Date(s.getTime() + 13 * TS_MS_DAY);
+  const f = (d: Date) => d.toLocaleDateString("en-US", { month: "numeric", day: "numeric" });
+  return `${f(s)} – ${f(e)}`;
+}
+function tsMinsToHHMM(m: number) {
+  if (m <= 0) return "--";
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+}
+function tsEntryMins(e: TsClockEntry): number {
+  if (!e.clocked_in_at || !e.clocked_out_at) return 0;
+  const secs = Math.round((new Date(e.clocked_out_at).getTime() - new Date(e.clocked_in_at).getTime()) / 1000);
+  return Math.round(secs / 60);
+}
+function tsIsoToDisplay(iso: string) {
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+}
+function tsIsoToTimeInput(iso: string) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function tsFmtScheduled(hms: string) {
+  const [h, m] = hms.split(":").map(Number);
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}
+function tsMondayOfWeek(dateStr: string) {
+  const d = new Date(dateStr + "T12:00:00");
+  const dow = d.getDay();
+  const diff = dow === 0 ? -6 : 1 - dow;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+function tsDayOfWeek(dateStr: string) {
+  const dow = new Date(dateStr + "T12:00:00").getDay();
+  return dow === 0 ? 7 : dow;
+}
+
+const TS_DAY_ABBRS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Mon", "Tue", "Wed", "Thu", "Fri"];
+
+type MyClockEditRequest = {
+  id: string;
+  clock_entry_id: string;
+  field: "clocked_in_at" | "clocked_out_at";
+  old_value: string | null;
+  new_value: string;
+  reason: string;
+  status: "pending" | "approved" | "denied";
+  created_at: string;
+  session_date?: string;
+};
+
+function EmployeeTimesheetLogTab({ employeeId }: { employeeId: string }) {
+  const [periodIndex, setPeriodIndex] = useState(() => tsPeriodIndex(new Date()));
+  const [entries, setEntries] = useState<TsClockEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modalDate, setModalDate] = useState<{ dateStr: string; dateLabel: string } | null>(null);
+  const [shiftBlocks, setShiftBlocks] = useState<Record<string, TsShiftBlock[]>>({});
+  const [shiftLoading, setShiftLoading] = useState<Set<string>>(new Set());
+  const [editForm, setEditForm] = useState<EditRequestForm | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitMsg, setSubmitMsg] = useState<string>("");
+  const [myEditRequests, setMyEditRequests] = useState<MyClockEditRequest[]>([]);
+  const [editReqsLoading, setEditReqsLoading] = useState(true);
+
+  const periodStart = useMemo(() => tsPeriodStart(periodIndex), [periodIndex]);
+  const workingDays = useMemo(() => tsWorkingDays(periodStart), [periodStart]);
+  const dateStrs = useMemo(() => workingDays.map(tsDateStr), [workingDays]);
+
+  useEffect(() => {
+    setLoading(true);
+    const start = dateStrs[0];
+    const end = dateStrs[dateStrs.length - 1];
+    supabase
+      .from("clock_entries")
+      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out")
+      .eq("employee_id", employeeId)
+      .gte("session_date", start)
+      .lte("session_date", end)
+      .not("clocked_in_at", "is", null)
+      .then(({ data }) => {
+        setEntries((data as TsClockEntry[]) ?? []);
+        setLoading(false);
+      });
+  }, [employeeId, dateStrs]);
+
+  useEffect(() => {
+    setEditReqsLoading(true);
+    supabase
+      .from("clock_edit_requests")
+      .select("id, clock_entry_id, field, old_value, new_value, reason, status, created_at, session_date")
+      .eq("employee_id", employeeId)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        setMyEditRequests((data as MyClockEditRequest[]) ?? []);
+        setEditReqsLoading(false);
+      });
+  }, [employeeId]);
+
+  const entriesByDate = useMemo(() => {
+    const m = new Map<string, TsClockEntry[]>();
+    for (const e of entries) {
+      if (!m.has(e.session_date)) m.set(e.session_date, []);
+      m.get(e.session_date)!.push(e);
+    }
+    return m;
+  }, [entries]);
+
+  const modalEntries = useMemo(() =>
+    modalDate ? [...(entriesByDate.get(modalDate.dateStr) ?? [])].sort((a, b) => a.session_start.localeCompare(b.session_start)) : [],
+    [modalDate, entriesByDate]
+  );
+
+  async function loadShiftBlocks(entry: TsClockEntry) {
+    const key = entry.id;
+    if (shiftBlocks[key] || shiftLoading.has(key)) return;
+    setShiftLoading((p) => new Set(p).add(key));
+    const monday = tsMondayOfWeek(entry.session_date);
+    const dow = tsDayOfWeek(entry.session_date);
+    const { data: sched } = await supabase
+      .from("schedules").select("id")
+      .eq("week_start", monday).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!sched) { setShiftLoading((p) => { const n = new Set(p); n.delete(key); return n; }); return; }
+    const { data: allBlocks } = await supabase
+      .from("schedule_blocks")
+      .select("id, start_time, end_time, block_type, label, schedule_rooms(name)")
+      .eq("schedule_id", sched.id).eq("employee_id", employeeId)
+      .eq("day_of_week", dow).order("start_time");
+    type RB = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; schedule_rooms: { name: string } | { name: string }[] | null };
+    const sorted = ((allBlocks ?? []) as unknown as RB[]).sort((a, b) => a.start_time.localeCompare(b.start_time));
+    // Group into sessions split by lunch_break
+    const sessions: { start: string; blocks: RB[] }[] = [];
+    let cur: RB[] = [];
+    for (const b of sorted) {
+      if (b.block_type === "lunch_break") { if (cur.length) { sessions.push({ start: cur[0].start_time, blocks: cur }); cur = []; } }
+      else cur.push(b);
+    }
+    if (cur.length) sessions.push({ start: cur[0].start_time, blocks: cur });
+    const matched = sessions.find((s) => s.start === entry.session_start);
+    const mapped: TsShiftBlock[] = (matched?.blocks ?? []).map((b) => ({
+      id: b.id, start_time: b.start_time, end_time: b.end_time, block_type: b.block_type, label: b.label,
+      room_name: (Array.isArray(b.schedule_rooms) ? b.schedule_rooms[0]?.name : b.schedule_rooms?.name) ?? "—",
+    }));
+    setShiftBlocks((p) => ({ ...p, [key]: mapped }));
+    setShiftLoading((p) => { const n = new Set(p); n.delete(key); return n; });
+  }
+
+  useEffect(() => {
+    for (const entry of modalEntries) loadShiftBlocks(entry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalEntries]);
+
+  async function submitEditRequest() {
+    if (!editForm || !editForm.newTime || !editForm.reason.trim()) {
+      setSubmitMsg("Please enter the new time and a reason.");
+      return;
+    }
+    setSubmitting(true);
+    setSubmitMsg("");
+    // Build the ISO from the entry's session_date + new HH:MM
+    const entry = entries.find((e) => e.id === editForm.entryId);
+    if (!entry) { setSubmitting(false); return; }
+    const [h, m] = editForm.newTime.split(":").map(Number);
+    const dt = new Date(entry.session_date + "T12:00:00");
+    dt.setHours(h, m, 0, 0);
+    const newIso = dt.toISOString();
+
+    const { error } = await supabase.from("clock_edit_requests").insert({
+      clock_entry_id: editForm.entryId,
+      employee_id: employeeId,
+      field: editForm.field,
+      old_value: editForm.currentValue,
+      new_value: newIso,
+      reason: editForm.reason.trim(),
+      status: "pending",
+      session_date: entry.session_date,
+    });
+    setSubmitting(false);
+    if (error) { setSubmitMsg(error.message); return; }
+    setSubmitMsg("Request submitted. An admin will review your request.");
+    setEditForm(null);
+    // Refresh edit requests list
+    supabase
+      .from("clock_edit_requests")
+      .select("id, clock_entry_id, field, old_value, new_value, reason, status, created_at, session_date")
+      .eq("employee_id", employeeId)
+      .order("created_at", { ascending: false })
+      .then(({ data }) => {
+        setMyEditRequests((data as MyClockEditRequest[]) ?? []);
+      });
+  }
+
+  const totalPeriodMins = useMemo(() =>
+    entries.reduce((s, e) => s + tsEntryMins(e), 0),
+    [entries]
+  );
+
+  const blockTypeColor = (t: string) => t === "break" ? "#22c55e" : t === "lunch_break" ? "#f97316" : "#6366f1";
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Period picker */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+          <div style={{ fontWeight: 950, fontSize: 18 }}>Timesheet Log</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button onClick={() => setPeriodIndex((i) => i - 1)} style={{ padding: "4px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>‹</button>
+            <span style={{ fontWeight: 700, fontSize: 14, minWidth: 130, textAlign: "center" }}>{tsPeriodLabel(periodStart)}</span>
+            <button onClick={() => setPeriodIndex((i) => i + 1)} style={{ padding: "4px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontWeight: 700, fontSize: 14 }}>›</button>
+            <button onClick={() => setPeriodIndex(tsPeriodIndex(new Date()))} style={{ padding: "4px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontSize: 13, color: "#6b7280" }}>Current</button>
+          </div>
+          {!loading && <span style={{ fontSize: 13, color: "#6b7280" }}>Total: {tsMinsToHHMM(totalPeriodMins)}</span>}
+        </div>
+
+        {loading ? (
+          <div className="subtle">Loading…</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+              <thead>
+                <tr>
+                  <th style={{ padding: "6px 10px", textAlign: "left", background: "#f9fafb", borderBottom: "1.5px solid #e5e7eb", fontWeight: 800, minWidth: 60 }}>Week</th>
+                  {workingDays.map((d, i) => (
+                    <th key={i} style={{ padding: "6px 8px", textAlign: "center", background: i < 5 ? "#f0f9ff" : "#f0fdf4", borderBottom: "1.5px solid #e5e7eb", fontWeight: 700, color: i < 5 ? "#0369a1" : "#15803d", minWidth: 70 }}>
+                      <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.75 }}>{TS_DAY_ABBRS[i]}</div>
+                      <div>{d.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}</div>
+                    </th>
+                  ))}
+                  <th style={{ padding: "6px 8px", textAlign: "center", background: "#f9fafb", borderBottom: "1.5px solid #e5e7eb", fontWeight: 800, minWidth: 64 }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[0, 1].map((week) => {
+                  const weekDates = dateStrs.slice(week * 5, week * 5 + 5);
+                  const weekMins = weekDates.reduce((s, ds) => s + (entriesByDate.get(ds) ?? []).reduce((ss, e) => ss + tsEntryMins(e), 0), 0);
+                  return (
+                    <tr key={week}>
+                      <td style={{ padding: "8px 10px", fontWeight: 700, color: week === 0 ? "#0369a1" : "#15803d", background: week === 0 ? "#f8fbff" : "#f8fdf9" }}>
+                        Wk {week + 1}
+                      </td>
+                      {weekDates.map((ds, di) => {
+                        const dayEntries = entriesByDate.get(ds) ?? [];
+                        const mins = dayEntries.reduce((s, e) => s + tsEntryMins(e), 0);
+                        const hasOpen = dayEntries.some((e) => !e.clocked_out_at);
+                        const hasAuto = dayEntries.some((e) => e.auto_clocked_out);
+                        const dateLabel = `${TS_DAY_ABBRS[week * 5 + di]} ${workingDays[week * 5 + di].toLocaleDateString("en-US", { month: "numeric", day: "numeric" })}`;
+                        const hasData = dayEntries.length > 0;
+                        return (
+                          <td key={ds} style={{ padding: "6px 6px", textAlign: "center", background: week === 0 ? "#f8fbff" : "#f8fdf9" }}>
+                            {hasData ? (
+                              <button
+                                onClick={() => setModalDate({ dateStr: ds, dateLabel })}
+                                style={{
+                                  display: "inline-block",
+                                  background: hasOpen ? "#dbeafe" : hasAuto ? "#fee2e2" : "#dcfce7",
+                                  color: hasOpen ? "#1e40af" : hasAuto ? "#991b1b" : "#15803d",
+                                  border: `1.5px solid ${hasOpen ? "#93c5fd" : hasAuto ? "#fca5a5" : "#86efac"}`,
+                                  borderRadius: 8, padding: "4px 8px",
+                                  fontWeight: 700, fontSize: 12,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                {hasOpen ? "In" : tsMinsToHHMM(mins)}
+                              </button>
+                            ) : (
+                              <span style={{ color: "#d1d5db" }}>--</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td style={{ padding: "8px 8px", textAlign: "center", fontWeight: 800, color: weekMins > 0 ? "#111827" : "#d1d5db", background: week === 0 ? "#f8fbff" : "#f8fdf9" }}>
+                        {tsMinsToHHMM(weekMins)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Clock edit requests */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+        <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>My Clock Edit Requests</div>
+        {editReqsLoading ? (
+          <div className="subtle">Loading…</div>
+        ) : myEditRequests.length === 0 ? (
+          <div className="subtle">(No clock edit requests yet.)</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {myEditRequests.map((req) => {
+              const statusColors: Record<string, { bg: string; color: string; border: string }> = {
+                pending: { bg: "#fef3c7", color: "#92400e", border: "#fde68a" },
+                approved: { bg: "#dcfce7", color: "#15803d", border: "#86efac" },
+                denied: { bg: "#fee2e2", color: "#991b1b", border: "#fca5a5" },
+              };
+              const sc = statusColors[req.status] ?? { bg: "#f3f4f6", color: "#374151", border: "#e5e7eb" };
+              const fieldLabel = req.field === "clocked_in_at" ? "Clock In" : "Clock Out";
+              const fmtIso = (iso: string | null) => iso ? new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }) : "—";
+              return (
+                <div key={req.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 14px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                    <span style={{ padding: "2px 10px", borderRadius: 999, fontSize: 12, fontWeight: 700, background: sc.bg, color: sc.color, border: `1.5px solid ${sc.border}` }}>
+                      {req.status.charAt(0).toUpperCase() + req.status.slice(1)}
+                    </span>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{fieldLabel}</span>
+                    {req.session_date && <span className="subtle" style={{ fontSize: 13 }}>{req.session_date}</span>}
+                  </div>
+                  <div style={{ fontSize: 13, color: "#6b7280" }}>
+                    <span style={{ textDecoration: "line-through" }}>{fmtIso(req.old_value)}</span>
+                    <span style={{ margin: "0 6px" }}>→</span>
+                    <span style={{ fontWeight: 700, color: "#111827" }}>{fmtIso(req.new_value)}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4, fontStyle: "italic" }}>{req.reason}</div>
+                  <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 2 }}>{new Date(req.created_at).toLocaleDateString()}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Session detail modal */}
+      {modalDate && (
+        <>
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }} onClick={() => { setModalDate(null); setEditForm(null); setSubmitMsg(""); }} />
+          <div
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+              zIndex: 301, background: "white", borderRadius: 16,
+              boxShadow: "0 8px 40px rgba(0,0,0,0.2)",
+              width: "min(540px, 95vw)", maxHeight: "90vh", overflowY: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>{modalDate.dateLabel}</div>
+              <button onClick={() => { setModalDate(null); setEditForm(null); setSubmitMsg(""); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
+            </div>
+
+            <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+              {submitMsg && (
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: submitMsg.includes("submitted") ? "#f0fdf4" : "#fef2f2", color: submitMsg.includes("submitted") ? "#15803d" : "#991b1b", fontSize: 13 }}>
+                  {submitMsg}
+                </div>
+              )}
+
+              {modalEntries.map((entry, idx) => {
+                const mins = tsEntryMins(entry);
+                const isOpen = !entry.clocked_out_at;
+                const blocks = shiftBlocks[entry.id] ?? [];
+                const isLoadingBlocks = shiftLoading.has(entry.id);
+
+                return (
+                  <div key={entry.id} style={{ border: "1.5px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+                    <div style={{ padding: "10px 14px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>
+                        Session {idx + 1} · {tsFmtScheduled(entry.session_start)} – {tsFmtScheduled(entry.session_end)}
+                        {isOpen && <span style={{ marginLeft: 8, color: "#0369a1", fontSize: 12 }}>● Active</span>}
+                      </div>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: isOpen ? "#0369a1" : "#6366f1" }}>
+                        {isOpen ? "Active" : tsMinsToHHMM(mins)}
+                      </div>
+                    </div>
+
+                    <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                      {/* Clock In */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 14 }}>🟢</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", minWidth: 64 }}>Clock In</span>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>
+                          {entry.clocked_in_at ? tsIsoToDisplay(entry.clocked_in_at) : "—"}
+                        </span>
+                        {entry.clocked_in_at && (
+                          <button
+                            onClick={() => {
+                              setSubmitMsg("");
+                              setEditForm({
+                                entryId: entry.id, field: "clocked_in_at",
+                                currentValue: entry.clocked_in_at,
+                                newTime: tsIsoToTimeInput(entry.clocked_in_at!), reason: "",
+                              });
+                            }}
+                            style={{ padding: "3px 10px", borderRadius: 7, border: "1.5px solid #d1d5db", background: "white", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
+                          >
+                            Request Edit
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Clock Out */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 14 }}>🔴</span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", minWidth: 64 }}>Clock Out</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: isOpen ? "#9ca3af" : entry.auto_clocked_out ? "#991b1b" : undefined }}>
+                          {entry.clocked_out_at
+                            ? `${tsIsoToDisplay(entry.clocked_out_at)}${entry.auto_clocked_out ? " (auto)" : ""}`
+                            : "Still clocked in"}
+                        </span>
+                        {entry.clocked_out_at && (
+                          <button
+                            onClick={() => {
+                              setSubmitMsg("");
+                              setEditForm({
+                                entryId: entry.id, field: "clocked_out_at",
+                                currentValue: entry.clocked_out_at,
+                                newTime: tsIsoToTimeInput(entry.clocked_out_at!), reason: "",
+                              });
+                            }}
+                            style={{ padding: "3px 10px", borderRadius: 7, border: "1.5px solid #d1d5db", background: "white", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
+                          >
+                            Request Edit
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Shift blocks */}
+                      {isLoadingBlocks ? (
+                        <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading schedule…</div>
+                      ) : blocks.length > 0 ? (
+                        <div style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+                          {blocks.map((b) => (
+                            <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                              <div style={{ width: 3, height: 18, borderRadius: 2, background: blockTypeColor(b.block_type), flexShrink: 0 }} />
+                              <span style={{ fontWeight: 700 }}>{tsFmtScheduled(b.start_time)} – {tsFmtScheduled(b.end_time)}</span>
+                              <span style={{ color: "#6b7280" }}>· {b.room_name}</span>
+                              {b.label && b.label !== "Unassigned" && <span style={{ color: "#9ca3af" }}>· {b.label}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Edit request form */}
+            {editForm && (
+              <div style={{ padding: "16px 20px", borderTop: "1.5px solid #e5e7eb", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontWeight: 800, fontSize: 14 }}>
+                  Request Edit — {editForm.field === "clocked_in_at" ? "Clock In" : "Clock Out"}
+                </div>
+                <div style={{ fontSize: 13, color: "#6b7280" }}>
+                  Current: {editForm.currentValue ? tsIsoToDisplay(editForm.currentValue) : "—"}
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>New time</div>
+                  <input
+                    type="time"
+                    value={editForm.newTime}
+                    onChange={(e) => setEditForm((f) => f ? { ...f, newTime: e.target.value } : f)}
+                    style={{ padding: "6px 10px", borderRadius: 8, border: "1.5px solid #d1d5db", fontSize: 14, fontWeight: 600 }}
+                  />
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 4 }}>Reason <span style={{ color: "#9ca3af", fontWeight: 400 }}>(required)</span></div>
+                  <input
+                    type="text"
+                    value={editForm.reason}
+                    onChange={(e) => setEditForm((f) => f ? { ...f, reason: e.target.value } : f)}
+                    placeholder="e.g. Forgot to clock out before leaving"
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1.5px solid #d1d5db", fontSize: 13, boxSizing: "border-box" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    onClick={() => void submitEditRequest()}
+                    disabled={submitting}
+                    style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#4f46e5", color: "white", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
+                  >
+                    {submitting ? "Submitting…" : "Submit Request"}
+                  </button>
+                  <button
+                    onClick={() => setEditForm(null)}
+                    style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", fontWeight: 700, fontSize: 13, cursor: "pointer", color: "#374151" }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ padding: "10px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 13, fontWeight: 700 }}>Day total</span>
+              <span style={{ fontSize: 15, fontWeight: 900 }}>{tsMinsToHHMM(modalEntries.reduce((s, e) => s + tsEntryMins(e), 0))}</span>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

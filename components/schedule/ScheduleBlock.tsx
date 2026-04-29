@@ -26,6 +26,7 @@ interface ScheduleBlockProps {
   onDragEnd: (blockId: string, deltaSlots: number, clientX: number) => void;
   onDragCancel: () => void;
   warnings?: string[];
+  highlighted?: boolean;
 }
 
 export default function ScheduleBlock({
@@ -39,6 +40,7 @@ export default function ScheduleBlock({
   onDragEnd,
   onDragCancel,
   warnings,
+  highlighted,
 }: ScheduleBlockProps) {
   const elRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -267,8 +269,10 @@ export default function ScheduleBlock({
         overflow: "hidden",
         cursor: readOnly ? "default" : "grab",
         userSelect: "none",
-        zIndex: 10,
+        zIndex: highlighted ? 12 : 10,
         touchAction: "none",
+        boxShadow: highlighted ? "0 0 0 3px #e6178d, 0 0 14px rgba(230,23,141,0.45)" : undefined,
+        transition: "box-shadow 0.3s",
       }}
     >
       {/* Resize top handle */}
