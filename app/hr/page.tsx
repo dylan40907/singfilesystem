@@ -382,10 +382,10 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           .from("hr_employees")
           .select("id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points,attendance_score,profile_id,hours_pin")
           .eq("profile_id", userId)
-          .single();
+          .maybeSingle();
 
         if (empRes.error) throw empRes.error;
-        setEmployee(empRes.data as any as EmployeeRow);
+        setEmployee(empRes.data ? empRes.data as any as EmployeeRow : null);
       } catch (e: any) {
         setError(e?.message ?? "Failed to load HR portal.");
       } finally {
@@ -1253,7 +1253,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
       } catch (e: any) {
         setMeetingStatus("Failed to load meeting data: " + (e?.message ?? "unknown"));
       }
-      await loadAttendeeMeetings(employee.id);
+      if (employee?.id) await loadAttendeeMeetings(employee.id);
     })();
   }, [activeTab, employee?.id, isSupervisor, reloadMeetingTypes, reloadAllEmployees, loadAttendeeMeetings]);
 
@@ -1278,18 +1278,18 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
     );
   }
 
-  if (!profile || !employee) {
+  if (!profile) {
     return (
       <main style={{ padding: 24 }}>
         <div style={{ fontWeight: 900, fontSize: 18 }}>HR</div>
         <div className="subtle" style={{ marginTop: 8 }}>
-          No profile/employee record found.
+          No profile found.
         </div>
       </main>
     );
   }
 
-  if (!profile.is_active || !employee.is_active) {
+  if (!profile.is_active || employee?.is_active === false) {
     return (
       <main style={{ padding: 24 }}>
         <div style={{ fontWeight: 900, fontSize: 18 }}>HR</div>
@@ -1384,8 +1384,8 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                 <div style={{ fontWeight: 950, fontSize: 18 }}>Attendance</div>
                 <div className="subtle" style={{ marginTop: 6 }}>
-                  Points remaining: <b>{employee.attendance_points}</b>
-                  {typeof employee.attendance_score === "number" ? (
+                  Points remaining: <b>{employee?.attendance_points ?? "—"}</b>
+                  {typeof employee?.attendance_score === "number" ? (
                     <>
                       {" "}
                       • Attendance score: <b>{employee.attendance_score}</b>
@@ -1665,7 +1665,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   <div style={{ fontWeight: 950, fontSize: 18 }}>Meetings</div>
 
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                    <button className="btn" type="button" onClick={() => void loadAttendeeMeetings(employee.id)}>
+                    <button className="btn" type="button" onClick={() => employee?.id && void loadAttendeeMeetings(employee.id)}>
                       Refresh
                     </button>
                   </div>

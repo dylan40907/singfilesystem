@@ -191,6 +191,8 @@ function SessionModal({
   const [shiftBlocks, setShiftBlocks] = useState<Record<string, ShiftBlock[]>>({});
   const [shiftLoading, setShiftLoading] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
   const totalMins = entries.reduce((s, e) => s + entryPaidMins(e), 0);
 
@@ -304,6 +306,18 @@ function SessionModal({
       setEntries(updated);
       onEntriesChanged(updated);
     }
+  }
+
+  async function deleteEntry(entryId: string) {
+    setDeleting((prev) => new Set(prev).add(entryId));
+    const { error } = await supabase.from("clock_entries").delete().eq("id", entryId);
+    setDeleting((prev) => { const n = new Set(prev); n.delete(entryId); return n; });
+    if (!error) {
+      const updated = entries.filter((e) => e.id !== entryId);
+      setEntries(updated);
+      onEntriesChanged(updated);
+    }
+    setConfirmDelete(null);
   }
 
   const blockTypeColor = (t: string) =>
@@ -464,12 +478,39 @@ function SessionModal({
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => toggleShiftDetails(entry)}
-                    style={{ alignSelf: "flex-start", background: "none", border: "1px solid #e5e7eb", borderRadius: 7, padding: "4px 12px", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
-                  >
-                    {expanded ? "▲" : "▼"} Shift Details
-                  </button>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => toggleShiftDetails(entry)}
+                      style={{ background: "none", border: "1px solid #e5e7eb", borderRadius: 7, padding: "4px 12px", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
+                    >
+                      {expanded ? "▲" : "▼"} Shift Details
+                    </button>
+                    {confirmDelete === entry.id ? (
+                      <>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>Delete this session?</span>
+                        <button
+                          onClick={() => deleteEntry(entry.id)}
+                          disabled={deleting.has(entry.id)}
+                          style={{ padding: "4px 12px", borderRadius: 7, border: "1.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          {deleting.has(entry.id) ? "Deleting…" : "Yes, Delete"}
+                        </button>
+                        <button
+                          onClick={() => setConfirmDelete(null)}
+                          style={{ padding: "4px 12px", borderRadius: 7, border: "1px solid #e5e7eb", background: "white", color: "#6b7280", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDelete(entry.id)}
+                        style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 7, padding: "4px 12px", fontSize: 12, fontWeight: 700, color: "#991b1b", cursor: "pointer" }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
 
                   {expanded && (
                     <div style={{ background: "#f9fafb", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
