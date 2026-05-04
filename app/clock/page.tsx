@@ -155,6 +155,7 @@ export default function ClockPage() {
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [clockEntry, setClockEntry] = useState<ClockEntry | null>(null);
   const [notes, setNotes] = useState("");
+  const [clockError, setClockError] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [timerStr, setTimerStr] = useState("0:00");
   const [successMsg, setSuccessMsg] = useState("");
@@ -379,8 +380,18 @@ export default function ClockPage() {
     setScreen("clockin");
   }
 
+  async function ensureSession(): Promise<boolean> {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) return true;
+    const { error } = await supabase.auth.refreshSession();
+    if (error) { router.replace("/"); return false; }
+    return true;
+  }
+
   async function handleClockIn() {
     if (!employee || !currentSession) return;
+    setClockError("");
+    if (!await ensureSession()) return;
     const _d = new Date();
     const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
     const { data, error } = await supabase
@@ -396,7 +407,7 @@ export default function ClockPage() {
       .select()
       .single();
 
-    if (error) { setPinError(error.message); return; }
+    if (error) { setClockError(error.message); return; }
     setClockEntry(data as ClockEntry);
     setSuccessMsg(`You're clocked in!`);
     setScreen("success");
@@ -405,6 +416,8 @@ export default function ClockPage() {
 
   async function handleClockOut() {
     if (!clockEntry) return;
+    setClockError("");
+    if (!await ensureSession()) return;
     const { error } = await supabase
       .from("clock_entries")
       .update({
@@ -413,7 +426,7 @@ export default function ClockPage() {
       })
       .eq("id", clockEntry.id);
 
-    if (error) { setPinError(error.message); return; }
+    if (error) { setClockError(error.message); return; }
     setSuccessMsg(`You're clocked out!`);
     setScreen("success");
     setTimeout(() => resetToPin(), 2500);
@@ -422,6 +435,7 @@ export default function ClockPage() {
   function resetToPin() {
     setPin("");
     setPinError("");
+    setClockError("");
     setEmployee(null);
     setSessions([]);
     setCurrentSession(null);
@@ -649,9 +663,20 @@ export default function ClockPage() {
             )}
           </div>
 
+          {/* Error on clocking screen */}
+          {clockError && (
+            <div style={{
+              background: "#fef2f2", color: "#dc2626", padding: "10px 14px",
+              borderRadius: 10, fontSize: 13, fontWeight: 600, marginBottom: 12, textAlign: "center",
+            }}>
+              {clockError}
+            </div>
+          )}
+
           {/* Action button */}
           {screen === "clockin" ? (
             <button
+              type="button"
               onClick={handleClockIn}
               style={{
                 width: "100%", padding: "18px 0", borderRadius: 16, border: "none",
@@ -664,6 +689,7 @@ export default function ClockPage() {
             </button>
           ) : (
             <button
+              type="button"
               onClick={handleClockOut}
               style={{
                 width: "100%", padding: "18px 0", borderRadius: 16, border: "none",
@@ -677,6 +703,7 @@ export default function ClockPage() {
           )}
 
           <button
+            type="button"
             onClick={resetToPin}
             style={{
               display: "block", width: "100%", marginTop: 12, padding: "12px 0",

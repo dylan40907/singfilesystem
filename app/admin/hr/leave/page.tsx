@@ -943,6 +943,7 @@ export default function LeavePage() {
               balance={unpaidUsed}
               accent="#6b7280"
               balanceLabel="days used YTD"
+              formatBalance={(n) => String(Math.round(n))}
               lines={[
                 ["", "Logged for record-keeping; no balance tracked."],
                 ...(balance?.unpaid_override != null ? [["Override active", ""] as [string, string]] : []),
@@ -1144,8 +1145,8 @@ function Card({ title, children, style }: { title: string; children: React.React
   );
 }
 
-function BalanceCard({ title, balance, accent, lines, balanceLabel = "available", onEdit }: {
-  title: string; balance: number; accent: string; lines: Array<[string, string]>; balanceLabel?: string; onEdit?: () => void;
+function BalanceCard({ title, balance, accent, lines, balanceLabel = "available", onEdit, formatBalance = fmtHours }: {
+  title: string; balance: number; accent: string; lines: Array<[string, string]>; balanceLabel?: string; onEdit?: () => void; formatBalance?: (n: number) => string;
 }) {
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, background: "white", padding: 16 }}>
@@ -1162,7 +1163,7 @@ function BalanceCard({ title, balance, accent, lines, balanceLabel = "available"
           textUnderlineOffset: 4,
         }}
       >
-        {fmtHours(balance)}
+        {formatBalance(balance)}
       </button>
       <div className="subtle" style={{ fontSize: 12, marginBottom: 10 }}>{balanceLabel}</div>
       {lines.map(([k, v], i) => (
