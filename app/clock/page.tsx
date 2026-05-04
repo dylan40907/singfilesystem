@@ -139,6 +139,12 @@ export default function ClockPage() {
     })();
   }, [router]);
 
+  // Proactively refresh the session every 45 minutes so kiosk devices don't expire mid-shift
+  useEffect(() => {
+    const id = setInterval(() => { supabase.auth.refreshSession(); }, 45 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // ── State ──
   const [pin, setPin] = useState("");
   const [pinError, setPinError] = useState("");
@@ -198,13 +204,32 @@ export default function ClockPage() {
   }
 
   async function attemptPin(p: string) {
+    // Ensure the session is still valid — JWT expires after 1h of inactivity
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      // Try to refresh; if that fails, kick back to login
+      const { error: refreshErr } = await supabase.auth.refreshSession();
+      if (refreshErr) { router.replace("/"); return; }
+    }
+
     // Look up employee by PIN
-    const { data: emp } = await supabase
+    const { data: emp, error: empErr } = await supabase
       .from("hr_employees")
       .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, hours_pin")
       .eq("hours_pin", p)
       .eq("is_active", true)
-      .single();
+      .maybeSingle();
+
+    if (empErr) {
+      // Auth error — session expired and refresh failed; redirect to login
+      if (empErr.code === "PGRST301" || empErr.message?.toLowerCase().includes("jwt")) {
+        router.replace("/");
+        return;
+      }
+      setPinError("Connection error. Please try again.");
+      setPin("");
+      return;
+    }
 
     if (!emp) {
       setPinError("No employee found for that PIN. Try again.");
