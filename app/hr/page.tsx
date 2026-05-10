@@ -4716,7 +4716,7 @@ function hoursWorked(rows: ClockHoursRow[]): number {
 
 function calcSickBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entries: LeaveEntryRow[]) {
   const worked = hoursWorked(clockRows);
-  const accrued = bal.sick_frontloaded ? bal.sick_annual_cap : Math.min(Math.floor(worked / 30), bal.sick_annual_cap);
+  const accrued = bal.sick_frontloaded ? bal.sick_annual_cap : Math.min(Math.floor(worked * 60 / 30) / 60, bal.sick_annual_cap);
   const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + e.hours, 0);
   const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + e.hours, 0);
   return Math.min(bal.sick_carryover + bal.sick_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
@@ -4726,7 +4726,7 @@ function calcPtoBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entrie
   if (!bal.pto_active || !bal.pto_plan_hours || !bal.pto_weeks) return 0;
   const worked = hoursWorked(clockRows);
   const rate = (bal.pto_weeks * 40) / bal.pto_plan_hours;
-  const accrued = Math.min(Math.floor(worked / rate), bal.pto_plan_hours);
+  const accrued = Math.min(Math.floor(worked * 60 / rate) / 60, bal.pto_plan_hours);
   const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + e.hours, 0);
   const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + e.hours, 0);
   return Math.min(bal.pto_carryover + bal.pto_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);

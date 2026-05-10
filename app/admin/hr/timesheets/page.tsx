@@ -263,6 +263,28 @@ function SessionModal({
     setShiftLoading((prev) => { const n = new Set(prev); n.delete(key); return n; });
   }
 
+  async function clockOutNow(entryId: string) {
+    const entry = entries.find((e) => e.id === entryId);
+    if (!entry) return;
+    setSaving((prev) => new Set(prev).add(entryId + "out"));
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    // Past day: auto clock-out at 11:59:59 PM on session date. Today: use current time.
+    const iso = entry.session_date < todayStr
+      ? buildISO(entry.session_date, "23:59:59")
+      : new Date().toISOString();
+    const { error } = await supabase.from("clock_entries").update({ clocked_out_at: iso, auto_clocked_out: true }).eq("id", entryId);
+    setSaving((prev) => { const n = new Set(prev); n.delete(entryId + "out"); return n; });
+    if (!error) {
+      const updated = entries.map((e) =>
+        e.id === entryId ? { ...e, clocked_out_at: iso, auto_clocked_out: true } : e
+      );
+      setEntries(updated);
+      setEditTimes((prev) => ({ ...prev, [entryId]: { ...prev[entryId], out: isoToTimeInput(iso) } }));
+      onEntriesChanged(updated);
+    }
+  }
+
   async function saveTime(entryId: string, field: "in" | "out") {
     const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
@@ -452,7 +474,16 @@ function SessionModal({
                             </span>
                           </>
                         ) : (
-                          <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 700 }}>Still clocked in</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 700 }}>Still clocked in</span>
+                            <button
+                              onClick={() => clockOutNow(entry.id)}
+                              disabled={saving.has(entry.id + "out")}
+                              style={{ padding: "3px 10px", borderRadius: 7, border: "1.5px solid #6366f1", background: "#eef2ff", color: "#4338ca", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                            >
+                              {saving.has(entry.id + "out") ? "Clocking out…" : "Clock Out"}
+                            </button>
+                          </div>
                         )}
                       </div>
                       {hasNoteOut && (

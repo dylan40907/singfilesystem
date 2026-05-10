@@ -153,6 +153,14 @@ function fmtRange(s: string, e: string): string {
   return `${fmtYmd(s)} – ${fmtYmd(e)}`;
 }
 
+function decToHM(hours: number): [number, number] {
+  const totalMins = Math.round(Math.abs(hours) * 60);
+  return [Math.floor(totalMins / 60), totalMins % 60];
+}
+function hmToDec(h: number, m: number): number {
+  return h + m / 60;
+}
+
 function fmtHours(h: number): string {
   const totalMins = Math.round(h * 60);
   const hrs = Math.floor(totalMins / 60);
@@ -180,7 +188,7 @@ function computeSickBalance(
 ): { carryover: number; accrued: number; accruedRaw: number; used: number; adjustments: number; balance: number; cap: number; initial: number } {
   const cap = bal?.sick_annual_cap ?? 40;
   const carryover = Number(bal?.sick_carryover ?? 0);
-  const accruedRaw = bal?.sick_frontloaded ? cap : Math.floor(hoursWorked / 30);
+  const accruedRaw = bal?.sick_frontloaded ? cap : Math.floor(hoursWorked * 60 / 30) / 60;
   const accrued = Math.min(accruedRaw, cap);
   const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + Number(e.hours), 0);
   const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + Number(e.hours), 0);
@@ -202,7 +210,7 @@ function computePtoBalance(
   let accrualRate = 0;
   if (active && plan > 0) {
     accrualRate = (weeks * 40) / plan;
-    accrued = Math.min(Math.floor(hoursWorked / accrualRate), plan);
+    accrued = Math.min(Math.floor(hoursWorked * 60 / accrualRate) / 60, plan);
   }
   const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + Number(e.hours), 0);
   const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + Number(e.hours), 0);
@@ -257,13 +265,17 @@ export default function LeavePage() {
   const [logEnd, setLogEnd] = useState<string>(todayYmd());
   const [logStartTime, setLogStartTime] = useState<string>("09:00");
   const [logEndTime, setLogEndTime] = useState<string>("17:00");
-  const [logHours, setLogHours] = useState<string>("8");
+  const [logHoursH, setLogHoursH] = useState(1);
+  const [logHoursM, setLogHoursM] = useState(0);
+  const [logHoursSign, setLogHoursSign] = useState<"+" | "-">("+");
   const [logNotes, setLogNotes] = useState<string>("");
   const [logBusy, setLogBusy] = useState(false);
 
   // Manual edit modal
   const [editField, setEditField] = useState<EditField | null>(null);
-  const [editNewValue, setEditNewValue] = useState("");
+  const [editNewH, setEditNewH] = useState(0);
+  const [editNewM, setEditNewM] = useState(0);
+  const [editNewValue, setEditNewValue] = useState(""); // for unpaid (days)
   const [editNotes, setEditNotes] = useState("");
   const [editHistory, setEditHistory] = useState<ManualAdjRow[]>([]);
   const [editHistoryLoading, setEditHistoryLoading] = useState(false);
@@ -274,10 +286,14 @@ export default function LeavePage() {
   const [cfgPtoPlan, setCfgPtoPlan] = useState<number>(0);
   const [cfgPtoWeeks, setCfgPtoWeeks] = useState<number>(48);
   const [cfgSickFrontloaded, setCfgSickFrontloaded] = useState(false);
-  const [cfgSickInitial, setCfgSickInitial] = useState<string>("0");
-  const [cfgPtoInitial, setCfgPtoInitial] = useState<string>("0");
-  const [cfgSickCarryover, setCfgSickCarryover] = useState<string>("0");
-  const [cfgPtoCarryover, setCfgPtoCarryover] = useState<string>("0");
+  const [cfgSickInitialH, setCfgSickInitialH] = useState(0);
+  const [cfgSickInitialM, setCfgSickInitialM] = useState(0);
+  const [cfgPtoInitialH, setCfgPtoInitialH] = useState(0);
+  const [cfgPtoInitialM, setCfgPtoInitialM] = useState(0);
+  const [cfgSickCarryoverH, setCfgSickCarryoverH] = useState(0);
+  const [cfgSickCarryoverM, setCfgSickCarryoverM] = useState(0);
+  const [cfgPtoCarryoverH, setCfgPtoCarryoverH] = useState(0);
+  const [cfgPtoCarryoverM, setCfgPtoCarryoverM] = useState(0);
   const [cfgBusy, setCfgBusy] = useState(false);
 
   // ── Load profile ──────────────────────────────────────────────────────────
@@ -396,10 +412,10 @@ export default function LeavePage() {
         setCfgPtoPlan(b.pto_plan_hours);
         setCfgPtoWeeks(b.pto_weeks);
         setCfgSickFrontloaded(b.sick_frontloaded);
-        setCfgSickInitial(String(b.sick_initial_balance ?? 0));
-        setCfgPtoInitial(String(b.pto_initial_balance ?? 0));
-        setCfgSickCarryover(String(b.sick_carryover ?? 0));
-        setCfgPtoCarryover(String(b.pto_carryover ?? 0));
+        const [sih, sim] = decToHM(b.sick_initial_balance ?? 0); setCfgSickInitialH(sih); setCfgSickInitialM(sim);
+        const [pih, pim] = decToHM(b.pto_initial_balance ?? 0); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
+        const [sch, scm] = decToHM(b.sick_carryover ?? 0); setCfgSickCarryoverH(sch); setCfgSickCarryoverM(scm);
+        const [pch, pcm] = decToHM(b.pto_carryover ?? 0); setCfgPtoCarryoverH(pch); setCfgPtoCarryoverM(pcm);
       } catch (e: unknown) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load leave data.");
       } finally {
@@ -440,10 +456,10 @@ export default function LeavePage() {
       employee_id: selectedEmployeeId, year,
       pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
       sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
-      pto_initial_balance: Number(cfgPtoInitial) || 0,
-      sick_initial_balance: Number(cfgSickInitial) || 0,
-      sick_carryover: Number(cfgSickCarryover) || 0,
-      pto_carryover: Number(cfgPtoCarryover) || 0,
+      pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
+      sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
+      sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
+      pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
       created_by: me?.id ?? null, updated_by: me?.id ?? null,
     };
     const { data, error } = await supabase.from("hr_leave_balances").insert(insertRow).select("*").single();
@@ -461,10 +477,10 @@ export default function LeavePage() {
         employee_id: selectedEmployeeId, year,
         pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
         sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
-        pto_initial_balance: Number(cfgPtoInitial) || 0,
-        sick_initial_balance: Number(cfgSickInitial) || 0,
-        sick_carryover: Number(cfgSickCarryover) || 0,
-        pto_carryover: Number(cfgPtoCarryover) || 0,
+        pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
+        sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
+        sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
+        pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
         updated_by: me?.id ?? null,
       };
       const { data, error } = await supabase
@@ -499,11 +515,9 @@ export default function LeavePage() {
       hours = (eh * 60 + em - (sh * 60 + sm)) / 60;
       if (hours <= 0) { await alert("End time must be after start time."); return; }
     } else {
-      hours = Number(logHours);
-      if (!Number.isFinite(hours) || hours === 0) {
-        await alert("Hours must be a non-zero number.");
-        return;
-      }
+      const absHours = hmToDec(logHoursH, logHoursM);
+      if (absHours === 0) { await alert("Hours must be non-zero."); return; }
+      hours = logHoursSign === "-" ? -absHours : absHours;
       if (logType !== "sick_adjustment" && logType !== "pto_adjustment" && hours < 0) {
         await alert("Usage entries cannot be negative. Use an adjustment type to remove hours.");
         return;
@@ -526,7 +540,7 @@ export default function LeavePage() {
         notes: logNotes.trim() || null, created_by: me?.id ?? null,
       });
       if (error) throw error;
-      setLogHours("8"); setLogStartTime("09:00"); setLogEndTime("17:00"); setLogNotes("");
+      setLogHoursH(1); setLogHoursM(0); setLogHoursSign("+"); setLogStartTime("09:00"); setLogEndTime("17:00"); setLogNotes("");
       const yearStart = `${year}-01-01`;
       const yearEnd = `${year}-12-31`;
       const { data, error: reErr } = await supabase.from("hr_leave_entries").select("*").eq("employee_id", selectedEmployeeId).gte("start_date", yearStart).lte("start_date", yearEnd).order("start_date", { ascending: false });
@@ -617,7 +631,12 @@ export default function LeavePage() {
       : field === "unpaid" ? unpaidUsed
       : hoursWorkedYtd;
     setEditField(field);
-    setEditNewValue(String(Math.round(currentVal * 10) / 10));
+    if (field === "unpaid") {
+      setEditNewValue(String(Math.round(currentVal)));
+    } else {
+      const [h, m] = decToHM(currentVal);
+      setEditNewH(h); setEditNewM(m);
+    }
     setEditNotes("");
     setEditHistory([]);
     setEditHistoryLoading(true);
@@ -634,7 +653,7 @@ export default function LeavePage() {
 
   async function saveEdit() {
     if (!editField || !selectedEmployeeId) return;
-    const newVal = parseFloat(editNewValue);
+    const newVal = editField === "unpaid" ? parseFloat(editNewValue) : hmToDec(editNewH, editNewM);
     if (isNaN(newVal) || newVal < 0) { await alert("Enter a valid non-negative number."); return; }
     const oldVal =
       editField === "sick" ? sickCalc.balance
@@ -654,7 +673,7 @@ export default function LeavePage() {
           .select("*").single();
         if (error) throw error;
         setBalance(data as LeaveBalanceRow);
-        setCfgSickInitial(String(newInitial));
+        const [sih, sim] = decToHM(Math.max(0, newInitial)); setCfgSickInitialH(sih); setCfgSickInitialM(sim);
       } else if (editField === "pto") {
         const newInitial = newVal - ptoCalc.carryover - ptoCalc.accrued - ptoCalc.adjustments + ptoCalc.used;
         const { data, error } = await supabase
@@ -664,7 +683,7 @@ export default function LeavePage() {
           .select("*").single();
         if (error) throw error;
         setBalance(data as LeaveBalanceRow);
-        setCfgPtoInitial(String(newInitial));
+        const [pih, pim] = decToHM(Math.max(0, newInitial)); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
       } else if (editField === "unpaid") {
         const delta = newVal - unpaidUsedRaw;
         const { data, error } = await supabase
@@ -751,17 +770,13 @@ export default function LeavePage() {
             <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
                 <FieldLabel>
-                  {editField === "unpaid" ? "Total unpaid days used" : editField === "hours_worked" ? "Total hours worked YTD" : "New balance (hours)"}
+                  {editField === "unpaid" ? "Total unpaid days used" : editField === "hours_worked" ? "Total hours worked YTD" : "New balance"}
                 </FieldLabel>
-                <TextInput
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  value={editNewValue}
-                  onChange={(e) => setEditNewValue(e.target.value)}
-                  autoFocus
-                  style={{ fontSize: 18, fontWeight: 700 }}
-                />
+                {editField === "unpaid" ? (
+                  <TextInput type="number" min="0" step="1" value={editNewValue} onChange={(e) => setEditNewValue(e.target.value)} autoFocus style={{ fontSize: 18, fontWeight: 700 }} />
+                ) : (
+                  <HMInput h={editNewH} m={editNewM} onChangeH={setEditNewH} onChangeM={setEditNewM} large />
+                )}
                 {(editField === "sick" || editField === "pto") && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
                     Setting this adjusts the initial balance so that the computed total matches your entered value. Accruals continue normally.
@@ -769,7 +784,7 @@ export default function LeavePage() {
                 )}
                 {editField === "hours_worked" && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                    Overrides the timesheet-computed total for accrual purposes. Set to 0 to clear the override.
+                    Overrides the timesheet-computed total for accrual purposes. Set both to 0 to clear the override.
                   </div>
                 )}
               </div>
@@ -992,8 +1007,15 @@ export default function LeavePage() {
                     </div>
                     {isAdjustment && (
                       <div>
-                        <FieldLabel>Hours (+/−)</FieldLabel>
-                        <TextInput type="number" step="0.25" value={logHours} onChange={(e) => setLogHours(e.target.value)} />
+                        <FieldLabel>Adjustment</FieldLabel>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <select value={logHoursSign} onChange={(e) => setLogHoursSign(e.target.value as "+" | "-")}
+                            style={{ height: 38, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0 8px", fontWeight: 700, fontSize: 15, background: "white" }}>
+                            <option value="+">+</option>
+                            <option value="-">−</option>
+                          </select>
+                          <HMInput h={logHoursH} m={logHoursM} onChangeH={setLogHoursH} onChangeM={setLogHoursM} />
+                        </div>
                       </div>
                     )}
                     {isSingleDay ? (
@@ -1048,12 +1070,12 @@ export default function LeavePage() {
                   </label>
                 </div>
                 <div>
-                  <FieldLabel>Sick carryover (hrs)</FieldLabel>
-                  <TextInput type="number" step="0.25" value={cfgSickCarryover} onChange={(e) => setCfgSickCarryover(e.target.value)} />
+                  <FieldLabel>Sick carryover</FieldLabel>
+                  <HMInput h={cfgSickCarryoverH} m={cfgSickCarryoverM} onChangeH={setCfgSickCarryoverH} onChangeM={setCfgSickCarryoverM} />
                 </div>
                 <div>
-                  <FieldLabel>Initial sick balance (hrs)</FieldLabel>
-                  <TextInput type="number" step="0.25" value={cfgSickInitial} onChange={(e) => setCfgSickInitial(e.target.value)} />
+                  <FieldLabel>Initial sick balance</FieldLabel>
+                  <HMInput h={cfgSickInitialH} m={cfgSickInitialM} onChangeH={setCfgSickInitialH} onChangeM={setCfgSickInitialM} />
                 </div>
 
                 <div style={{ gridColumn: "1 / -1", fontSize: 13, fontWeight: 800, color: "#111827", marginTop: 6 }}>PTO</div>
@@ -1082,12 +1104,12 @@ export default function LeavePage() {
                   </Select>
                 </div>
                 <div>
-                  <FieldLabel>PTO carryover (hrs)</FieldLabel>
-                  <TextInput type="number" step="0.25" value={cfgPtoCarryover} onChange={(e) => setCfgPtoCarryover(e.target.value)} />
+                  <FieldLabel>PTO carryover</FieldLabel>
+                  <HMInput h={cfgPtoCarryoverH} m={cfgPtoCarryoverM} onChangeH={setCfgPtoCarryoverH} onChangeM={setCfgPtoCarryoverM} />
                 </div>
                 <div>
-                  <FieldLabel>Initial PTO balance (hrs)</FieldLabel>
-                  <TextInput type="number" step="0.25" value={cfgPtoInitial} onChange={(e) => setCfgPtoInitial(e.target.value)} />
+                  <FieldLabel>Initial PTO balance</FieldLabel>
+                  <HMInput h={cfgPtoInitialH} m={cfgPtoInitialM} onChangeH={setCfgPtoInitialH} onChangeM={setCfgPtoInitialM} />
                 </div>
               </div>
               <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
@@ -1135,6 +1157,30 @@ export default function LeavePage() {
 }
 
 // ─── Subcomponents ───────────────────────────────────────────────────────────
+
+function HMInput({ h, m, onChangeH, onChangeM, large }: { h: number; m: number; onChangeH: (v: number) => void; onChangeM: (v: number) => void; large?: boolean }) {
+  const sz = large ? { height: 44, fontSize: 18, fontWeight: 700 } : { height: 38, fontSize: 14 };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="number" min="0" value={h}
+          onChange={(e) => onChangeH(Math.max(0, parseInt(e.target.value) || 0))}
+          style={{ width: 64, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0 8px", outline: "none", background: "white", ...sz }}
+        />
+        <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>h</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="number" min="0" max="59" value={m}
+          onChange={(e) => onChangeM(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+          style={{ width: 56, border: "1px solid #e5e7eb", borderRadius: 10, padding: "0 8px", outline: "none", background: "white", ...sz }}
+        />
+        <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>m</span>
+      </div>
+    </div>
+  );
+}
 
 function Card({ title, children, style }: { title: string; children: React.ReactNode; style?: React.CSSProperties }) {
   return (
