@@ -194,6 +194,18 @@ function SessionModal({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
 
+  // Add-session form
+  const [adding, setAdding] = useState(false);
+  const [addInTime, setAddInTime] = useState("");
+  const [addOutTime, setAddOutTime] = useState("");
+  const [addSaving, setAddSaving] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
+  // Full-day schedule panel
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [fullDayBlocks, setFullDayBlocks] = useState<ShiftBlock[] | null>(null);
+  const [fullDayLoading, setFullDayLoading] = useState(false);
+
   const totalMins = entries.reduce((s, e) => s + entryPaidMins(e), 0);
 
   async function toggleShiftDetails(entry: ClockEntry) {
@@ -342,6 +354,112 @@ function SessionModal({
     setConfirmDelete(null);
   }
 
+  async function toggleFullDaySchedule() {
+    setScheduleOpen((v) => !v);
+    if (fullDayBlocks !== null || fullDayLoading) return;
+    setFullDayLoading(true);
+    const monday = getMondayOfWeek(target.dateStr);
+    const dow = getDayOfWeek(target.dateStr);
+
+    const { data: sched } = await supabase
+      .from("schedules")
+      .select("id")
+      .eq("week_start", monday)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!sched) {
+      setFullDayBlocks([]);
+      setFullDayLoading(false);
+      return;
+    }
+
+    const { data: allBlocks } = await supabase
+      .from("schedule_blocks")
+      .select("id, start_time, end_time, block_type, label, room_id, schedule_rooms(name)")
+      .eq("schedule_id", sched.id)
+      .eq("employee_id", target.employeeId)
+      .eq("day_of_week", dow)
+      .order("start_time");
+
+    type RawBlock = { id: string; start_time: string; end_time: string; block_type: string; label: string | null; room_id: string; schedule_rooms: { name: string } | { name: string }[] | null };
+    const mapped: ShiftBlock[] = ((allBlocks ?? []) as unknown as RawBlock[]).map((b) => ({
+      id: b.id,
+      start_time: b.start_time,
+      end_time: b.end_time,
+      block_type: b.block_type,
+      label: b.label,
+      room_name: (Array.isArray(b.schedule_rooms) ? b.schedule_rooms[0]?.name : b.schedule_rooms?.name) ?? "—",
+    }));
+    setFullDayBlocks(mapped);
+    setFullDayLoading(false);
+  }
+
+  function openAddForm() {
+    setAdding(true);
+    setAddError(null);
+    if (!addInTime) setAddInTime("09:00");
+    if (!addOutTime) setAddOutTime("17:00");
+  }
+
+  function cancelAdd() {
+    setAdding(false);
+    setAddError(null);
+  }
+
+  async function saveNewSession() {
+    setAddError(null);
+    if (!addInTime || !addOutTime) {
+      setAddError("Enter both clock-in and clock-out times.");
+      return;
+    }
+    const inHHMMSS = addInTime.length === 5 ? `${addInTime}:00` : addInTime;
+    const outHHMMSS = addOutTime.length === 5 ? `${addOutTime}:00` : addOutTime;
+    if (outHHMMSS <= inHHMMSS) {
+      setAddError("Clock-out must be after clock-in.");
+      return;
+    }
+    setAddSaving(true);
+    const inIso = buildISO(target.dateStr, inHHMMSS);
+    const outIso = buildISO(target.dateStr, outHHMMSS);
+
+    const { data, error } = await supabase
+      .from("clock_entries")
+      .insert({
+        employee_id: target.employeeId,
+        session_date: target.dateStr,
+        session_start: inHHMMSS,
+        session_end: outHHMMSS,
+        clocked_in_at: inIso,
+        clocked_out_at: outIso,
+        auto_clocked_out: false,
+      })
+      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+      .single();
+
+    setAddSaving(false);
+
+    if (error || !data) {
+      setAddError(error?.message ?? "Failed to add session.");
+      return;
+    }
+    const newEntry = data as ClockEntry;
+    const updated = [...entries, newEntry].sort((a, b) => a.session_start.localeCompare(b.session_start));
+    setEntries(updated);
+    setEditTimes((prev) => ({
+      ...prev,
+      [newEntry.id]: {
+        in: isoToTimeInput(newEntry.clocked_in_at!),
+        out: isoToTimeInput(newEntry.clocked_out_at!),
+      },
+    }));
+    onEntriesChanged(updated);
+    setAdding(false);
+    setAddInTime("");
+    setAddOutTime("");
+  }
+
   const blockTypeColor = (t: string) =>
     t === "break" ? "#22c55e" : t === "lunch_break" ? "#f97316" : "#6366f1";
   const blockTypeLabel = (t: string) =>
@@ -369,8 +487,102 @@ function SessionModal({
         </div>
 
         <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
-          {entries.length === 0 && (
-            <div style={{ color: "#6b7280", fontSize: 14 }}>No clock entries for this day.</div>
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={openAddForm}
+              disabled={adding}
+              style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: adding ? "default" : "pointer",
+                border: "1.5px solid #6366f1", background: adding ? "#eef2ff" : "#eef2ff", color: "#4338ca",
+                opacity: adding ? 0.5 : 1,
+              }}
+            >
+              + Add Session
+            </button>
+            <button
+              onClick={toggleFullDaySchedule}
+              style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                border: "1.5px solid #d1d5db", background: "white", color: "#374151",
+              }}
+            >
+              {scheduleOpen ? "▲ Hide" : "▼ View"} Full Day Schedule
+            </button>
+          </div>
+
+          {/* Add Session inline form */}
+          {adding && (
+            <div style={{ border: "1.5px solid #c7d2fe", background: "#eef2ff", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#3730a3" }}>New manual session</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#4338ca" }}>
+                  Clock In
+                  <input
+                    type="time"
+                    step="1"
+                    value={addInTime}
+                    onChange={(e) => setAddInTime(e.target.value)}
+                    style={{ padding: "4px 8px", borderRadius: 7, border: "1.5px solid #c7d2fe", fontSize: 13, fontWeight: 600 }}
+                  />
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#4338ca" }}>
+                  Clock Out
+                  <input
+                    type="time"
+                    step="1"
+                    value={addOutTime}
+                    onChange={(e) => setAddOutTime(e.target.value)}
+                    style={{ padding: "4px 8px", borderRadius: 7, border: "1.5px solid #c7d2fe", fontSize: 13, fontWeight: 600 }}
+                  />
+                </label>
+              </div>
+              {addError && <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 600 }}>{addError}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={saveNewSession}
+                  disabled={addSaving}
+                  style={{ padding: "5px 14px", borderRadius: 7, border: "1.5px solid #6366f1", background: "#6366f1", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                >
+                  {addSaving ? "Adding…" : "Add"}
+                </button>
+                <button
+                  onClick={cancelAdd}
+                  disabled={addSaving}
+                  style={{ padding: "5px 14px", borderRadius: 7, border: "1px solid #d1d5db", background: "white", color: "#6b7280", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Full Day Schedule panel */}
+          {scheduleOpen && (
+            <div style={{ border: "1.5px solid #e5e7eb", borderRadius: 12, padding: "12px 14px", background: "#f9fafb", display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#374151" }}>Full Day Schedule</div>
+              {fullDayLoading ? (
+                <div style={{ fontSize: 12, color: "#9ca3af" }}>Loading…</div>
+              ) : !fullDayBlocks || fullDayBlocks.length === 0 ? (
+                <div style={{ fontSize: 12, color: "#9ca3af" }}>No published schedule blocks for this day.</div>
+              ) : (
+                fullDayBlocks.map((b) => (
+                  <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                    <div style={{ width: 3, height: 22, borderRadius: 2, background: blockTypeColor(b.block_type), flexShrink: 0 }} />
+                    <span style={{ fontWeight: 700, color: "#111827" }}>{fmtScheduled(b.start_time)} – {fmtScheduled(b.end_time)}</span>
+                    <span style={{ color: "#6b7280" }}>· {b.room_name}</span>
+                    <span style={{ color: blockTypeColor(b.block_type), fontWeight: 600, fontSize: 12 }}>{blockTypeLabel(b.block_type)}</span>
+                    {b.label && b.label !== "Unassigned" && <span style={{ color: "#9ca3af", fontSize: 12 }}>· {b.label}</span>}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {entries.length === 0 && !adding && (
+            <div style={{ color: "#6b7280", fontSize: 14, padding: "8px 0" }}>
+              No timesheet entries for this person today.
+            </div>
           )}
           {entries.map((entry, idx) => {
             const mins = entryPaidMins(entry);
@@ -474,14 +686,23 @@ function SessionModal({
                             </span>
                           </>
                         ) : (
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                             <span style={{ fontSize: 13, color: "#0369a1", fontWeight: 700 }}>Still clocked in</span>
                             <button
                               onClick={() => clockOutNow(entry.id)}
                               disabled={saving.has(entry.id + "out")}
-                              style={{ padding: "3px 10px", borderRadius: 7, border: "1.5px solid #6366f1", background: "#eef2ff", color: "#4338ca", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                              style={{
+                                padding: "4px 12px",
+                                borderRadius: 7,
+                                border: "1.5px solid #fca5a5",
+                                background: "#fee2e2",
+                                color: "#991b1b",
+                                fontSize: 12,
+                                fontWeight: 700,
+                                cursor: saving.has(entry.id + "out") ? "default" : "pointer",
+                              }}
                             >
-                              {saving.has(entry.id + "out") ? "Clocking out…" : "Clock Out"}
+                              {saving.has(entry.id + "out") ? "Clocking out…" : "Clock Out Now"}
                             </button>
                           </div>
                         )}
@@ -802,7 +1023,33 @@ export default function TimesheetsPage() {
 
   useEffect(() => { fetchEditRequests(); }, []);
 
+  // Auto-clock-out any entries left open from previous days — across all employees.
+  // Runs once on mount so the admin view is self-healing if a teacher never logs in to trigger it.
+  const [autoOutDone, setAutoOutDone] = useState(false);
   useEffect(() => {
+    (async () => {
+      const today = new Date();
+      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+      const { data: stale } = await supabase
+        .from("clock_entries")
+        .select("id, session_date")
+        .is("clocked_out_at", null)
+        .not("clocked_in_at", "is", null)
+        .lt("session_date", todayStr);
+      for (const e of (stale ?? []) as { id: string; session_date: string }[]) {
+        const [sy, sm, sd] = e.session_date.split("-").map(Number);
+        const autoOut = new Date(sy, sm - 1, sd, 23, 59, 59);
+        await supabase
+          .from("clock_entries")
+          .update({ clocked_out_at: autoOut.toISOString(), auto_clocked_out: true })
+          .eq("id", e.id);
+      }
+      setAutoOutDone(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!autoOutDone) return;
     setLoading(true);
     const start = dateStrs[0];
     const end = dateStrs[dateStrs.length - 1];
@@ -824,7 +1071,7 @@ export default function TimesheetsPage() {
       setLeaveEntries((leaveRes.data as LeaveEntry[]) ?? []);
       setLoading(false);
     });
-  }, [dateStrs]);
+  }, [dateStrs, autoOutDone]);
 
   // empId → dateStr → ClockEntry[]
   const entriesByEmpDay = useMemo(() => {
@@ -927,10 +1174,16 @@ export default function TimesheetsPage() {
     return map;
   }, [entriesByEmpDay]);
 
-  const activeEmployees = useMemo(
-    () => employees.filter((e) => entriesByEmpDay.has(e.id) || leaveByEmpDay.has(e.id)),
-    [employees, entriesByEmpDay, leaveByEmpDay]
-  );
+  // Show all active employees; prioritize ones with entries/leave in this period at the top.
+  const sortedEmployees = useMemo(() => {
+    const withData: Employee[] = [];
+    const withoutData: Employee[] = [];
+    for (const e of employees) {
+      if (entriesByEmpDay.has(e.id) || leaveByEmpDay.has(e.id)) withData.push(e);
+      else withoutData.push(e);
+    }
+    return [...withData, ...withoutData];
+  }, [employees, entriesByEmpDay, leaveByEmpDay]);
 
   function handleEntriesChanged(empId: string, dateStr: string, updated: ClockEntry[]) {
     setEntries((prev) => {
@@ -982,8 +1235,8 @@ export default function TimesheetsPage() {
 
       {loading ? (
         <div style={{ color: "#6b7280", padding: 20 }}>Loading…</div>
-      ) : activeEmployees.length === 0 ? (
-        <div style={{ color: "#6b7280", padding: 20 }}>No clock entries or leave records found for this pay period.</div>
+      ) : sortedEmployees.length === 0 ? (
+        <div style={{ color: "#6b7280", padding: 20 }}>No active employees found.</div>
       ) : (
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", background: "white", border: "1.5px solid #e5e7eb", borderRadius: 12, overflow: "hidden", minWidth: "max-content" }}>
@@ -1017,7 +1270,7 @@ export default function TimesheetsPage() {
               </tr>
             </thead>
             <tbody>
-              {activeEmployees.map((emp, rowIdx) => {
+              {sortedEmployees.map((emp, rowIdx) => {
                 const colorMap = cellColor.get(emp.id);
                 const dayMap = minuteMap.get(emp.id);
                 const leave = leaveSummaryByEmp.get(emp.id) ?? { ptoMins: 0, sickMins: 0 };
@@ -1083,7 +1336,30 @@ export default function TimesheetsPage() {
                               {dayLeaveEntries.length === 1 ? leaveTypeLabel(dayLeaveEntries[0].entry_type) : "Leave"}
                             </button>
                           ) : (
-                            <span style={{ color: "#d1d5db", fontSize: 13 }}>--</span>
+                            <button
+                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), dateStr: ds, dateLabel })}
+                              title="Add session"
+                              style={{
+                                display: "inline-block",
+                                background: "transparent",
+                                border: "1.5px dashed #e5e7eb",
+                                borderRadius: 8, padding: "4px 10px",
+                                color: "#9ca3af", fontSize: 13, fontWeight: 600,
+                                cursor: "pointer", minWidth: 48,
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = "#f9fafb";
+                                e.currentTarget.style.borderColor = "#c7d2fe";
+                                e.currentTarget.style.color = "#6366f1";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = "transparent";
+                                e.currentTarget.style.borderColor = "#e5e7eb";
+                                e.currentTarget.style.color = "#9ca3af";
+                              }}
+                            >
+                              --
+                            </button>
                           )}
                         </td>
                       );
@@ -1111,7 +1387,7 @@ export default function TimesheetsPage() {
               <tr style={{ background: "#f9fafb", borderTop: "2px solid #e5e7eb" }}>
                 <td style={cell({ fontWeight: 800, position: "sticky", left: 0, background: "#f9fafb", zIndex: 1, color: "#374151" })}>Total</td>
                 {dateStrs.map((ds, i) => {
-                  const dayTotal = activeEmployees.reduce((s, emp) => s + (minuteMap.get(emp.id)?.get(ds) ?? 0), 0);
+                  const dayTotal = sortedEmployees.reduce((s, emp) => s + (minuteMap.get(emp.id)?.get(ds) ?? 0), 0);
                   return (
                     <td key={i} style={cell({ textAlign: "center", fontWeight: 700, color: dayTotal > 0 ? "#374151" : "#d1d5db", fontSize: 12 })}>
                       {minsToHHMM(dayTotal)}
@@ -1119,10 +1395,10 @@ export default function TimesheetsPage() {
                   );
                 })}
                 {(() => {
-                  const totPto = activeEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.ptoMins ?? 0), 0);
-                  const totSick = activeEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.sickMins ?? 0), 0);
-                  const totReg = activeEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.regularMins ?? 0), 0);
-                  const totOt = activeEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.otMins ?? 0), 0);
+                  const totPto = sortedEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.ptoMins ?? 0), 0);
+                  const totSick = sortedEmployees.reduce((s, emp) => s + (leaveSummaryByEmp.get(emp.id)?.sickMins ?? 0), 0);
+                  const totReg = sortedEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.regularMins ?? 0), 0);
+                  const totOt = sortedEmployees.reduce((s, emp) => s + (clockSummaryByEmp.get(emp.id)?.otMins ?? 0), 0);
                   const grandTotal = totPto + totSick + totReg + totOt;
                   return (
                     <>
