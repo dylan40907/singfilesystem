@@ -394,6 +394,7 @@ export default function ClockPage() {
     if (!await ensureSession()) return;
     const _d = new Date();
     const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
+    const { data: { session: authSession } } = await supabase.auth.getSession();
     const { data, error } = await supabase
       .from("clock_entries")
       .insert({
@@ -403,6 +404,7 @@ export default function ClockPage() {
         session_end: currentSession.end,
         clocked_in_at: new Date().toISOString(),
         notes_in: notes.trim() || null,
+        created_by: authSession?.user?.id ?? null,
       })
       .select()
       .single();

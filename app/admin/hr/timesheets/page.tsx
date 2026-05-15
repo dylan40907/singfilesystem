@@ -12,6 +12,7 @@ type Employee = {
   legal_last_name: string;
   nicknames: string[] | null;
   is_active: boolean;
+  profile_id: string | null;
 };
 
 type ClockEntry = {
@@ -27,6 +28,17 @@ type ClockEntry = {
   notes_out: string | null;
   notes_in_resolved: boolean;
   notes_out_resolved: boolean;
+  created_by: string | null;
+};
+
+type ApprovedEditRequest = {
+  id: string;
+  clock_entry_id: string;
+  field: "clocked_in_at" | "clocked_out_at";
+  old_value: string | null;
+  new_value: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
 };
 
 type LeaveEntry = {
@@ -65,6 +77,7 @@ type ShiftBlock = {
 type ModalTarget = {
   employeeId: string;
   employeeName: string;
+  employeeProfileId: string | null;
   dateStr: string;
   dateLabel: string;
 };
@@ -198,6 +211,7 @@ function SessionModal({
   const [adding, setAdding] = useState(false);
   const [addInTime, setAddInTime] = useState("");
   const [addOutTime, setAddOutTime] = useState("");
+  const [addNotes, setAddNotes] = useState("");
   const [addSaving, setAddSaving] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
 
@@ -205,6 +219,47 @@ function SessionModal({
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [fullDayBlocks, setFullDayBlocks] = useState<ShiftBlock[] | null>(null);
   const [fullDayLoading, setFullDayLoading] = useState(false);
+
+  // Lookups for footer line: profile name by id (covers both creators and reviewers)
+  const [profileNames, setProfileNames] = useState<Record<string, string>>({});
+  const [approvedEdits, setApprovedEdits] = useState<ApprovedEditRequest[]>([]);
+
+  // Fetch creator + approver names whenever entries change
+  useEffect(() => {
+    (async () => {
+      const entryIds = entries.map((e) => e.id);
+      const creatorIds = entries.map((e) => e.created_by).filter((v): v is string => !!v);
+
+      // Fetch approved edit requests for these entries
+      let edits: ApprovedEditRequest[] = [];
+      if (entryIds.length > 0) {
+        const { data } = await supabase
+          .from("clock_edit_requests")
+          .select("id, clock_entry_id, field, old_value, new_value, reviewed_by, reviewed_at")
+          .in("clock_entry_id", entryIds)
+          .eq("status", "approved")
+          .order("reviewed_at", { ascending: false });
+        edits = (data as ApprovedEditRequest[]) ?? [];
+      }
+      setApprovedEdits(edits);
+
+      const reviewerIds = edits.map((e) => e.reviewed_by).filter((v): v is string => !!v);
+      const idsToLookup = [...new Set([...creatorIds, ...reviewerIds])];
+      if (idsToLookup.length === 0) {
+        setProfileNames({});
+        return;
+      }
+      const { data: profs } = await supabase
+        .from("user_profiles")
+        .select("id, full_name, username, email")
+        .in("id", idsToLookup);
+      const map: Record<string, string> = {};
+      for (const p of (profs ?? []) as { id: string; full_name: string | null; username: string | null; email: string | null }[]) {
+        map[p.id] = p.full_name?.trim() || p.username || p.email || "Unknown";
+      }
+      setProfileNames(map);
+    })();
+  }, [entries]);
 
   const totalMins = entries.reduce((s, e) => s + entryPaidMins(e), 0);
 
@@ -406,6 +461,7 @@ function SessionModal({
   function cancelAdd() {
     setAdding(false);
     setAddError(null);
+    setAddNotes("");
   }
 
   async function saveNewSession() {
@@ -424,6 +480,9 @@ function SessionModal({
     const inIso = buildISO(target.dateStr, inHHMMSS);
     const outIso = buildISO(target.dateStr, outHHMMSS);
 
+    const { data: { session: authSession } } = await supabase.auth.getSession();
+    const trimmedNotes = addNotes.trim();
+
     const { data, error } = await supabase
       .from("clock_entries")
       .insert({
@@ -434,8 +493,11 @@ function SessionModal({
         clocked_in_at: inIso,
         clocked_out_at: outIso,
         auto_clocked_out: false,
+        notes_in: trimmedNotes || null,
+        notes_in_resolved: true,
+        created_by: authSession?.user?.id ?? null,
       })
-      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+      .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved, created_by")
       .single();
 
     setAddSaving(false);
@@ -458,6 +520,7 @@ function SessionModal({
     setAdding(false);
     setAddInTime("");
     setAddOutTime("");
+    setAddNotes("");
   }
 
   const blockTypeColor = (t: string) =>
@@ -537,6 +600,16 @@ function SessionModal({
                   />
                 </label>
               </div>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 700, color: "#4338ca" }}>
+                Notes (optional)
+                <textarea
+                  value={addNotes}
+                  onChange={(e) => setAddNotes(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. covering shift for Lesley, came in late due to traffic…"
+                  style={{ padding: "6px 10px", borderRadius: 7, border: "1.5px solid #c7d2fe", fontSize: 13, fontWeight: 500, fontFamily: "inherit", resize: "vertical" }}
+                />
+              </label>
               {addError && <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 600 }}>{addError}</div>}
               <div style={{ display: "flex", gap: 8 }}>
                 <button
@@ -781,6 +854,37 @@ function SessionModal({
                       ))}
                     </div>
                   )}
+
+                  {/* Provenance footer line */}
+                  {(() => {
+                    const entryEdits = approvedEdits.filter((r) => r.clock_entry_id === entry.id);
+                    const isAdminCreated = !!entry.created_by && (!target.employeeProfileId || entry.created_by !== target.employeeProfileId);
+
+                    let line: React.ReactNode;
+                    if (isAdminCreated) {
+                      const adminName = entry.created_by ? (profileNames[entry.created_by] ?? "an admin") : "an admin";
+                      line = <>Session added by <strong style={{ color: "#6b7280" }}>{adminName}</strong></>;
+                    } else if (entryEdits.length > 0) {
+                      const latest = entryEdits[0];
+                      const fieldLabel = latest.field === "clocked_in_at" ? "clock in" : "clock out";
+                      const oldStr = latest.old_value ? isoToDisplayTime(latest.old_value) : "—";
+                      const newStr = isoToDisplayTime(latest.new_value);
+                      const reviewer = latest.reviewed_by ? (profileNames[latest.reviewed_by] ?? "an admin") : "an admin";
+                      line = (
+                        <>
+                          Requested by <strong style={{ color: "#6b7280" }}>{target.employeeName}</strong> ({fieldLabel} {oldStr} → {newStr}), approved by <strong style={{ color: "#6b7280" }}>{reviewer}</strong>
+                        </>
+                      );
+                    } else {
+                      line = <>Logged by <strong style={{ color: "#6b7280" }}>{target.employeeName}</strong></>;
+                    }
+
+                    return (
+                      <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid #f3f4f6", fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>
+                        {line}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );
@@ -989,7 +1093,7 @@ export default function TimesheetsPage() {
   useEffect(() => {
     supabase
       .from("hr_employees")
-      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active")
+      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
       .eq("is_active", true)
       .order("legal_first_name")
       .then(({ data }) => setEmployees((data as Employee[]) ?? []));
@@ -1056,7 +1160,7 @@ export default function TimesheetsPage() {
     Promise.all([
       supabase
         .from("clock_entries")
-        .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+        .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved, created_by")
         .gte("session_date", start)
         .lte("session_date", end)
         .not("clocked_in_at", "is", null),
@@ -1295,7 +1399,7 @@ export default function TimesheetsPage() {
                         <td key={i} style={cell({ textAlign: "center", padding: "6px 8px" })}>
                           {hasClockData ? (
                             <button
-                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), dateStr: ds, dateLabel })}
+                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), employeeProfileId: emp.profile_id, dateStr: ds, dateLabel })}
                               style={{
                                 display: "inline-block",
                                 background:
@@ -1337,7 +1441,7 @@ export default function TimesheetsPage() {
                             </button>
                           ) : (
                             <button
-                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), dateStr: ds, dateLabel })}
+                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), employeeProfileId: emp.profile_id, dateStr: ds, dateLabel })}
                               title="Add session"
                               style={{
                                 display: "inline-block",
@@ -1455,7 +1559,7 @@ export default function TimesheetsPage() {
             const end = dateStrs[dateStrs.length - 1];
             supabase
               .from("clock_entries")
-              .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved")
+              .select("id, employee_id, session_date, session_start, session_end, clocked_in_at, clocked_out_at, auto_clocked_out, notes_in, notes_out, notes_in_resolved, notes_out_resolved, created_by")
               .gte("session_date", start)
               .lte("session_date", end)
               .not("clocked_in_at", "is", null)
