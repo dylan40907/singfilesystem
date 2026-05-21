@@ -367,8 +367,9 @@ export default function ClockPage() {
 
     setCurrentSession(activeSession);
 
-    // Block clock-in if session hasn't started yet
-    if (timeToMinutes(activeSession.start) > nowMins) {
+    // Allow clock-in starting 2 minutes before the session start time.
+    const EARLY_CLOCKIN_LEEWAY_MIN = 2;
+    if (timeToMinutes(activeSession.start) - EARLY_CLOCKIN_LEEWAY_MIN > nowMins) {
       setPinError(
         `Next session starts at ${fmtTime(activeSession.start)} — please wait until then to clock in.`
       );
