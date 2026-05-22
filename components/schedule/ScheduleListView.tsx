@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   Schedule,
@@ -10,20 +10,40 @@ import {
 } from "@/lib/scheduleUtils";
 import WeekPicker from "./WeekPicker";
 import TeacherScheduleView from "./TeacherScheduleView";
+import { useCampusFilter, applyCampusFilterToQuery } from "@/lib/CampusContext";
 
 interface ScheduleListViewProps {
   onSelectSchedule: (id: string) => void;
 }
 
+type ScheduleWithCampus = Schedule & { campus_id?: string | null };
+
 export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewProps) {
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const { filter: campusFilter, campuses, isCampusAdmin, lockedCampusId } = useCampusFilter();
+
+  const [schedules, setSchedules] = useState<ScheduleWithCampus[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newWeekStart, setNewWeekStart] = useState(() =>
     formatDateLocal(getMonday(new Date()))
   );
+  const [newCampusId, setNewCampusId] = useState<string>("");
   const [showNewForm, setShowNewForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Default the create-form campus to: locked campus (campus_admin) → navbar selection
+  // (if it's a real campus) → first "Torrance" campus → first campus.
+  const defaultCreateCampusId = useMemo(() => {
+    if (isCampusAdmin && lockedCampusId) return lockedCampusId;
+    if (campusFilter !== "all" && campusFilter !== "unassigned") return campusFilter;
+    const torrance = campuses.find((c) => /torrance/i.test(c.name));
+    return torrance?.id ?? campuses[0]?.id ?? "";
+  }, [campusFilter, campuses, isCampusAdmin, lockedCampusId]);
+
+  // Keep newCampusId in sync with the default unless the user has already changed it
+  useEffect(() => {
+    setNewCampusId(defaultCreateCampusId);
+  }, [defaultCreateCampusId]);
 
   // My Schedule modal
   const [myScheduleOpen, setMyScheduleOpen] = useState(false);
@@ -34,21 +54,21 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
 
   async function fetchSchedules() {
     setLoading(true);
-    const { data, error: err } = await supabase
-      .from("schedules")
-      .select("*")
-      .order("week_start", { ascending: false });
+    let q = supabase.from("schedules").select("*");
+    q = applyCampusFilterToQuery(q, campusFilter);
+    const { data, error: err } = await q.order("week_start", { ascending: false });
     if (err) {
       setError(err.message);
     } else {
-      setSchedules(data ?? []);
+      setSchedules((data as ScheduleWithCampus[]) ?? []);
     }
     setLoading(false);
   }
 
   useEffect(() => {
     fetchSchedules();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campusFilter]);
 
   async function openMySchedule() {
     setMyScheduleOpen(true);
@@ -76,17 +96,21 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
 
   async function handleCreate() {
     setError(null);
-    // Check if schedule already exists for this week
-    const existing = schedules.find((s) => s.week_start === newWeekStart);
+    if (!newCampusId) {
+      setError("Pick a campus for this schedule.");
+      return;
+    }
+    // Check if schedule already exists for this week+campus combination
+    const existing = schedules.find((s) => s.week_start === newWeekStart && s.campus_id === newCampusId);
     if (existing) {
-      setError("A schedule already exists for this week.");
+      setError("A schedule already exists for this week + campus.");
       return;
     }
 
     setCreating(true);
     const { data, error: err } = await supabase
       .from("schedules")
-      .insert({ week_start: newWeekStart, status: "draft" })
+      .insert({ week_start: newWeekStart, status: "draft", campus_id: newCampusId })
       .select()
       .single();
 
@@ -96,12 +120,13 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
       return;
     }
 
-    // Auto-fill rooms from most recent previous schedule
+    // Auto-fill rooms from most recent previous schedule for the SAME campus
     if (data) {
       const { data: prevSchedule } = await supabase
         .from("schedules")
         .select("id")
         .lt("week_start", newWeekStart)
+        .eq("campus_id", newCampusId)
         .order("week_start", { ascending: false })
         .limit(1)
         .single();
@@ -168,8 +193,25 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
             flexWrap: "wrap",
           }}
         >
-          <span style={{ fontWeight: 700, fontSize: 14 }}>Week:</span>
-          <WeekPicker value={newWeekStart} onChange={setNewWeekStart} weeksBack={4} weeksForward={16} />
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>Week:</span>
+            <WeekPicker value={newWeekStart} onChange={setNewWeekStart} weeksBack={4} weeksForward={16} />
+          </div>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>Campus:</span>
+            <select
+              className="select"
+              value={newCampusId}
+              onChange={(e) => setNewCampusId(e.target.value)}
+              disabled={creating || isCampusAdmin}
+              style={{ width: "auto", minWidth: 180 }}
+            >
+              <option value="">— Select campus —</option>
+              {campuses.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          </div>
           <button
             className="btn btn-pink"
             onClick={handleCreate}
@@ -235,6 +277,11 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
                 </div>
                 <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
                   {s.week_start}
+                  {(() => {
+                    const c = campuses.find((x) => x.id === s.campus_id);
+                    if (c) return ` · ${c.name}`;
+                    return s.campus_id ? "" : " · (no campus)";
+                  })()}
                 </div>
               </div>
               <span

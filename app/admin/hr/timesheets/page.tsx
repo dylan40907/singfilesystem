@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1090,14 +1091,17 @@ export default function TimesheetsPage() {
   const workingDays = useMemo(() => getWorkingDays(periodStart), [periodStart]);
   const dateStrs = useMemo(() => workingDays.map(toDateStr), [workingDays]);
 
+  const { filter: campusFilter } = useCampusFilter();
+
   useEffect(() => {
-    supabase
+    let q = supabase
       .from("hr_employees")
       .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
-      .eq("is_active", true)
-      .order("legal_first_name")
+      .eq("is_active", true);
+    q = applyCampusFilterToQuery(q, campusFilter);
+    q.order("legal_first_name")
       .then(({ data }) => setEmployees((data as Employee[]) ?? []));
-  }, []);
+  }, [campusFilter]);
 
   async function fetchEditRequests() {
     const { data: reqData } = await supabase

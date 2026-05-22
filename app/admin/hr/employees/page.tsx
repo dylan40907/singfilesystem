@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 
 type CampusRow = { id: string; name: string };
 type JobLevelRow = { id: string; name: string };
@@ -301,10 +302,12 @@ export default function EmployeesPage() {
     }
   }
 
+  const { filter: campusFilter } = useCampusFilter();
+
   async function loadEmployees() {
     setError("");
     try {
-      const { data, error } = await supabase
+      let q = supabase
         .from("hr_employees")
         .select(
           `
@@ -313,10 +316,13 @@ export default function EmployeesPage() {
           legal_last_name,
           is_active,
           updated_at,
+          campus_id,
           campus:hr_campuses!hr_employees_campus_id_fkey(id,name),
           job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name)
         `
-        )
+        );
+      q = applyCampusFilterToQuery(q, campusFilter);
+      const { data, error } = await q
         .order("legal_last_name", { ascending: true })
         .order("legal_first_name", { ascending: true });
 
@@ -334,8 +340,7 @@ export default function EmployeesPage() {
         const prof = await fetchMyProfile();
         setMe(prof);
 
-        // Only admins should access HR
-        if (prof?.role !== "admin") {
+        if (prof?.role !== "admin" && prof?.role !== "campus_admin") {
           setError("Access denied: admin only.");
           return;
         }
@@ -348,6 +353,14 @@ export default function EmployeesPage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Reload when the campus filter changes (after initial mount)
+  useEffect(() => {
+    if (!me) return;
+    if (me.role !== "admin" && me.role !== "campus_admin") return;
+    loadEmployees();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campusFilter]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();

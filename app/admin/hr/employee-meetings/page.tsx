@@ -3,6 +3,7 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import "@fortune-sheet/react/dist/index.css";
 import {
   PreviewMode,
@@ -418,12 +419,15 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
     setMeetingTypes((res.data ?? []) as any as HrMeetingType[]);
   }, []);
 
+  const { filter: campusFilter } = useCampusFilter();
   const reloadAllEmployees = useCallback(async () => {
-		const res = await supabase
+		let q = supabase
 			.from("hr_employees")
 			.select(
 				"id,profile_id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points"
-			)
+			);
+		q = applyCampusFilterToQuery(q, campusFilter);
+		const res = await q
 			.order("legal_last_name", { ascending: true })
 			.order("legal_first_name", { ascending: true });
 		if (res.error) throw res.error;
@@ -451,7 +455,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 			role: (e as any)?.profile_id ? roleByProfileId.get(String((e as any).profile_id)) ?? null : null,
 		}));
 		setAllEmployees(merged as any as EmployeeLite[]);
-  }, []);
+  }, [campusFilter]);
 
   const loadAttendeeMeetings = useCallback(async (attendeeEmpId: string) => {
     if (!attendeeEmpId) {

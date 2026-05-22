@@ -46,7 +46,9 @@ export default function AdminSupervisorsPage() {
   const [assigned, setAssigned] = useState<PersonRow[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const isAdmin = !!me?.is_active && me.role === "admin";
+  // Treat campus_admin as admin within their campus (filtering applied below to supervisor/teacher lists).
+  const isAdmin = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
+  const isCampusAdmin = !!me?.is_active && me.role === "campus_admin";
 
   // Admin-only: Add supervisor modal state
   const [addOpen, setAddOpen] = useState(false);
@@ -66,7 +68,12 @@ export default function AdminSupervisorsPage() {
     active: false,
   });
 
-  async function refreshLists(preferSelectId?: string) {
+  async function refreshLists(preferSelectId?: string, profileArg?: TeacherProfile | null) {
+    // Use the explicit profile arg when given (initial bootstrap) — `me` state may not be set yet.
+    const p = profileArg ?? me;
+    const callerIsCampusAdmin = !!p?.is_active && p.role === "campus_admin";
+    const callerCampusId = p?.campus_id ?? null;
+
     const [{ data: sData, error: sErr }, { data: tData, error: tErr }] = await Promise.all([
       supabase.rpc("list_supervisors"),
       supabase.rpc("list_teachers"),
@@ -75,7 +82,7 @@ export default function AdminSupervisorsPage() {
     if (sErr) throw sErr;
     if (tErr) throw tErr;
 
-    const supRows = (sData ?? []).map((r: any) => ({
+    let supRows = (sData ?? []).map((r: any) => ({
       id: r.id as string,
       email: (r.email ?? null) as string | null,
       username: (r.username ?? null) as string | null,
@@ -83,13 +90,33 @@ export default function AdminSupervisorsPage() {
       is_active: !!r.is_active,
     })) as PersonRow[];
 
-    const teacherRows = (tData ?? []).map((r: any) => ({
+    let teacherRows = (tData ?? []).map((r: any) => ({
       id: r.id as string,
       email: (r.email ?? null) as string | null,
       username: (r.username ?? null) as string | null,
       full_name: (r.full_name ?? null) as string | null,
       is_active: !!r.is_active,
     })) as PersonRow[];
+
+    // Campus-admin scope: restrict both lists to people whose hr_employee record is in their campus.
+    if (callerIsCampusAdmin && callerCampusId) {
+      const profileIds = [...supRows.map((r) => r.id), ...teacherRows.map((r) => r.id)];
+      if (profileIds.length > 0) {
+        const { data: emps } = await supabase
+          .from("hr_employees")
+          .select("profile_id")
+          .eq("campus_id", callerCampusId)
+          .in("profile_id", profileIds);
+        const inCampus = new Set(((emps ?? []) as { profile_id: string | null }[])
+          .map((e) => e.profile_id)
+          .filter((v): v is string => !!v));
+        supRows = supRows.filter((r) => inCampus.has(r.id));
+        teacherRows = teacherRows.filter((r) => inCampus.has(r.id));
+      } else {
+        supRows = [];
+        teacherRows = [];
+      }
+    }
 
     // sort: active first then name
     supRows.sort((a, b) => {
@@ -126,13 +153,13 @@ export default function AdminSupervisorsPage() {
     const profile = await fetchMyProfile();
     setMe(profile);
 
-    if (!profile?.is_active || profile.role !== "admin") {
+    if (!profile?.is_active || (profile.role !== "admin" && profile.role !== "campus_admin")) {
       setStatus("Not authorized.");
       return;
     }
 
     try {
-      await refreshLists();
+      await refreshLists(undefined, profile);
       setStatus("");
     } catch (e: any) {
       setStatus("Error: " + (e?.message ?? "unknown"));

@@ -34,7 +34,7 @@ function isValidEmail(email: string) {
 }
 
 function isAllowedRole(role: unknown) {
-  return role === "teacher" || role === "supervisor";
+  return role === "teacher" || role === "supervisor" || role === "campus_admin";
 }
 
 serve(async (req) => {

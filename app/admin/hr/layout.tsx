@@ -21,9 +21,10 @@ export default function HrLayout({ children }: { children: ReactNode }) {
 
       const profile = await fetchMyProfile();
       const isAdmin = profile?.role === "admin" && !!profile?.is_active;
+      const isCampusAdmin = profile?.role === "campus_admin" && !!profile?.is_active;
       const isSupervisor = profile?.role === "supervisor" && !!profile?.is_active;
 
-      if (!isAdmin && !isSupervisor) {
+      if (!isAdmin && !isCampusAdmin && !isSupervisor) {
         router.replace("/");
         return;
       }

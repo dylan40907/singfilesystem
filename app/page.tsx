@@ -347,7 +347,8 @@ export default function Home() {
   const [setupPass2, setSetupPass2] = useState("");
   const [setupSetPassLoading, setSetupSetPassLoading] = useState(false);
 
-  const isAdmin = !!myProfile?.is_active && myProfile.role === "admin";
+  // Treat campus_admin as admin for file-system purposes (files aren't campus-scoped).
+  const isAdmin = !!myProfile?.is_active && (myProfile.role === "admin" || myProfile.role === "campus_admin");
   const isSupervisor = !!myProfile?.is_active && myProfile.role === "supervisor";
   const isAdminOrSupervisor = isAdmin || isSupervisor;
   const isTeacherAccount = !!sessionEmail && !isAdminOrSupervisor;
@@ -659,8 +660,8 @@ export default function Home() {
       }
       setCurrentFolderId(nextFolder);
 
-      // Teacher list only for admins/supervisors (for share modal)
-      if (profile?.is_active && (profile.role === "admin" || profile.role === "supervisor")) {
+      // Teacher list only for admins/campus_admins/supervisors (for share modal)
+      if (profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor")) {
         const teacherList = await fetchActiveTeachers();
         setTeachers(teacherList);
       } else {

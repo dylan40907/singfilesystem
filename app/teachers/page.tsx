@@ -481,8 +481,11 @@ export default function TeachersPage() {
   const [status, setStatus] = useState("");
   const [me, setMe] = useState<TeacherProfile | null>(null);
 
-  const isAdmin = !!me?.is_active && me.role === "admin";
-  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
+  // Treat campus_admin as admin for in-page capabilities (write actions, etc.);
+  // teacher-list filtering by campus happens below.
+  const isAdmin = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
+  const isCampusAdmin = !!me?.is_active && me.role === "campus_admin";
+  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin" || me.role === "supervisor");
 
   // ✅ For supervisors: the ONLY teacher IDs they are allowed to see on this page.
   // - null => admin/no filter
@@ -734,6 +737,7 @@ async function exitTextFullscreen() {
   function isTeacherAllowed(userId: string) {
     if (!userId) return false;
     if (me?.role === "admin") return true;
+    if (me?.role === "campus_admin") return Array.isArray(allowedTeacherIds) && allowedTeacherIds.includes(userId);
     if (me?.role === "supervisor") return Array.isArray(allowedTeacherIds) && allowedTeacherIds.includes(userId);
     return false;
   }
@@ -760,12 +764,12 @@ async function exitTextFullscreen() {
   async function refreshTeacherList(preferSelectId?: string, profileArg?: TeacherProfile | null) {
     const p = profileArg ?? me;
 
-    // ADMIN => can see all (including inactive) via RPC
-    if (p?.role === "admin") {
+    // ADMIN or CAMPUS_ADMIN => use the same RPC list; campus_admin gets filtered by their campus below.
+    if (p?.role === "admin" || p?.role === "campus_admin") {
       const { data, error } = await supabase.rpc("list_teachers");
       if (error) throw error;
 
-      const list = ((data ?? []) as any[]).map((r) => ({
+      let list = ((data ?? []) as any[]).map((r) => ({
         id: r.id as string,
         email: (r.email ?? null) as string | null,
         username: (r.username ?? null) as string | null,
@@ -773,7 +777,26 @@ async function exitTextFullscreen() {
         role: "teacher",
         is_active: !!r.is_active,
         has_set_password: (r.has_set_password ?? true) as boolean,
+        campus_id: (r.campus_id ?? null) as string | null,
       })) as TeacherProfile[];
+
+      // Campus-admin scope: keep only teachers whose hr_employee record is in their campus.
+      if (p.role === "campus_admin" && p.campus_id) {
+        const profileIds = list.map((t) => t.id);
+        if (profileIds.length > 0) {
+          const { data: emps } = await supabase
+            .from("hr_employees")
+            .select("profile_id")
+            .eq("campus_id", p.campus_id)
+            .in("profile_id", profileIds);
+          const inCampus = new Set(((emps ?? []) as { profile_id: string | null }[])
+            .map((e) => e.profile_id)
+            .filter((v): v is string => !!v));
+          list = list.filter((t) => inCampus.has(t.id));
+        } else {
+          list = [];
+        }
+      }
 
       // sort: active first, then name
       list.sort((a, b) => {
@@ -785,7 +808,12 @@ async function exitTextFullscreen() {
         return an.localeCompare(bn);
       });
 
-      setAllowedTeacherIds(null);
+      // For campus_admin, restrict allowedTeacherIds to their campus list so write actions are scoped.
+      if (p.role === "campus_admin") {
+        setAllowedTeacherIds(list.map((t) => t.id));
+      } else {
+        setAllowedTeacherIds(null);
+      }
       setTeachers(list);
 
       const exists = (id: string) => list.some((t) => t.id === id);
@@ -1470,7 +1498,7 @@ setWorkbookKey(`${planId}:${Date.now()}`);
     setStatus("Loading...");
     try {
       const profile = await loadMe();
-      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
+      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor")) {
         setStatus("Not authorized.");
         return;
       }

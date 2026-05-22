@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import CampusSelector from "@/components/CampusSelector";
 
 function NavLink({
   href,
@@ -45,10 +46,13 @@ export default function HrNavbar() {
 
   const isActive = !!profile?.is_active;
   const isAdmin = isActive && profile?.role === "admin";
+  const isCampusAdmin = isActive && profile?.role === "campus_admin";
   const isSupervisor = isActive && profile?.role === "supervisor";
 
-  // ✅ HR access: admin OR supervisor
-  const canUseHr = !!sessionEmail && isActive && (isAdmin || isSupervisor);
+  // ✅ HR access: admin OR campus_admin OR supervisor
+  const canUseHr = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || isSupervisor);
+  // ✅ "Admin-level" access (excludes supervisors) — controls visibility of admin-only tabs/buttons
+  const hasAdminAccess = isAdmin || isCampusAdmin;
 
   useEffect(() => { setMenuOpen(false); }, [pathname]);
 
@@ -104,23 +108,25 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/org-chart" || pathname.startsWith("/admin/hr/org-chart/")) return "org-chart";
     if (pathname === "/admin/hr/timesheets" || pathname.startsWith("/admin/hr/timesheets/")) return "timesheets";
     if (pathname === "/admin/hr/leave" || pathname.startsWith("/admin/hr/leave/")) return "leave";
+    if (pathname === "/admin/hr/admins" || pathname.startsWith("/admin/hr/admins/")) return "admins";
     return "employees";
   }, [pathname]);
 
   // ✅ For supervisors, send "home" to Attendance
-  const hrHomeHref = isAdmin ? "/admin/hr/employees" : "/admin/hr/attendance";
+  const hrHomeHref = hasAdminAccess ? "/admin/hr/employees" : "/admin/hr/attendance";
 
   const subtitle = useMemo(() => {
     if (!sessionEmail) return "Not signed in";
     if (!isActive) return "Inactive account";
     if (isAdmin) return "Admin";
+    if (isCampusAdmin) return "Campus Admin";
     if (isSupervisor) return "Supervisor";
     return "No HR access";
-  }, [sessionEmail, isActive, isAdmin, isSupervisor]);
+  }, [sessionEmail, isActive, isAdmin, isCampusAdmin, isSupervisor]);
 
   const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
 
-  const adminLinks = canUseHr && isAdmin ? [
+  const adminLinks = canUseHr && hasAdminAccess ? [
     { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
     { href: "/admin/hr/org-chart", label: "Org Chart", tab: "org-chart" },
@@ -128,7 +134,8 @@ export default function HrNavbar() {
     { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
     { href: "/admin/hr/timesheets", label: "Timesheets", tab: "timesheets" },
     { href: "/admin/hr/leave", label: "Leave", tab: "leave" },
-    { href: "/admin/hr/settings", label: "Settings", tab: "settings" },
+    ...(isAdmin ? [{ href: "/admin/hr/settings", label: "Settings", tab: "settings" }] : []),
+    ...(isAdmin ? [{ href: "/admin/hr/admins", label: "Admin Management", tab: "admins" }] : []),
   ] : canUseHr && isSupervisor ? [
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
   ] : [];
@@ -158,7 +165,8 @@ export default function HrNavbar() {
           </div>
 
           {/* Desktop right controls */}
-          <div className="row hide-mobile" style={{ gap: 10 }}>
+          <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
+            {canUseHr && hasAdminAccess && <CampusSelector />}
             <button className="btn" onClick={() => router.push("/")}>Curriculum</button>
             {sessionEmail ? (
               <span className="badge badge-pink">{displayName}</span>
@@ -187,6 +195,14 @@ export default function HrNavbar() {
                 {l.label}
               </Link>
             ))}
+            {canUseHr && hasAdminAccess && (
+              <>
+                <div className="nav-mobile-divider" />
+                <div style={{ padding: "8px" }}>
+                  <CampusSelector />
+                </div>
+              </>
+            )}
             <div className="nav-mobile-divider" />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px 0", gap: 10 }}>
               {sessionEmail ? (

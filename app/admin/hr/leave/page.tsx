@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -314,24 +315,31 @@ export default function LeavePage() {
   }, []);
 
   // ── Load employees ────────────────────────────────────────────────────────
+  const { filter: campusFilter } = useCampusFilter();
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data, error } = await supabase
+      let q = supabase
         .from("hr_employees")
-        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, start_date")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, start_date");
+      q = applyCampusFilterToQuery(q, campusFilter);
+      const { data, error } = await q
         .order("legal_last_name", { ascending: true })
         .order("legal_first_name", { ascending: true });
       if (cancelled) return;
       if (error) { setError(error.message); return; }
       const rows = (data ?? []) as EmployeeRow[];
       setEmployees(rows);
-      if (!selectedEmployeeId && rows.length > 0)
+      // Reset/auto-pick selection when campus filter changes
+      if (rows.length === 0) {
+        setSelectedEmployeeId("");
+      } else if (!rows.some((r) => r.id === selectedEmployeeId)) {
         setSelectedEmployeeId(rows.find((r) => r.is_active)?.id ?? rows[0].id);
+      }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [campusFilter]);
 
   // ── Load pending requests ─────────────────────────────────────────────────
   useEffect(() => {
@@ -725,7 +733,7 @@ export default function LeavePage() {
 
   // ── Access control ────────────────────────────────────────────────────────
   if (meLoading) return <div className="container" style={{ padding: 24 }}>Loading…</div>;
-  if (!me || me.role !== "admin" || !me.is_active) {
+  if (!me || (me.role !== "admin" && me.role !== "campus_admin") || !me.is_active) {
     return (
       <div className="container" style={{ padding: 24 }}>
         <h1 style={{ marginBottom: 8 }}>Leave</h1>

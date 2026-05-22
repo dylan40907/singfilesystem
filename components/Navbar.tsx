@@ -68,7 +68,7 @@ export default function Navbar() {
   const isActive = !!profile?.is_active;
 
   const isAdminOrSupervisor =
-    !!profile?.is_active && (profile.role === "admin" || profile.role === "supervisor");
+    !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
   const showMyPlans = !!sessionEmail && isActive;
   const showTeachers = !!sessionEmail && isAdminOrSupervisor;
@@ -76,12 +76,13 @@ export default function Navbar() {
 
   const isSupervisor = !!profile?.is_active && profile.role === "supervisor";
   const isAdmin = !!profile?.is_active && profile.role === "admin";
-  const showSupervisors = !!sessionEmail && isAdmin;
+  const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
+  const showSupervisors = !!sessionEmail && (isAdmin || isCampusAdmin);
   const showSchedules = !!sessionEmail && isSupervisor;
 
-  // ✅ HR visible to ALL active users (admin goes to /admin/hr, everyone else to /hr)
+  // ✅ HR visible to ALL active users (admin/campus_admin goes to /admin/hr, everyone else to /hr)
   const showHr = !!sessionEmail && isActive;
-  const hrHref = isAdmin ? "/admin/hr" : "/hr";
+  const hrHref = (isAdmin || isCampusAdmin) ? "/admin/hr" : "/hr";
 
   // Keep latest pathname without re-subscribing
   const pathnameRef = useRef(pathname);

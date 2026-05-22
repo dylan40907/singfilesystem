@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
+import { useCampusFilter } from "@/lib/CampusContext";
 
 type HrCampus = {
   id: string;
@@ -202,7 +203,9 @@ export default function HrOrgChartPage() {
   const { confirm, modal: dialogModal } = useDialog();
   const [status, setStatus] = useState("");
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
-  const isAdmin = !!profile?.is_active && profile.role === "admin";
+  const isAdmin = !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin");
+
+  const { filter: campusFilter, isCampusAdmin, lockedCampusId } = useCampusFilter();
 
   const [campuses, setCampuses] = useState<HrCampus[]>([]);
   const [selectedCampusId, setSelectedCampusId] = useState<string>("");
@@ -296,7 +299,7 @@ export default function HrOrgChartPage() {
       const p = await fetchMyProfile();
       setProfile(p);
 
-      if (!p?.is_active || p.role !== "admin") {
+      if (!p?.is_active || (p.role !== "admin" && p.role !== "campus_admin")) {
         setStatus("Admin access required.");
         return;
       }
@@ -695,6 +698,24 @@ export default function HrOrgChartPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCampusId]);
 
+  // Sync the global campus filter (from HrNavbar) into the page's local selection.
+  // - A specific campus UUID in the navbar forces this page to that campus.
+  // - "all" / "unassigned" leave the existing selection alone (org chart is single-campus).
+  useEffect(() => {
+    if (campusFilter !== "all" && campusFilter !== "unassigned") {
+      if (selectedCampusId !== campusFilter) setSelectedCampusId(campusFilter);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campusFilter]);
+
+  // Filter the campus dropdown to ones the user is allowed to manage
+  const accessibleCampuses = useMemo(() => {
+    if (isCampusAdmin && lockedCampusId) {
+      return campuses.filter((c) => c.id === lockedCampusId);
+    }
+    return campuses;
+  }, [campuses, isCampusAdmin, lockedCampusId]);
+
   function renderTree(employeeId: string) {
     const emp = employeesById.get(employeeId);
     const kids = childrenByParentId.get(employeeId) ?? [];
@@ -761,9 +782,9 @@ export default function HrOrgChartPage() {
               <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "end" }}>
                 <div style={{ width: "min(520px, 100%)" }}>
                   <div style={{ fontWeight: 900, marginBottom: 8 }}>Campus</div>
-                  <select className="select" value={selectedCampusId} onChange={(e) => setSelectedCampusId(e.target.value)}>
+                  <select className="select" value={selectedCampusId} onChange={(e) => setSelectedCampusId(e.target.value)} disabled={isCampusAdmin}>
                     <option value="">— Select a campus —</option>
-                    {campuses.map((c) => (
+                    {accessibleCampuses.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>

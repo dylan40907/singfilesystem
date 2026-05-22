@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import {
   Schedule,
   ScheduleRoom,
@@ -183,18 +184,21 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
 
   // No document listener needed — outside clicks handled by backdrop divs
 
+  const { filter: campusFilter } = useCampusFilter();
+
   // Fetch all data
   const fetchData = useCallback(async () => {
     setLoading(true);
+    let empQ = supabase
+      .from("hr_employees")
+      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
+      .eq("is_active", true);
+    empQ = applyCampusFilterToQuery(empQ, campusFilter);
     const [schedRes, roomsRes, blocksRes, empRes, colorsRes] = await Promise.all([
       supabase.from("schedules").select("*").eq("id", scheduleId).single(),
       supabase.from("schedule_rooms").select("*").eq("schedule_id", scheduleId).order("sort_order"),
       supabase.from("schedule_blocks").select("*").eq("schedule_id", scheduleId),
-      supabase
-        .from("hr_employees")
-        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
-        .eq("is_active", true)
-        .order("legal_first_name"),
+      empQ.order("legal_first_name"),
       supabase.from("schedule_cell_colors").select("day_of_week, colors").eq("schedule_id", scheduleId),
     ]);
 
@@ -223,7 +227,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       setCellColors(cm);
     }
     setLoading(false);
-  }, [scheduleId]);
+  }, [scheduleId, campusFilter]);
 
   useEffect(() => {
     fetchData();

@@ -1,12 +1,15 @@
 import { supabase } from "./supabaseClient";
 
+export type UserRole = "admin" | "campus_admin" | "supervisor" | "teacher" | "employee" | "hours_manager";
+
 export type TeacherProfile = {
   id: string;
   email: string | null;
   username: string | null;
   full_name: string | null;
-  role: "admin" | "supervisor" | "teacher" | "employee" | "hours_manager";
+  role: UserRole;
   is_active: boolean;
+  campus_id: string | null;
 };
 
 export async function fetchActiveTeachers(): Promise<TeacherProfile[]> {
@@ -22,7 +25,7 @@ export async function fetchMyProfile(): Promise<TeacherProfile | null> {
 
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("id, email, username, full_name, role, is_active")
+    .select("id, email, username, full_name, role, is_active, campus_id")
     .eq("id", uid)
     .single();
 

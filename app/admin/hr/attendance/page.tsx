@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 
 type EmployeeRow = {
   id: string;
@@ -109,7 +110,7 @@ export default function AttendancePage() {
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<string>("Loading...");
 
-  const canUseHr = !!profile?.is_active && (profile.role === "admin" || profile.role === "supervisor");
+  const canUseHr = !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
@@ -233,7 +234,7 @@ export default function AttendancePage() {
       try {
         const p = await fetchMyProfile();
         setProfile(p);
-        if (!!p?.is_active && (p.role === "admin" || p.role === "supervisor")) setAccessStatus("");
+        if (!!p?.is_active && (p.role === "admin" || p.role === "campus_admin" || p.role === "supervisor")) setAccessStatus("");
         else setAccessStatus("HR access required (admin or supervisor).");
       } catch {
         setAccessStatus("HR access required (admin or supervisor).");
@@ -241,15 +242,18 @@ export default function AttendancePage() {
     })();
   }, []);
 
+  const { filter: campusFilter } = useCampusFilter();
   async function loadEmployeesAndTypes() {
     setLoading(true);
     setError(null);
 
     try {
+      let empQ = supabase
+        .from("hr_employees")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, attendance_points, updated_at");
+      empQ = applyCampusFilterToQuery(empQ, campusFilter);
       const [eRes, tRes] = await Promise.all([
-        supabase
-          .from("hr_employees")
-          .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, attendance_points, updated_at")
+        empQ
           .order("attendance_points", { ascending: true })
           .order("legal_last_name", { ascending: true })
           .order("legal_first_name", { ascending: true }),
@@ -286,7 +290,7 @@ export default function AttendancePage() {
     if (!canUseHr) return;
     void loadEmployeesAndTypes();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canUseHr]);
+  }, [canUseHr, campusFilter]);
 
   async function loadEmployeeAttendance(employeeId: string) {
     setEmpAttendanceLoading(true);

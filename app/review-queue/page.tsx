@@ -534,6 +534,7 @@ export default function ReviewQueuePage() {
     (ownerUserId?: string | null) => {
       if (!ownerUserId) return false;
       if (me?.role === "admin") return true;
+      if (me?.role === "campus_admin") return !!allowedTeacherIds?.includes(ownerUserId);
       if (me?.role === "supervisor") return !!allowedTeacherIds?.includes(ownerUserId);
       return false;
     },
@@ -787,7 +788,7 @@ async function exitTextFullscreen() {
 
   const [userLabelsById, setUserLabelsById] = useState<Record<string, UserLabelRow>>({});
 
-  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "supervisor");
+  const isAdminOrSupervisor = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin" || me.role === "supervisor");
 
   async function ensureUserLabels(userIds: string[]) {
     const unique = Array.from(new Set(userIds.filter(Boolean)));
@@ -1184,14 +1185,25 @@ async function exitTextFullscreen() {
     setStatus("Loading...");
     try {
       const profile = await loadMe();
-      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "supervisor")) {
+      if (!profile?.is_active || !(profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor")) {
         setStatus("Not authorized.");
         return;
       }
 
       if (profile.role === "admin") {
-        setAllowedTeacherIds(null); // null = no filter
+        setAllowedTeacherIds(null); // null = no filter (true admin sees everything)
         await refreshQueue(profile, null);
+      } else if (profile.role === "campus_admin" && profile.campus_id) {
+        // Campus admin: restrict to teachers whose hr_employee record is in their campus.
+        const { data: emps } = await supabase
+          .from("hr_employees")
+          .select("profile_id")
+          .eq("campus_id", profile.campus_id);
+        const ids = ((emps ?? []) as { profile_id: string | null }[])
+          .map((e) => e.profile_id)
+          .filter((v): v is string => !!v);
+        setAllowedTeacherIds(ids);
+        await refreshQueue(profile, ids);
       } else {
         const list = await fetchActiveTeachers(); // for supervisors this is already filtered correctly
         const ids = list.map((t) => t.id);
