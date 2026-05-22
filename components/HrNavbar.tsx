@@ -109,6 +109,7 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/timesheets" || pathname.startsWith("/admin/hr/timesheets/")) return "timesheets";
     if (pathname === "/admin/hr/leave" || pathname.startsWith("/admin/hr/leave/")) return "leave";
     if (pathname === "/admin/hr/admins" || pathname.startsWith("/admin/hr/admins/")) return "admins";
+    if (pathname === "/admin/hr/roles" || pathname.startsWith("/admin/hr/roles/")) return "roles";
     return "employees";
   }, [pathname]);
 
@@ -135,6 +136,7 @@ export default function HrNavbar() {
     { href: "/admin/hr/timesheets", label: "Timesheets", tab: "timesheets" },
     { href: "/admin/hr/leave", label: "Leave", tab: "leave" },
     ...(isAdmin ? [{ href: "/admin/hr/settings", label: "Settings", tab: "settings" }] : []),
+    ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
     ...(isAdmin ? [{ href: "/admin/hr/admins", label: "Admin Management", tab: "admins" }] : []),
   ] : canUseHr && isSupervisor ? [
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },

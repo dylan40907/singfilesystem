@@ -21,7 +21,8 @@ Deno.serve(async (req) => {
   try {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
     const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const SUPABASE_SERVICE_ROLE_KEY =
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SERVICE_ROLE_KEY") ?? "";
 
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
       return json({ error: "Missing Supabase env vars." }, 500);
@@ -47,21 +48,28 @@ Deno.serve(async (req) => {
 
     if (callerProfileErr) return json({ error: callerProfileErr.message }, 403);
     if (!callerProfile?.is_active || callerProfile.role !== "admin") {
-      return json({ error: "Admin-only." }, 403);
+      return json({ error: "True admins only." }, 403);
     }
 
     const body = await req.json().catch(() => ({}));
     const target_user_id = (body?.target_user_id ?? "").toString();
     const new_role = (body?.new_role ?? "").toString();
+    const campus_id = body?.campus_id ? (body.campus_id as string).toString() : null;
 
     if (!target_user_id) return json({ error: "Missing target_user_id" }, 400);
-    if (new_role !== "teacher" && new_role !== "supervisor") {
-      return json({ error: "new_role must be 'teacher' or 'supervisor'" }, 400);
+    if (new_role !== "teacher" && new_role !== "supervisor" && new_role !== "campus_admin") {
+      return json({ error: "new_role must be 'teacher', 'supervisor', or 'campus_admin'" }, 400);
+    }
+    if (new_role === "campus_admin" && !campus_id) {
+      return json({ error: "campus_id is required when promoting to campus_admin" }, 400);
+    }
+    if (target_user_id === callerId) {
+      return json({ error: "You cannot change your own role." }, 400);
     }
 
     const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Ensure target exists and is teacher/supervisor (not admin)
+    // Validate target
     const { data: targetProfile, error: targetErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id, role")
@@ -70,29 +78,50 @@ Deno.serve(async (req) => {
 
     if (targetErr) return json({ error: targetErr.message }, 400);
     if (!targetProfile) return json({ error: "Target not found." }, 404);
-
-    if (targetProfile.role !== "teacher" && targetProfile.role !== "supervisor") {
-      return json({ error: "Can only change role for teacher/supervisor accounts." }, 400);
+    if (targetProfile.role === "admin") {
+      return json({ error: "Cannot change role of a true admin." }, 400);
     }
-
+    if (
+      targetProfile.role !== "teacher" &&
+      targetProfile.role !== "supervisor" &&
+      targetProfile.role !== "campus_admin"
+    ) {
+      return json({ error: "Target role not eligible for role changes." }, 400);
+    }
     if (targetProfile.role === new_role) {
       return json({ error: `User is already a ${new_role}.` }, 400);
     }
 
-    // If demoting supervisor to teacher, clear their supervisor-teacher assignments
-    if (targetProfile.role === "supervisor" && new_role === "teacher") {
-      await supabaseAdmin
+    // Validate campus_id if needed
+    if (new_role === "campus_admin") {
+      const { data: campusRow, error: campusErr } = await supabaseAdmin
+        .from("hr_campuses")
+        .select("id")
+        .eq("id", campus_id)
+        .maybeSingle();
+      if (campusErr) return json({ error: campusErr.message }, 500);
+      if (!campusRow) return json({ error: "Campus not found." }, 404);
+    }
+
+    // If leaving the supervisor role, clear their supervisor-teacher assignments.
+    if (targetProfile.role === "supervisor") {
+      const { error: asnErr } = await supabaseAdmin
         .from("supervisor_teacher_assignments")
         .delete()
-        .eq("supervisor_id", target_user_id);
+        .eq("supervisor_user_id", target_user_id);
+      if (asnErr) return json({ error: "Failed to clear assignments: " + asnErr.message }, 500);
     }
+
+    // Build the patch. campus_id is only meaningful for campus_admin; null it out otherwise.
+    const patch: Record<string, unknown> = {
+      role: new_role,
+      campus_id: new_role === "campus_admin" ? campus_id : null,
+      updated_at: new Date().toISOString(),
+    };
 
     const { error: updErr } = await supabaseAdmin
       .from("user_profiles")
-      .update({
-        role: new_role,
-        updated_at: new Date().toISOString(),
-      })
+      .update(patch)
       .eq("id", target_user_id);
 
     if (updErr) return json({ error: updErr.message }, 500);
