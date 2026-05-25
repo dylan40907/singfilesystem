@@ -1,0 +1,349 @@
+import { supabase } from "./supabaseClient";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export type ChatConversation = {
+  id: string;
+  name: string | null;
+  is_group: boolean;
+  created_by: string | null;
+  created_at: string;
+  last_message_at: string;
+};
+
+export type ChatMember = {
+  conversation_id: string;
+  user_id: string;
+  joined_at: string;
+  last_read_at: string;
+  hidden_at: string | null;
+};
+
+export type ChatMessage = {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+};
+
+export type ChatUserLite = {
+  id: string;
+  full_name: string | null;
+  username: string | null;
+  email: string | null;
+};
+
+// Conversation enriched with members + last message preview for the sidebar list.
+export type ChatConversationView = ChatConversation & {
+  members: ChatUserLite[];
+  myLastReadAt: string;
+  lastMessage: ChatMessage | null;
+  unreadCount: number;
+  /** Display name: group name OR the other 1-on-1 member's name */
+  displayName: string;
+};
+
+// ─── Display helpers ─────────────────────────────────────────────────────────
+
+export function userDisplayName(u: { full_name?: string | null; username?: string | null; email?: string | null; id?: string }): string {
+  const name = (u.full_name ?? "").trim();
+  if (name) return name;
+  const un = (u.username ?? "").trim();
+  if (un) return un;
+  return u.email ?? u.id ?? "Unknown";
+}
+
+export function conversationDisplayName(
+  c: ChatConversation,
+  members: ChatUserLite[],
+  myId: string
+): string {
+  if (c.is_group) {
+    if (c.name && c.name.trim()) return c.name.trim();
+    // Fallback for unnamed group: concat names of other members
+    const others = members.filter((m) => m.id !== myId).slice(0, 3);
+    const names = others.map(userDisplayName);
+    return names.length === 0 ? "Group chat" : names.join(", ");
+  }
+  // 1-on-1: name is the other person
+  const other = members.find((m) => m.id !== myId);
+  return other ? userDisplayName(other) : "Direct message";
+}
+
+// ─── API ─────────────────────────────────────────────────────────────────────
+
+/** Fetch all conversations the current user is in, enriched for sidebar. */
+export async function fetchMyConversations(myId: string): Promise<ChatConversationView[]> {
+  // Get conversation IDs I'm a member of (with my last_read_at + hidden_at)
+  const { data: myMembership, error: memErr } = await supabase
+    .from("chat_members")
+    .select("conversation_id, last_read_at, hidden_at")
+    .eq("user_id", myId);
+  if (memErr) throw memErr;
+  const ids = (myMembership ?? []).map((m) => m.conversation_id);
+  if (ids.length === 0) return [];
+
+  const hiddenAtByConv = new Map<string, string | null>();
+  for (const m of myMembership ?? []) {
+    hiddenAtByConv.set(m.conversation_id, (m as { hidden_at: string | null }).hidden_at ?? null);
+  }
+
+  // Fetch the conversation rows
+  const { data: convs, error: convErr } = await supabase
+    .from("chat_conversations")
+    .select("id, name, is_group, created_by, created_at, last_message_at")
+    .in("id", ids)
+    .order("last_message_at", { ascending: false });
+  if (convErr) throw convErr;
+
+  // Filter out conversations I've hidden, unless new activity arrived after hidden_at
+  const visibleConvs = (convs ?? []).filter((c) => {
+    const hidden = hiddenAtByConv.get(c.id);
+    if (!hidden) return true;
+    return new Date(c.last_message_at) > new Date(hidden);
+  });
+
+  const visibleIds = visibleConvs.map((c) => c.id);
+  if (visibleIds.length === 0) return [];
+
+  // Fetch all members for those conversations (RLS allows because we're a member)
+  const { data: allMembers, error: allMemErr } = await supabase
+    .from("chat_members")
+    .select("conversation_id, user_id")
+    .in("conversation_id", visibleIds);
+  if (allMemErr) throw allMemErr;
+
+  const memberIds = [...new Set((allMembers ?? []).map((m) => m.user_id))];
+
+  // Fetch user profiles for display
+  const { data: profs, error: profErr } = await supabase
+    .from("user_profiles")
+    .select("id, full_name, username, email")
+    .in("id", memberIds);
+  if (profErr) throw profErr;
+  const profileMap = new Map<string, ChatUserLite>(
+    (profs ?? []).map((p) => [p.id as string, p as ChatUserLite])
+  );
+
+  // Group members by conversation
+  const membersByConv = new Map<string, ChatUserLite[]>();
+  for (const m of allMembers ?? []) {
+    const arr = membersByConv.get(m.conversation_id) ?? [];
+    const p = profileMap.get(m.user_id);
+    if (p) arr.push(p);
+    membersByConv.set(m.conversation_id, arr);
+  }
+
+  // Build my last_read_at lookup
+  const myLastReadMap = new Map<string, string>();
+  for (const m of myMembership ?? []) {
+    myLastReadMap.set(m.conversation_id, m.last_read_at);
+  }
+
+  // Fetch the latest message per conversation (one query, then group)
+  const { data: recentMsgs, error: msgErr } = await supabase
+    .from("chat_messages")
+    .select("id, conversation_id, sender_id, content, created_at")
+    .in("conversation_id", visibleIds)
+    .order("created_at", { ascending: false })
+    .limit(500);
+  if (msgErr) throw msgErr;
+
+  const lastByConv = new Map<string, ChatMessage>();
+  const messagesByConv = new Map<string, ChatMessage[]>();
+  for (const m of (recentMsgs ?? []) as ChatMessage[]) {
+    if (!lastByConv.has(m.conversation_id)) lastByConv.set(m.conversation_id, m);
+    const arr = messagesByConv.get(m.conversation_id) ?? [];
+    arr.push(m);
+    messagesByConv.set(m.conversation_id, arr);
+  }
+
+  return visibleConvs.map((c) => {
+    const members = membersByConv.get(c.id) ?? [];
+    const myLastRead = myLastReadMap.get(c.id) ?? c.created_at;
+    const allMsgs = messagesByConv.get(c.id) ?? [];
+    const unread = allMsgs.filter(
+      (m) => m.sender_id !== myId && new Date(m.created_at) > new Date(myLastRead)
+    ).length;
+    return {
+      ...(c as ChatConversation),
+      members,
+      myLastReadAt: myLastRead,
+      lastMessage: lastByConv.get(c.id) ?? null,
+      unreadCount: unread,
+      displayName: conversationDisplayName(c as ChatConversation, members, myId),
+    };
+  });
+}
+
+/** Fetch the full message history for a conversation (newest at the bottom). */
+export async function fetchMessages(conversationId: string): Promise<ChatMessage[]> {
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("id, conversation_id, sender_id, content, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as ChatMessage[];
+}
+
+/** Send a message. */
+export async function sendMessage(
+  conversationId: string,
+  senderId: string,
+  content: string
+): Promise<ChatMessage> {
+  const trimmed = content.trim();
+  if (!trimmed) throw new Error("Message cannot be empty");
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .insert({
+      conversation_id: conversationId,
+      sender_id: senderId,
+      content: trimmed,
+    })
+    .select("id, conversation_id, sender_id, content, created_at")
+    .single();
+  if (error) throw error;
+  return data as ChatMessage;
+}
+
+/** Update my last_read_at to "now" for a conversation. */
+export async function markRead(conversationId: string, myId: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_members")
+    .update({ last_read_at: new Date().toISOString() })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", myId);
+  if (error) throw error;
+}
+
+/**
+ * "Delete" a chat for the current user only — soft-hides it from their sidebar.
+ * The conversation will re-appear automatically when a new message arrives
+ * (last_message_at > hidden_at), or when the user explicitly re-opens it.
+ */
+export async function hideConversation(conversationId: string, myId: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_members")
+    .update({ hidden_at: new Date().toISOString() })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", myId);
+  if (error) throw error;
+}
+
+/** Clear my hidden_at flag for a conversation — used when re-engaging with a previously hidden chat. */
+export async function unhideConversation(conversationId: string, myId: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_members")
+    .update({ hidden_at: null })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", myId);
+  if (error) throw error;
+}
+
+/**
+ * Find an existing 1-on-1 conversation between me and `otherUserId`.
+ * Returns the conversation id, or null if none exists.
+ */
+export async function findExistingDirectConversation(
+  myId: string,
+  otherUserId: string
+): Promise<string | null> {
+  // All 1-on-1 conversations I'm in
+  const { data: mine, error: mineErr } = await supabase
+    .from("chat_members")
+    .select("conversation_id")
+    .eq("user_id", myId);
+  if (mineErr) throw mineErr;
+  const myConvIds = (mine ?? []).map((r) => r.conversation_id);
+  if (myConvIds.length === 0) return null;
+
+  const { data: convs, error: cErr } = await supabase
+    .from("chat_conversations")
+    .select("id")
+    .in("id", myConvIds)
+    .eq("is_group", false);
+  if (cErr) throw cErr;
+  const oneOnOneIds = (convs ?? []).map((c) => c.id as string);
+  if (oneOnOneIds.length === 0) return null;
+
+  // Find one where the other user is also a member
+  const { data: matches, error: matchErr } = await supabase
+    .from("chat_members")
+    .select("conversation_id")
+    .eq("user_id", otherUserId)
+    .in("conversation_id", oneOnOneIds);
+  if (matchErr) throw matchErr;
+  return matches && matches.length > 0 ? (matches[0].conversation_id as string) : null;
+}
+
+/**
+ * Create a new conversation. For 1-on-1 (single recipient), de-dupes against
+ * any existing direct conversation between the two users.
+ *
+ * Returns the conversation id.
+ */
+export async function createConversation(opts: {
+  myId: string;
+  recipientUserIds: string[];
+  name?: string | null;
+}): Promise<string> {
+  const recipients = [...new Set(opts.recipientUserIds.filter((id) => id && id !== opts.myId))];
+  if (recipients.length === 0) throw new Error("Pick at least one user");
+
+  const isGroup = recipients.length > 1;
+
+  // De-dup direct chats — also un-hide it for me if I'd previously hidden it
+  if (!isGroup) {
+    const existing = await findExistingDirectConversation(opts.myId, recipients[0]);
+    if (existing) {
+      await unhideConversation(existing, opts.myId).catch(() => {});
+      return existing;
+    }
+  }
+
+  const { data: convRow, error: convErr } = await supabase
+    .from("chat_conversations")
+    .insert({
+      name: isGroup ? (opts.name?.trim() || null) : null,
+      is_group: isGroup,
+      created_by: opts.myId,
+    })
+    .select("id")
+    .single();
+  if (convErr) throw convErr;
+  const convId = (convRow as { id: string }).id;
+
+  // Insert membership rows: me first (RLS requires user_id = auth.uid() for the bootstrap row)
+  const { error: meErr } = await supabase
+    .from("chat_members")
+    .insert({ conversation_id: convId, user_id: opts.myId });
+  if (meErr) throw meErr;
+
+  if (recipients.length > 0) {
+    const { error: othersErr } = await supabase
+      .from("chat_members")
+      .insert(recipients.map((uid) => ({ conversation_id: convId, user_id: uid })));
+    if (othersErr) throw othersErr;
+  }
+
+  return convId;
+}
+
+/**
+ * Fetch all active users (for the new-chat picker), excluding the current user.
+ */
+export async function fetchPickableUsers(myId: string): Promise<ChatUserLite[]> {
+  const { data, error } = await supabase
+    .from("user_profiles")
+    .select("id, full_name, username, email, is_active")
+    .eq("is_active", true)
+    .neq("id", myId)
+    .order("full_name", { ascending: true });
+  if (error) throw error;
+  return ((data ?? []) as (ChatUserLite & { is_active: boolean })[]).map((u) => ({
+    id: u.id, full_name: u.full_name, username: u.username, email: u.email,
+  }));
+}

@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import ChatNavBadge from "@/components/chat/ChatNavBadge";
 
 function NavLink({
   href,
@@ -13,7 +14,7 @@ function NavLink({
   active,
 }: {
   href: string;
-  label: string;
+  label: ReactNode;
   active: boolean;
 }) {
   return (
@@ -180,8 +181,12 @@ export default function Navbar() {
     if (pathname === "/teachers") return "teachers";
     if (pathname === "/review-queue") return "review-queue";
     if (pathname === "/my-plans") return "my-plans";
+    if (pathname === "/chat" || pathname.startsWith("/chat/")) return "chat";
     return "home";
   }, [pathname]);
+
+  // Chat is available to any active signed-in user
+  const showChat = !!sessionEmail && isActive;
 
   const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
 
@@ -208,6 +213,17 @@ export default function Navbar() {
               {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
+              {showChat && (
+                <NavLink
+                  href="/chat"
+                  label={
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      Chat <ChatNavBadge />
+                    </span>
+                  }
+                  active={activeTab === "chat"}
+                />
+              )}
             </div>
           </div>
 
@@ -247,6 +263,15 @@ export default function Navbar() {
             {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
+            {showChat && (
+              <Link
+                href="/chat"
+                className={`nav-mobile-link${activeTab === "chat" ? " active" : ""}`}
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+              >
+                Chat <ChatNavBadge />
+              </Link>
+            )}
             <div className="nav-mobile-divider" />
             {sessionEmail ? (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px 0" }}>

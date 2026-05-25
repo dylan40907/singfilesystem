@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import CampusSelector from "@/components/CampusSelector";
+import ChatNavBadge from "@/components/chat/ChatNavBadge";
 
 function NavLink({
   href,
@@ -169,6 +170,15 @@ export default function HrNavbar() {
           {/* Desktop right controls */}
           <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
             {canUseHr && hasAdminAccess && <CampusSelector />}
+            {sessionEmail && isActive && (
+              <button
+                className="btn"
+                onClick={() => router.push("/chat")}
+                style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+              >
+                Chat <ChatNavBadge />
+              </button>
+            )}
             <button className="btn" onClick={() => router.push("/")}>Curriculum</button>
             {sessionEmail ? (
               <span className="badge badge-pink">{displayName}</span>

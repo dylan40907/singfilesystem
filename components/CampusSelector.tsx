@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { Campus, useCampusFilter } from "@/lib/CampusContext";
+import { useDialog } from "@/components/ui/useDialog";
 
 /**
  * Campus selector button + dropdown for the HR navbar.
@@ -146,6 +147,7 @@ function EditCampusesModal({
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
+  const { confirm, modal: dialogModal } = useDialog();
   const [list, setList] = useState<Campus[]>(campuses);
   const [adding, setAdding] = useState("");
   const [saving, setSaving] = useState(false);
@@ -173,7 +175,10 @@ function EditCampusesModal({
   }
 
   async function deleteCampus(id: string) {
-    if (!confirm("Delete this campus? Employees assigned to it will become unassigned.")) return;
+    const ok = await confirm("Delete this campus? Employees assigned to it will become unassigned.", {
+      title: "Delete campus", confirmLabel: "Delete", danger: true,
+    });
+    if (!ok) return;
     setSaving(true); setError(null);
     const { error: err } = await supabase.from("hr_campuses").delete().eq("id", id);
     setSaving(false);
@@ -185,6 +190,7 @@ function EditCampusesModal({
 
   return (
     <>
+      {dialogModal}
       <div
         style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }}
         onClick={onClose}
