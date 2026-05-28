@@ -15,6 +15,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
   }
 
   const isHr = pathname === "/admin/hr" || pathname.startsWith("/admin/hr/");
+  const isLearning = pathname === "/admin/learning" || pathname.startsWith("/admin/learning/");
 
   if (isHr) {
     return (
@@ -24,6 +25,17 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
           <div className="container">{children}</div>
         </div>
       </CampusProvider>
+    );
+  }
+
+  if (isLearning) {
+    return (
+      <>
+        <Navbar />
+        <div className="page">
+          <div className="container">{children}</div>
+        </div>
+      </>
     );
   }
 

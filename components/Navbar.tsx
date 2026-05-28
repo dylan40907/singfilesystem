@@ -178,6 +178,7 @@ export default function Navbar() {
     if (pathname.startsWith("/admin/supervisors")) return "supervisors";
     if (pathname.startsWith("/schedules")) return "schedules";
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
+    if (pathname.startsWith("/admin/learning")) return "learning";
     if (pathname === "/teachers") return "teachers";
     if (pathname === "/review-queue") return "review-queue";
     if (pathname === "/my-plans") return "my-plans";
@@ -213,6 +214,7 @@ export default function Navbar() {
               {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
+              {isAdmin && <NavLink href="/admin/learning" label="Learning" active={activeTab === "learning"} />}
               {showChat && (
                 <NavLink
                   href="/chat"
@@ -263,6 +265,7 @@ export default function Navbar() {
             {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
+            {isAdmin && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>Learning</Link>}
             {showChat && (
               <Link
                 href="/chat"
