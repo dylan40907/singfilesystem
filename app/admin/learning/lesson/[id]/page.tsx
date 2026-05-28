@@ -3,10 +3,22 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { Converter } from "opencc-js";
+import { pinyin as getPinyin } from "pinyin-pro";
 import { supabase } from "@/lib/supabaseClient";
+import { useDialog } from "@/components/ui/useDialog";
 
 const PINK = "#e6178d";
 const TEAL = "#4ECEC8";
+
+type ZhLink = "trad_leads" | "simp_leads" | "unlinked";
+
+let tradToSimp: ((t: string) => string) | null = null;
+let simpToTrad: ((t: string) => string) | null = null;
+try {
+  tradToSimp = Converter({ from: "tw", to: "cn" });
+  simpToTrad = Converter({ from: "cn", to: "tw" });
+} catch {}
 
 type Category = { id: string; name: string; order_index: number };
 
@@ -14,7 +26,8 @@ type Lesson = {
   id: string;
   category_id: string | null;
   title: string;
-  title_zh: string | null;
+  title_zh_traditional: string | null;
+  title_zh_simplified: string | null;
   thumbnail_url: string | null;
   thumbnail_key: string | null;
   video_key: string | null;
@@ -83,15 +96,9 @@ async function deleteFromR2(objectKey: string) {
 }
 
 function UploadButton({
-  label,
-  accept,
-  uploading,
-  onFile,
+  label, accept, uploading, onFile,
 }: {
-  label: string;
-  accept: string;
-  uploading: boolean;
-  onFile: (file: File) => void;
+  label: string; accept: string; uploading: boolean; onFile: (file: File) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
@@ -113,6 +120,7 @@ type VideoType = "video" | "karaoke" | "video_simplified" | "karaoke_simplified"
 export default function LessonDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
+  const { confirm, modal } = useDialog();
 
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [slides, setSlides] = useState<Slide[]>([]);
@@ -121,22 +129,22 @@ export default function LessonDetailPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  // Lesson form
   const [title, setTitle] = useState("");
-  const [titleZh, setTitleZh] = useState("");
+  const [titleZhTraditional, setTitleZhTraditional] = useState("");
+  const [titleZhSimplified, setTitleZhSimplified] = useState("");
+  const [zhTitleLink, setZhTitleLink] = useState<ZhLink>("trad_leads");
   const [categoryId, setCategoryId] = useState<string>("");
   const [isPublished, setIsPublished] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
-  // Upload states
   const [uploadingThumb, setUploadingThumb] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState<Record<VideoType, boolean>>({
     video: false, karaoke: false, video_simplified: false, karaoke_simplified: false,
   });
 
-  // Slide editing
   const [addingSlide, setAddingSlide] = useState(false);
   const [slideUploads, setSlideUploads] = useState<Record<string, boolean>>({});
+  const [slideLinks, setSlideLinks] = useState<Record<string, ZhLink>>({});
 
   useEffect(() => { load(); }, [id]);
 
@@ -150,12 +158,24 @@ export default function LessonDetailPage() {
     if (!l) { router.replace("/admin/learning"); return; }
     setLesson(l as Lesson);
     setTitle(l.title ?? "");
-    setTitleZh(l.title_zh ?? "");
+    setTitleZhTraditional(l.title_zh_traditional ?? "");
+    setTitleZhSimplified(l.title_zh_simplified ?? "");
+    const hasTrad = !!l.title_zh_traditional;
+    const hasSimp = !!l.title_zh_simplified;
+    setZhTitleLink(hasTrad && hasSimp ? "unlinked" : hasSimp ? "simp_leads" : "trad_leads");
     setCategoryId(l.category_id ?? "");
     setIsPublished(l.is_published ?? false);
     setIsLocked(l.is_locked ?? false);
-    setSlides((s ?? []) as Slide[]);
+    const slideList = (s ?? []) as Slide[];
+    setSlides(slideList);
     setCategories((cats ?? []) as Category[]);
+    const initialLinks: Record<string, ZhLink> = {};
+    slideList.forEach(slide => {
+      const ht = !!slide.term_chinese;
+      const hs = !!slide.term_chinese_simplified;
+      initialLinks[slide.id] = ht && hs ? "unlinked" : hs ? "simp_leads" : "trad_leads";
+    });
+    setSlideLinks(initialLinks);
     setLoading(false);
   }
 
@@ -164,7 +184,8 @@ export default function LessonDetailPage() {
     setError("");
     const { error: e } = await supabase.from("learning_lessons").update({
       title: title.trim(),
-      title_zh: titleZh.trim() || null,
+      title_zh_traditional: titleZhTraditional.trim() || null,
+      title_zh_simplified: titleZhSimplified.trim() || null,
       category_id: categoryId || null,
       is_published: isPublished,
       is_locked: isLocked,
@@ -179,26 +200,17 @@ export default function LessonDetailPage() {
     try {
       const { objectKey } = await uploadToR2(file, "thumbnails");
       const url = await getPresignedUrl(objectKey, 604800);
-      const { error: e } = await supabase.from("learning_lessons").update({
-        thumbnail_key: objectKey,
-        thumbnail_url: url,
-      }).eq("id", id);
+      const { error: e } = await supabase.from("learning_lessons").update({ thumbnail_key: objectKey, thumbnail_url: url }).eq("id", id);
       if (e) throw new Error(e.message);
-      if (lesson?.thumbnail_key && lesson.thumbnail_key !== objectKey) {
-        await deleteFromR2(lesson.thumbnail_key).catch(() => {});
-      }
+      if (lesson?.thumbnail_key && lesson.thumbnail_key !== objectKey) await deleteFromR2(lesson.thumbnail_key).catch(() => {});
       setLesson(prev => prev ? { ...prev, thumbnail_key: objectKey, thumbnail_url: url } : prev);
-    } catch (e: any) {
-      setError(e.message ?? "Upload failed");
-    }
+    } catch (e: any) { setError(e.message ?? "Upload failed"); }
     setUploadingThumb(false);
   }
 
   const videoKeyMap: Record<VideoType, keyof Lesson> = {
-    video: "video_key",
-    karaoke: "karaoke_key",
-    video_simplified: "video_key_simplified",
-    karaoke_simplified: "karaoke_key_simplified",
+    video: "video_key", karaoke: "karaoke_key",
+    video_simplified: "video_key_simplified", karaoke_simplified: "karaoke_key_simplified",
   };
 
   async function uploadVideo(file: File, type: VideoType) {
@@ -212,24 +224,96 @@ export default function LessonDetailPage() {
       const oldKey = lesson?.[col] as string | null;
       if (oldKey) await deleteFromR2(oldKey).catch(() => {});
       setLesson(prev => prev ? { ...prev, [col]: objectKey } : prev);
-    } catch (e: any) {
-      setError(e.message ?? "Upload failed");
-    }
+    } catch (e: any) { setError(e.message ?? "Upload failed"); }
     setUploadingVideo(p => ({ ...p, [type]: false }));
   }
 
   async function addSlide() {
     setAddingSlide(true);
     const nextNum = slides.length > 0 ? Math.max(...slides.map(s => s.slide_number)) + 1 : 1;
-    const { data, error: e } = await supabase.from("learning_slides").insert({
-      lesson_id: id,
-      slide_number: nextNum,
-    }).select().single();
-    if (!e && data) setSlides(prev => [...prev, data as Slide]);
+    const { data, error: e } = await supabase.from("learning_slides").insert({ lesson_id: id, slide_number: nextNum }).select().single();
+    if (!e && data) {
+      setSlides(prev => [...prev, data as Slide]);
+      setSlideLinks(prev => ({ ...prev, [(data as Slide).id]: "trad_leads" }));
+    }
     setAddingSlide(false);
   }
 
-  async function updateSlideText(slideId: string, field: keyof Slide, value: string) {
+  function handleTitleTradChange(value: string) {
+    if (zhTitleLink === "simp_leads") {
+      setZhTitleLink("unlinked");
+      setTitleZhTraditional(value);
+    } else if (zhTitleLink === "trad_leads") {
+      setTitleZhTraditional(value);
+      if (tradToSimp) setTitleZhSimplified(tradToSimp(value));
+    } else {
+      setTitleZhTraditional(value);
+    }
+  }
+
+  function handleTitleSimpChange(value: string) {
+    if (zhTitleLink === "trad_leads") {
+      setZhTitleLink("unlinked");
+      setTitleZhSimplified(value);
+    } else if (zhTitleLink === "simp_leads") {
+      setTitleZhSimplified(value);
+      if (simpToTrad) setTitleZhTraditional(simpToTrad(value));
+    } else {
+      setTitleZhSimplified(value);
+    }
+  }
+
+  async function handleSlideTradChange(slideId: string, value: string) {
+    const link = slideLinks[slideId] ?? "trad_leads";
+    if (link === "simp_leads") {
+      setSlideLinks(p => ({ ...p, [slideId]: "unlinked" }));
+      setSlides(prev => prev.map(s => s.id === slideId ? { ...s, term_chinese: value } : s));
+      await supabase.from("learning_slides").update({ term_chinese: value || null }).eq("id", slideId);
+    } else if (link === "trad_leads") {
+      const simp = tradToSimp ? tradToSimp(value) : null;
+      const py = value ? getPinyin(value, { toneType: "symbol" }) : "";
+      setSlides(prev => prev.map(s => s.id === slideId ? {
+        ...s, term_chinese: value,
+        ...(simp !== null ? { term_chinese_simplified: simp } : {}),
+        pinyin: py,
+      } : s));
+      await supabase.from("learning_slides").update({
+        term_chinese: value || null,
+        ...(simp !== null ? { term_chinese_simplified: simp || null } : {}),
+        pinyin: py || null,
+      }).eq("id", slideId);
+    } else {
+      setSlides(prev => prev.map(s => s.id === slideId ? { ...s, term_chinese: value } : s));
+      await supabase.from("learning_slides").update({ term_chinese: value || null }).eq("id", slideId);
+    }
+  }
+
+  async function handleSlideSimpChange(slideId: string, value: string) {
+    const link = slideLinks[slideId] ?? "trad_leads";
+    if (link === "trad_leads") {
+      setSlideLinks(p => ({ ...p, [slideId]: "unlinked" }));
+      setSlides(prev => prev.map(s => s.id === slideId ? { ...s, term_chinese_simplified: value } : s));
+      await supabase.from("learning_slides").update({ term_chinese_simplified: value || null }).eq("id", slideId);
+    } else if (link === "simp_leads") {
+      const trad = simpToTrad ? simpToTrad(value) : null;
+      const py = value ? getPinyin(value, { toneType: "symbol" }) : "";
+      setSlides(prev => prev.map(s => s.id === slideId ? {
+        ...s, term_chinese_simplified: value,
+        ...(trad !== null ? { term_chinese: trad } : {}),
+        pinyin: py,
+      } : s));
+      await supabase.from("learning_slides").update({
+        term_chinese_simplified: value || null,
+        ...(trad !== null ? { term_chinese: trad || null } : {}),
+        pinyin: py || null,
+      }).eq("id", slideId);
+    } else {
+      setSlides(prev => prev.map(s => s.id === slideId ? { ...s, term_chinese_simplified: value } : s));
+      await supabase.from("learning_slides").update({ term_chinese_simplified: value || null }).eq("id", slideId);
+    }
+  }
+
+  async function updateSlideText(slideId: string, field: "pinyin" | "term_english", value: string) {
     setSlides(prev => prev.map(s => s.id === slideId ? { ...s, [field]: value } : s));
     await supabase.from("learning_slides").update({ [field]: value || null }).eq("id", slideId);
   }
@@ -250,9 +334,7 @@ export default function LessonDetailPage() {
         if (slide?.image_key) await deleteFromR2(slide.image_key).catch(() => {});
         setSlides(prev => prev.map(s => s.id === slideId ? { ...s, image_key: objectKey, image_url: url } : s));
       }
-    } catch (e: any) {
-      setError(e.message ?? "Upload failed");
-    }
+    } catch (e: any) { setError(e.message ?? "Upload failed"); }
     setSlideUploads(p => ({ ...p, [uploadKey]: false }));
   }
 
@@ -271,15 +353,18 @@ export default function LessonDetailPage() {
         if (slide?.audio_key) await deleteFromR2(slide.audio_key).catch(() => {});
         setSlides(prev => prev.map(s => s.id === slideId ? { ...s, audio_key: objectKey } : s));
       }
-    } catch (e: any) {
-      setError(e.message ?? "Upload failed");
-    }
+    } catch (e: any) { setError(e.message ?? "Upload failed"); }
     setSlideUploads(p => ({ ...p, [uploadKey]: false }));
   }
 
   async function deleteSlide(slideId: string) {
-    if (!confirm("Delete this slide?")) return;
     const slide = slides.find(s => s.id === slideId);
+    const fileCount = [slide?.image_key, slide?.audio_key, slide?.image_key_simplified, slide?.audio_key_simplified].filter(Boolean).length;
+    const ok = await confirm(
+      `This will permanently delete Flashcard ${slide?.slide_number ?? ""}${fileCount > 0 ? ` and its ${fileCount} associated file${fileCount === 1 ? "" : "s"} from storage` : ""}.\n\nThis cannot be undone.`,
+      { title: "Delete flashcard?", confirmLabel: "Delete", danger: true },
+    );
+    if (!ok) return;
     await supabase.from("learning_slides").delete().eq("id", slideId);
     const keysToDelete = [slide?.image_key, slide?.audio_key, slide?.image_key_simplified, slide?.audio_key_simplified].filter(Boolean) as string[];
     await Promise.all(keysToDelete.map(k => deleteFromR2(k).catch(() => {})));
@@ -291,11 +376,12 @@ export default function LessonDetailPage() {
 
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px" }}>
+      {modal}
       <div style={{ marginBottom: 24, fontSize: 14 }}>
-        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← Learning</Link>
+        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← App Content</Link>
       </div>
 
-      <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 32px" }}>Edit Lesson</h1>
+      <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 32px" }}>Edit Song Topic</h1>
 
       {error && (
         <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "10px 14px", color: "#dc2626", marginBottom: 20, fontSize: 14 }}>
@@ -305,28 +391,29 @@ export default function LessonDetailPage() {
 
       {/* ── Lesson details ── */}
       <section style={{ background: "#fff", borderRadius: 16, border: "1px solid #e5e7eb", padding: 24, marginBottom: 28, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
-        <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>Lesson Details</h2>
+        <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>Song Topic Details</h2>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <label style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
             Title (English)
             <input value={title} onChange={e => setTitle(e.target.value)} style={inputStyle} />
           </label>
+
           <label style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
-            Title (Chinese — optional)
-            <input value={titleZh} onChange={e => setTitleZh(e.target.value)} style={inputStyle} />
+            Title (Traditional Chinese)
+            <input value={titleZhTraditional} onChange={e => handleTitleTradChange(e.target.value)} style={inputStyle} placeholder="例：你好" />
           </label>
+
           <label style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
-            Category
-            <select
-              value={categoryId}
-              onChange={e => setCategoryId(e.target.value)}
-              style={{ ...inputStyle, appearance: "auto" }}
-            >
-              <option value="">— No category —</option>
-              {categories.map(cat => (
-                <option key={cat.id} value={cat.id}>{cat.name}</option>
-              ))}
+            Title (Simplified Chinese)
+            <input value={titleZhSimplified} onChange={e => handleTitleSimpChange(e.target.value)} style={inputStyle} placeholder="例：你好" />
+          </label>
+
+          <label style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>
+            Level
+            <select value={categoryId} onChange={e => setCategoryId(e.target.value)} style={{ ...inputStyle, appearance: "auto" }}>
+              <option value="">— No level —</option>
+              {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
             </select>
           </label>
 
@@ -352,7 +439,6 @@ export default function LessonDetailPage() {
         <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>Media</h2>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          {/* Thumbnail */}
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             {lesson.thumbnail_url ? (
               <img src={lesson.thumbnail_url} alt="Thumbnail" style={{ width: 72, height: 72, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
@@ -366,47 +452,28 @@ export default function LessonDetailPage() {
             </div>
           </div>
 
-          {/* Traditional / Simplified header row */}
           <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 12, alignItems: "center" }}>
             <div />
             <div style={{ fontWeight: 700, fontSize: 13, color: "#374151", textAlign: "center" }}>Traditional (繁體)</div>
             <div style={{ fontWeight: 700, fontSize: 13, color: "#374151", textAlign: "center" }}>Simplified (简体)</div>
           </div>
 
-          {/* Video row */}
           <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 12, alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 22 }}>🎬</span>
               <span style={{ fontWeight: 600, fontSize: 14 }}>Video</span>
             </div>
-            <VideoUploadCell
-              objectKey={lesson.video_key}
-              uploading={uploadingVideo.video}
-              onFile={f => uploadVideo(f, "video")}
-            />
-            <VideoUploadCell
-              objectKey={lesson.video_key_simplified}
-              uploading={uploadingVideo.video_simplified}
-              onFile={f => uploadVideo(f, "video_simplified")}
-            />
+            <VideoUploadCell objectKey={lesson.video_key} uploading={uploadingVideo.video} onFile={f => uploadVideo(f, "video")} />
+            <VideoUploadCell objectKey={lesson.video_key_simplified} uploading={uploadingVideo.video_simplified} onFile={f => uploadVideo(f, "video_simplified")} />
           </div>
 
-          {/* Karaoke row */}
           <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 12, alignItems: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 22 }}>🎤</span>
               <span style={{ fontWeight: 600, fontSize: 14 }}>Karaoke</span>
             </div>
-            <VideoUploadCell
-              objectKey={lesson.karaoke_key}
-              uploading={uploadingVideo.karaoke}
-              onFile={f => uploadVideo(f, "karaoke")}
-            />
-            <VideoUploadCell
-              objectKey={lesson.karaoke_key_simplified}
-              uploading={uploadingVideo.karaoke_simplified}
-              onFile={f => uploadVideo(f, "karaoke_simplified")}
-            />
+            <VideoUploadCell objectKey={lesson.karaoke_key} uploading={uploadingVideo.karaoke} onFile={f => uploadVideo(f, "karaoke")} />
+            <VideoUploadCell objectKey={lesson.karaoke_key_simplified} uploading={uploadingVideo.karaoke_simplified} onFile={f => uploadVideo(f, "karaoke_simplified")} />
           </div>
         </div>
       </section>
@@ -414,112 +481,117 @@ export default function LessonDetailPage() {
       {/* ── Slides ── */}
       <section>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-          <h2 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Flashcard Slides ({slides.length})</h2>
+          <h2 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>Flashcards ({slides.length})</h2>
           <button className="btn btn-primary" onClick={addSlide} disabled={addingSlide}>
-            {addingSlide ? "Adding…" : "+ Add Slide"}
+            {addingSlide ? "Adding…" : "+ Add Flashcard"}
           </button>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {slides.map((slide) => (
-            <div key={slide.id} style={{ background: "#fff", borderRadius: 16, border: `1.5px solid ${TEAL}`, padding: 20, boxShadow: "0 1px 4px rgba(78,206,200,0.1)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                <span style={{ fontWeight: 700, fontSize: 14, color: TEAL }}>Slide {slide.slide_number}</span>
-                <button onClick={() => deleteSlide(slide.id)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
-              </div>
+          {slides.map((slide) => {
+            return (
+              <div key={slide.id} style={{ background: "#fff", borderRadius: 16, border: `1.5px solid ${TEAL}`, padding: 20, boxShadow: "0 1px 4px rgba(78,206,200,0.1)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: TEAL }}>Flashcard {slide.slide_number}</span>
+                  <button onClick={() => deleteSlide(slide.id)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
+                </div>
 
-              {/* Traditional / Simplified columns */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 14 }}>
-                {/* Traditional */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280", marginBottom: 2 }}>Traditional (繁體)</div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                      {slide.image_url ? (
-                        <img src={slide.image_url} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
-                      ) : (
-                        <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
-                      )}
-                      <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image`]} onFile={f => uploadSlideImage(slide.id, f, "traditional")} />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 14 }}>
+                  {/* Traditional */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280", marginBottom: 2 }}>
+                      Traditional (繁體)
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                      <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
-                        <span style={{ fontSize: 22 }}>🔊</span>
-                        {slide.audio_key && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
+                    <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                        {slide.image_url ? (
+                          <img src={slide.image_url} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
+                        ) : (
+                          <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
+                        )}
+                        <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image`]} onFile={f => uploadSlideImage(slide.id, f, "traditional")} />
                       </div>
-                      <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio`]} onFile={f => uploadSlideAudio(slide.id, f, "traditional")} />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                        <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
+                          <span style={{ fontSize: 22 }}>🔊</span>
+                          {slide.audio_key && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
+                        </div>
+                        <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio`]} onFile={f => uploadSlideAudio(slide.id, f, "traditional")} />
+                      </div>
                     </div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                      Chinese (Traditional)
+                      <input
+                        value={slide.term_chinese ?? ""}
+                        onChange={e => handleSlideTradChange(slide.id, e.target.value)}
+                        style={{ ...inputStyle, fontSize: 18 }}
+                        placeholder="例：你好"
+                      />
+                    </label>
                   </div>
+
+                  {/* Simplified */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280", marginBottom: 2 }}>
+                      Simplified (简体)
+                    </div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                        {slide.image_url_simplified ? (
+                          <img src={slide.image_url_simplified} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
+                        ) : (
+                          <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
+                        )}
+                        <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image-simplified`]} onFile={f => uploadSlideImage(slide.id, f, "simplified")} />
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                        <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
+                          <span style={{ fontSize: 22 }}>🔊</span>
+                          {slide.audio_key_simplified && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
+                        </div>
+                        <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio-simplified`]} onFile={f => uploadSlideAudio(slide.id, f, "simplified")} />
+                      </div>
+                    </div>
+                    <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                      Chinese (Simplified)
+                      <input
+                        value={slide.term_chinese_simplified ?? ""}
+                        onChange={e => handleSlideSimpChange(slide.id, e.target.value)}
+                        style={{ ...inputStyle, fontSize: 18 }}
+                        placeholder="例：你好"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Shared fields */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                   <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                    Chinese (Traditional)
+                    Pinyin
                     <input
-                      value={slide.term_chinese ?? ""}
-                      onChange={e => updateSlideText(slide.id, "term_chinese", e.target.value)}
-                      style={{ ...inputStyle, fontSize: 18 }}
-                      placeholder="例：你好"
+                      value={slide.pinyin ?? ""}
+                      onChange={e => updateSlideText(slide.id, "pinyin", e.target.value)}
+                      style={inputStyle}
+                      placeholder="nǐ hǎo"
+                    />
+                  </label>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+                    English
+                    <input
+                      value={slide.term_english ?? ""}
+                      onChange={e => updateSlideText(slide.id, "term_english", e.target.value)}
+                      style={inputStyle}
+                      placeholder="Hello"
                     />
                   </label>
                 </div>
-
-                {/* Simplified */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280", marginBottom: 2 }}>Simplified (简体)</div>
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                      {slide.image_url_simplified ? (
-                        <img src={slide.image_url_simplified} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
-                      ) : (
-                        <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
-                      )}
-                      <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image-simplified`]} onFile={f => uploadSlideImage(slide.id, f, "simplified")} />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                      <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
-                        <span style={{ fontSize: 22 }}>🔊</span>
-                        {slide.audio_key_simplified && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
-                      </div>
-                      <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio-simplified`]} onFile={f => uploadSlideAudio(slide.id, f, "simplified")} />
-                    </div>
-                  </div>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                    Chinese (Simplified)
-                    <input
-                      value={slide.term_chinese_simplified ?? ""}
-                      onChange={e => updateSlideText(slide.id, "term_chinese_simplified", e.target.value)}
-                      style={{ ...inputStyle, fontSize: 18 }}
-                      placeholder="例：你好"
-                    />
-                  </label>
-                </div>
               </div>
-
-              {/* Shared fields */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                  Pinyin
-                  <input
-                    value={slide.pinyin ?? ""}
-                    onChange={e => updateSlideText(slide.id, "pinyin", e.target.value)}
-                    style={inputStyle}
-                    placeholder="nǐ hǎo"
-                  />
-                </label>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
-                  English
-                  <input
-                    value={slide.term_english ?? ""}
-                    onChange={e => updateSlideText(slide.id, "term_english", e.target.value)}
-                    style={inputStyle}
-                    placeholder="Hello"
-                  />
-                </label>
-              </div>
-            </div>
-          ))}
+            );
+          })}
 
           {slides.length === 0 && (
             <div className="subtle" style={{ textAlign: "center", padding: 40, border: "2px dashed #e5e7eb", borderRadius: 16 }}>
-              No slides yet. Click &ldquo;+ Add Slide&rdquo; to get started.
+              No flashcards yet. Click &ldquo;+ Add Flashcard&rdquo; to get started.
             </div>
           )}
         </div>

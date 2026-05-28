@@ -52,7 +52,7 @@ export default function LegalContentPage() {
   return (
     <div style={{ maxWidth: 860, margin: "0 auto", padding: "32px 20px" }}>
       <div style={{ marginBottom: 24, fontSize: 14 }}>
-        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← Learning</Link>
+        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← App Content</Link>
       </div>
 
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 8px" }}>Legal Content</h1>

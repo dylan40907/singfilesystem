@@ -214,7 +214,7 @@ export default function Navbar() {
               {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
-              {isAdmin && <NavLink href="/admin/learning" label="Learning" active={activeTab === "learning"} />}
+              {isAdmin && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
               {showChat && (
                 <NavLink
                   href="/chat"
@@ -265,7 +265,7 @@ export default function Navbar() {
             {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
-            {isAdmin && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>Learning</Link>}
+            {isAdmin && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
             {showChat && (
               <Link
                 href="/chat"

@@ -10,10 +10,13 @@ const PINK = "#e6178d";
 type AppUser = {
   id: string;
   email: string;
+  first_name: string | null;
+  last_name: string | null;
   created_at: string;
   chinese_pref: string | null;
   access_status: string;
   approved_at: string | null;
+  access_expires_at: string | null;
 };
 
 type WhitelistEntry = {
@@ -124,6 +127,47 @@ export default function UsersPage() {
     setBusy(user.id, false);
   }
 
+  // Convert an LA-local-midnight UTC ISO string to a 'YYYY-MM-DD' input value.
+  // The DB stores midnight America/Los_Angeles as a UTC timestamp; we reverse that to display the picked date.
+  function expiryToInputDate(iso: string | null): string {
+    if (!iso) return "";
+    try {
+      const d = new Date(iso);
+      // Get parts in LA timezone
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Los_Angeles",
+        year: "numeric", month: "2-digit", day: "2-digit",
+      }).formatToParts(d);
+      const yyyy = parts.find(p => p.type === "year")?.value ?? "";
+      const mm   = parts.find(p => p.type === "month")?.value ?? "";
+      const dd   = parts.find(p => p.type === "day")?.value ?? "";
+      return `${yyyy}-${mm}-${dd}`;
+    } catch { return ""; }
+  }
+
+  async function setExpiry(user: AppUser, dateStr: string | null) {
+    setBusy(user.id, true);
+    setError("");
+    const { error: e } = await supabase.rpc("admin_set_learning_expiry", {
+      target_user_id: user.id,
+      expiry_date: dateStr || null,
+    });
+    if (e) {
+      setError(e.message);
+    } else {
+      // Recompute the displayed timestamp: midnight LA on the picked day
+      let iso: string | null = null;
+      if (dateStr) {
+        // Build a Date matching LA local midnight; not perfect with DST but accurate to the day
+        iso = new Date(`${dateStr}T00:00:00-07:00`).toISOString();
+      }
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, access_expires_at: iso } : u));
+      // Background cron will flip status to disabled once the timestamp passes; reload to reflect
+      await loadAll();
+    }
+    setBusy(user.id, false);
+  }
+
   async function deleteUser(user: AppUser) {
     const whitelisted = isWhitelisted(user.email);
     const msg = whitelisted
@@ -196,7 +240,7 @@ export default function UsersPage() {
       {modal}
 
       <div style={{ marginBottom: 24, fontSize: 14 }}>
-        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← Learning</Link>
+        <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← App Content</Link>
       </div>
 
       <h1 style={{ fontSize: 24, fontWeight: 800, margin: "0 0 8px" }}>User Access</h1>
@@ -277,6 +321,8 @@ export default function UsersPage() {
             onApprove={approveUser}
             onRemove={removeAccess}
             onDelete={deleteUser}
+            onExpiry={setExpiry}
+            expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
           />
         )}
@@ -291,6 +337,8 @@ export default function UsersPage() {
             isWhitelisted={isWhitelisted}
             onDisable={disableUser}
             onDelete={deleteUser}
+            onExpiry={setExpiry}
+            expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
           />
         </section>
@@ -305,6 +353,8 @@ export default function UsersPage() {
             isWhitelisted={isWhitelisted}
             onApprove={approveUser}
             onDelete={deleteUser}
+            onExpiry={setExpiry}
+            expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
           />
         </section>
@@ -320,6 +370,8 @@ function UserList({
   onDisable,
   onRemove,
   onDelete,
+  onExpiry,
+  expiryToInputDate,
   busy,
 }: {
   users: AppUser[];
@@ -328,6 +380,8 @@ function UserList({
   onDisable?: (u: AppUser) => void;
   onRemove?: (u: AppUser) => void;
   onDelete?: (u: AppUser) => void;
+  onExpiry?: (u: AppUser, dateStr: string | null) => void;
+  expiryToInputDate?: (iso: string | null) => string;
   busy: Record<string, boolean>;
 }) {
   return (
@@ -336,10 +390,15 @@ function UserList({
         const statusInfo = STATUS_LABEL[user.access_status] ?? STATUS_LABEL.no_record;
         const isBusy = busy[user.id];
         const whitelisted = isWhitelisted(user.email);
+        const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
+        const expiryInputValue = expiryToInputDate ? expiryToInputDate(user.access_expires_at) : "";
         return (
           <div key={user.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 10, padding: "12px 14px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.04)", flexWrap: "wrap" }}>
-            <div style={{ flex: 1, minWidth: 180 }}>
-              <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              {fullName && (
+                <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>{fullName}</div>
+              )}
+              <div style={{ fontWeight: fullName ? 500 : 600, fontSize: fullName ? 13 : 14, color: fullName ? "#6b7280" : "#111827", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: fullName ? 1 : 0 }}>
                 {user.email}
                 {whitelisted && (
                   <span style={{ fontSize: 10, fontWeight: 700, background: "#e0f2fe", color: "#0369a1", borderRadius: 20, padding: "1px 8px" }}>
@@ -357,6 +416,31 @@ function UserList({
             <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: statusInfo.bg, color: statusInfo.color }}>
               {statusInfo.label}
             </span>
+
+            {onExpiry && (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600 }}>Expires (midnight PDT)</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input
+                    type="date"
+                    value={expiryInputValue}
+                    onChange={e => onExpiry(user, e.target.value || null)}
+                    disabled={isBusy}
+                    style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}
+                  />
+                  {expiryInputValue && (
+                    <button
+                      onClick={() => onExpiry(user, null)}
+                      disabled={isBusy}
+                      title="Clear expiry"
+                      style={{ fontSize: 11, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "0 4px" }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {onApprove && (
               <button
