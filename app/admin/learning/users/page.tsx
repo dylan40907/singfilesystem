@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
 import { useDialog } from "@/components/ui/useDialog";
@@ -25,6 +25,18 @@ type WhitelistEntry = {
   notes: string | null;
 };
 
+type Category = { id: string; name: string; order_index: number };
+type Lesson = {
+  id: string;
+  category_id: string | null;
+  title: string;
+  is_locked: boolean;
+  is_published: boolean;
+  order_index: number;
+};
+
+const UNLEVELED_ID = "__none__";
+
 const STATUS_LABEL: Record<string, { label: string; color: string; bg: string }> = {
   approved:  { label: "Approved",   color: "#16a34a", bg: "#dcfce7" },
   pending:   { label: "Pending",    color: "#d97706", bg: "#fef3c7" },
@@ -37,7 +49,14 @@ export default function UsersPage() {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [whitelist, setWhitelist] = useState<WhitelistEntry[]>([]);
   const [approvedEmails, setApprovedEmails] = useState<string[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [lessons, setLessons] = useState<Lesson[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Song-topic permissions modal
+  const [permUser, setPermUser] = useState<AppUser | null>(null);
+  const [permInitialLocked, setPermInitialLocked] = useState<Set<string>>(new Set());
+  const [permLoading, setPermLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
   const [newEmail, setNewEmail] = useState("");
   const [newNotes, setNewNotes] = useState("");
@@ -48,14 +67,18 @@ export default function UsersPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: uData }, { data: wData }, { data: aData }] = await Promise.all([
+    const [{ data: uData }, { data: wData }, { data: aData }, { data: cData }, { data: lData }] = await Promise.all([
       supabase.rpc("admin_list_learning_users"),
       supabase.from("learning_email_whitelist").select("*").order("added_at", { ascending: false }),
       supabase.from("learning_approved_emails").select("email"),
+      supabase.from("learning_categories").select("id, name, order_index").order("order_index"),
+      supabase.from("learning_lessons").select("id, category_id, title, is_locked, is_published, order_index").order("order_index"),
     ]);
     setUsers((uData ?? []) as AppUser[]);
     setWhitelist((wData ?? []) as WhitelistEntry[]);
     setApprovedEmails(((aData ?? []) as { email: string }[]).map(r => r.email.toLowerCase()));
+    setCategories((cData ?? []) as Category[]);
+    setLessons((lData ?? []) as Lesson[]);
     setLoading(false);
   }
 
@@ -193,6 +216,35 @@ export default function UsersPage() {
     setActionBusy(p => ({ ...p, [id]: val }));
   }
 
+  async function openPermissions(user: AppUser) {
+    setPermUser(user);
+    setPermLoading(true);
+    setError("");
+    const { data, error: e } = await supabase.rpc("admin_list_user_lesson_locks", {
+      target_user_id: user.id,
+    });
+    if (e) {
+      setError(e.message);
+      setPermUser(null);
+    } else {
+      setPermInitialLocked(new Set(((data ?? []) as { lesson_id: string }[]).map(r => r.lesson_id)));
+    }
+    setPermLoading(false);
+  }
+
+  async function savePermissions(lockedIds: string[]) {
+    if (!permUser) return;
+    setBusy(permUser.id, true);
+    setError("");
+    const { error: e } = await supabase.rpc("admin_set_user_lesson_locks", {
+      target_user_id: permUser.id,
+      locked_lesson_ids: lockedIds,
+    });
+    if (e) setError(e.message);
+    else setPermUser(null);
+    setBusy(permUser.id, false);
+  }
+
   async function addToWhitelist() {
     const email = newEmail.trim().toLowerCase();
     if (!email) return;
@@ -238,6 +290,19 @@ export default function UsersPage() {
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px" }}>
       {modal}
+
+      {permUser && (
+        <PermissionsModal
+          user={permUser}
+          categories={categories}
+          lessons={lessons}
+          initialLocked={permInitialLocked}
+          loading={permLoading}
+          saving={!!actionBusy[permUser.id]}
+          onCancel={() => setPermUser(null)}
+          onSave={savePermissions}
+        />
+      )}
 
       <div style={{ marginBottom: 24, fontSize: 14 }}>
         <Link href="/admin/learning" style={{ color: PINK, textDecoration: "none", fontWeight: 600 }}>← App Content</Link>
@@ -324,6 +389,7 @@ export default function UsersPage() {
             onExpiry={setExpiry}
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
+            onPermissions={openPermissions}
           />
         )}
       </section>
@@ -340,6 +406,7 @@ export default function UsersPage() {
             onExpiry={setExpiry}
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
+            onPermissions={openPermissions}
           />
         </section>
       )}
@@ -356,6 +423,7 @@ export default function UsersPage() {
             onExpiry={setExpiry}
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
+            onPermissions={openPermissions}
           />
         </section>
       )}
@@ -371,6 +439,7 @@ function UserList({
   onRemove,
   onDelete,
   onExpiry,
+  onPermissions,
   expiryToInputDate,
   busy,
 }: {
@@ -381,6 +450,7 @@ function UserList({
   onRemove?: (u: AppUser) => void;
   onDelete?: (u: AppUser) => void;
   onExpiry?: (u: AppUser, dateStr: string | null) => void;
+  onPermissions?: (u: AppUser) => void;
   expiryToInputDate?: (iso: string | null) => string;
   busy: Record<string, boolean>;
 }) {
@@ -442,6 +512,17 @@ function UserList({
               </div>
             )}
 
+            {onPermissions && (
+              <button
+                onClick={() => onPermissions(user)}
+                disabled={isBusy}
+                title="Edit which song topics this account can view"
+                style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600 }}
+              >
+                🔒 Song Topics
+              </button>
+            )}
+
             {onApprove && (
               <button
                 className="btn btn-primary"
@@ -486,5 +567,211 @@ function UserList({
         );
       })}
     </div>
+  );
+}
+
+// ─── Song-topic permissions modal ──────────────────────────────────────────────
+
+function PermissionsModal({
+  user,
+  categories,
+  lessons,
+  initialLocked,
+  loading,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  user: AppUser;
+  categories: Category[];
+  lessons: Lesson[];
+  initialLocked: Set<string>;
+  loading: boolean;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (lockedIds: string[]) => void;
+}) {
+  // Working set of locked lesson ids (presence = locked for this account).
+  const [locked, setLocked] = useState<Set<string>>(new Set(initialLocked));
+
+  // Re-sync when the loaded locks arrive (modal mounts before the RPC resolves).
+  useEffect(() => { setLocked(new Set(initialLocked)); }, [initialLocked]);
+
+  // Build ordered sections: each level, then an "Unleveled" bucket for null category.
+  const sections = useMemo(() => {
+    const byCat = (catId: string | null) =>
+      lessons
+        .filter(l => l.category_id === catId)
+        .sort((a, b) => a.order_index - b.order_index);
+    const result: { id: string; name: string; items: Lesson[] }[] =
+      categories.map(c => ({ id: c.id, name: c.name, items: byCat(c.id) }));
+    const unleveled = byCat(null);
+    if (unleveled.length > 0) result.push({ id: UNLEVELED_ID, name: "Unleveled", items: unleveled });
+    return result.filter(s => s.items.length > 0);
+  }, [categories, lessons]);
+
+  const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
+  const allLocked = lessons.length > 0 && lessons.every(l => locked.has(l.id));
+
+  function toggleLesson(id: string) {
+    setLocked(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSection(items: Lesson[]) {
+    const allOn = items.every(l => locked.has(l.id));
+    setLocked(prev => {
+      const next = new Set(prev);
+      items.forEach(l => (allOn ? next.delete(l.id) : next.add(l.id)));
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setLocked(allLocked ? new Set() : new Set(lessons.map(l => l.id)));
+  }
+
+  const dirty =
+    locked.size !== initialLocked.size ||
+    [...locked].some(id => !initialLocked.has(id));
+
+  const LockGlyph = ({ on }: { on: boolean }) => (
+    <span style={{ fontSize: 16, lineHeight: 1, filter: on ? "none" : "grayscale(1)", opacity: on ? 1 : 0.45 }}>
+      {on ? "🔒" : "🔓"}
+    </span>
+  );
+
+  return (
+    <>
+      <div
+        style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 9000 }}
+        onMouseDown={onCancel}
+      />
+      <div
+        onMouseDown={e => e.stopPropagation()}
+        style={{
+          position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
+          zIndex: 9001, background: "#fff", borderRadius: 16,
+          boxShadow: "0 8px 40px rgba(0,0,0,0.2)", width: 560, maxWidth: "calc(100vw - 32px)",
+          maxHeight: "calc(100vh - 64px)", display: "flex", flexDirection: "column",
+        }}
+      >
+        {/* Header */}
+        <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid #f0f0f0" }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: "#111827" }}>Song Topic Permissions</div>
+          <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
+            {fullName ? `${fullName} · ` : ""}{user.email}
+          </div>
+          <div className="subtle" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
+            Locked song topics appear with a 🔒 in this account's app and can't be opened. Everything starts unlocked.
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>Loading…</div>
+        ) : (
+          <>
+            {/* Toolbar */}
+            <div style={{ padding: "12px 24px", borderBottom: "1px solid #f0f0f0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span className="subtle" style={{ fontSize: 12, fontWeight: 600 }}>
+                {locked.size} of {lessons.length} locked
+              </span>
+              <button
+                onClick={toggleAll}
+                disabled={lessons.length === 0}
+                style={{ fontSize: 13, fontWeight: 700, padding: "6px 14px", borderRadius: 8, border: "1.5px solid #d1d5db", background: "#fff", color: "#374151", cursor: "pointer" }}
+              >
+                {allLocked ? "Unlock All" : "Lock All"}
+              </button>
+            </div>
+
+            {/* List */}
+            <div style={{ overflowY: "auto", padding: "8px 24px 16px", flex: 1 }}>
+              {sections.length === 0 && (
+                <div className="subtle" style={{ fontSize: 14, padding: "20px 0", textAlign: "center" }}>No song topics yet.</div>
+              )}
+              {sections.map(section => {
+                const sectionLocked = section.items.every(l => locked.has(l.id));
+                return (
+                  <div key={section.id} style={{ marginTop: 16 }}>
+                    {/* Level header (click toggles whole level) */}
+                    <button
+                      onClick={() => toggleSection(section.items)}
+                      style={{
+                        width: "100%", display: "flex", alignItems: "center", gap: 10,
+                        background: sectionLocked ? "#fdf2f8" : "#f9fafb", border: "1px solid #e5e7eb",
+                        borderRadius: 10, padding: "10px 12px", cursor: "pointer", textAlign: "left",
+                      }}
+                    >
+                      <LockGlyph on={sectionLocked} />
+                      <span style={{ flex: 1, fontWeight: 700, fontSize: 14, color: "#111827" }}>{section.name}</span>
+                      <span className="subtle" style={{ fontSize: 12 }}>
+                        {section.items.filter(l => locked.has(l.id)).length}/{section.items.length} locked
+                      </span>
+                    </button>
+
+                    {/* Topics */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4, paddingLeft: 8 }}>
+                      {section.items.map(lesson => {
+                        const on = locked.has(lesson.id);
+                        return (
+                          <button
+                            key={lesson.id}
+                            onClick={() => toggleLesson(lesson.id)}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 10,
+                              background: "#fff", border: "1px solid #f0f0f0", borderRadius: 8,
+                              padding: "8px 12px", cursor: "pointer", textAlign: "left",
+                            }}
+                          >
+                            <LockGlyph on={on} />
+                            <span style={{ flex: 1, fontSize: 13, fontWeight: 500, color: on ? "#111827" : "#374151" }}>
+                              {lesson.title}
+                            </span>
+                            {lesson.is_locked && (
+                              <span style={{ fontSize: 10, fontWeight: 700, background: "#fef3c7", color: "#d97706", borderRadius: 20, padding: "1px 8px" }}>
+                                Locked for everyone
+                              </span>
+                            )}
+                            {!lesson.is_published && (
+                              <span style={{ fontSize: 10, fontWeight: 700, background: "#f3f4f6", color: "#6b7280", borderRadius: 20, padding: "1px 8px" }}>
+                                Draft
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: "14px 24px", borderTop: "1px solid #f0f0f0", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn"
+                onClick={onCancel}
+                disabled={saving}
+                style={{ padding: "8px 18px", fontSize: 13 }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => onSave([...locked])}
+                disabled={saving || !dirty}
+                style={{ padding: "8px 18px", fontSize: 13 }}
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </>
   );
 }

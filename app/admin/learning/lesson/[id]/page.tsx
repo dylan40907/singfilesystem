@@ -55,6 +55,32 @@ type Slide = {
   audio_key_simplified: string | null;
 };
 
+// A flashcard is "complete" only when every field below is filled. Any missing
+// field flags the card with a red hue so admins notice it needs attention.
+function missingSlideFields(s: Slide): string[] {
+  const missing: string[] = [];
+  if (!s.term_chinese) missing.push("Chinese (Traditional)");
+  if (!s.term_chinese_simplified) missing.push("Chinese (Simplified)");
+  if (!s.pinyin) missing.push("Pinyin");
+  if (!s.term_english) missing.push("English");
+  if (!s.image_key) missing.push("Traditional image");
+  if (!s.image_key_simplified) missing.push("Simplified image");
+  if (!s.audio_key) missing.push("Traditional audio");
+  if (!s.audio_key_simplified) missing.push("Simplified audio");
+  return missing;
+}
+
+type DictCategory = {
+  id: string;
+  name: string;
+  name_zh_traditional: string | null;
+  name_zh_simplified: string | null;
+  pinyin: string | null;
+  order_index: number;
+};
+
+type DictItem = { id: string; category_id: string; slide_id: string; order_index: number };
+
 async function getAuthHeader() {
   const { data } = await supabase.auth.getSession();
   return `Bearer ${data.session?.access_token ?? ""}`;
@@ -125,6 +151,8 @@ export default function LessonDetailPage() {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [slides, setSlides] = useState<Slide[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [dictCategories, setDictCategories] = useState<DictCategory[]>([]);
+  const [dictItems, setDictItems] = useState<DictItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -150,10 +178,11 @@ export default function LessonDetailPage() {
 
   async function load() {
     setLoading(true);
-    const [{ data: l }, { data: s }, { data: cats }] = await Promise.all([
+    const [{ data: l }, { data: s }, { data: cats }, { data: dictCats }] = await Promise.all([
       supabase.from("learning_lessons").select("*").eq("id", id).single(),
       supabase.from("learning_slides").select("*").eq("lesson_id", id).order("slide_number"),
       supabase.from("learning_categories").select("*").order("order_index"),
+      supabase.from("learning_dictionary_categories").select("*").order("order_index"),
     ]);
     if (!l) { router.replace("/admin/learning"); return; }
     setLesson(l as Lesson);
@@ -169,6 +198,19 @@ export default function LessonDetailPage() {
     const slideList = (s ?? []) as Slide[];
     setSlides(slideList);
     setCategories((cats ?? []) as Category[]);
+    setDictCategories((dictCats ?? []) as DictCategory[]);
+
+    // Dictionary-category memberships for this lesson's flashcards.
+    const slideIds = slideList.map(sl => sl.id);
+    if (slideIds.length > 0) {
+      const { data: dItems } = await supabase
+        .from("learning_dictionary_category_items")
+        .select("*")
+        .in("slide_id", slideIds);
+      setDictItems((dItems ?? []) as DictItem[]);
+    } else {
+      setDictItems([]);
+    }
     const initialLinks: Record<string, ZhLink> = {};
     slideList.forEach(slide => {
       const ht = !!slide.term_chinese;
@@ -237,6 +279,56 @@ export default function LessonDetailPage() {
       setSlideLinks(prev => ({ ...prev, [(data as Slide).id]: "trad_leads" }));
     }
     setAddingSlide(false);
+  }
+
+  // ── Dictionary category assignment (per flashcard) ──
+  async function addSlideToCategory(slideId: string, categoryId: string) {
+    if (dictItems.some(i => i.slide_id === slideId && i.category_id === categoryId)) return;
+    setError("");
+    // Append to the end of the category's slideshow order.
+    const { data: maxRow } = await supabase
+      .from("learning_dictionary_category_items")
+      .select("order_index")
+      .eq("category_id", categoryId)
+      .order("order_index", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const nextOrder = ((maxRow?.order_index as number | undefined) ?? -1) + 1;
+    const { data, error: e } = await supabase
+      .from("learning_dictionary_category_items")
+      .insert({ category_id: categoryId, slide_id: slideId, order_index: nextOrder })
+      .select()
+      .single();
+    if (e) { setError(e.message); return; }
+    setDictItems(prev => [...prev, data as DictItem]);
+  }
+
+  async function removeSlideFromCategory(itemId: string) {
+    setError("");
+    const { error: e } = await supabase.from("learning_dictionary_category_items").delete().eq("id", itemId);
+    if (e) { setError(e.message); return; }
+    setDictItems(prev => prev.filter(i => i.id !== itemId));
+  }
+
+  async function createDictCategory(fields: {
+    name: string; pinyin: string; zhTrad: string; zhSimp: string;
+  }): Promise<string | null> {
+    setError("");
+    const maxOrder = dictCategories.reduce((m, c) => Math.max(m, c.order_index), -1);
+    const { data, error: e } = await supabase
+      .from("learning_dictionary_categories")
+      .insert({
+        name: fields.name.trim(),
+        name_zh_traditional: fields.zhTrad.trim() || null,
+        name_zh_simplified: fields.zhSimp.trim() || null,
+        pinyin: fields.pinyin.trim() || null,
+        order_index: maxOrder + 1,
+      })
+      .select()
+      .single();
+    if (e) { setError(e.message); return null; }
+    setDictCategories(prev => [...prev, data as DictCategory]);
+    return (data as DictCategory).id;
   }
 
   function handleTitleTradChange(value: string) {
@@ -366,9 +458,12 @@ export default function LessonDetailPage() {
     );
     if (!ok) return;
     await supabase.from("learning_slides").delete().eq("id", slideId);
+    // Remove any dictionary-category memberships for this flashcard.
+    await supabase.from("learning_dictionary_category_items").delete().eq("slide_id", slideId);
     const keysToDelete = [slide?.image_key, slide?.audio_key, slide?.image_key_simplified, slide?.audio_key_simplified].filter(Boolean) as string[];
     await Promise.all(keysToDelete.map(k => deleteFromR2(k).catch(() => {})));
     setSlides(prev => prev.filter(s => s.id !== slideId));
+    setDictItems(prev => prev.filter(i => i.slide_id !== slideId));
   }
 
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
@@ -489,10 +584,31 @@ export default function LessonDetailPage() {
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {slides.map((slide) => {
+            const missing = missingSlideFields(slide);
+            const incomplete = missing.length > 0;
             return (
-              <div key={slide.id} style={{ background: "#fff", borderRadius: 16, border: `1.5px solid ${TEAL}`, padding: 20, boxShadow: "0 1px 4px rgba(78,206,200,0.1)" }}>
+              <div
+                key={slide.id}
+                style={{
+                  background: incomplete ? "#fef2f2" : "#fff",
+                  borderRadius: 16,
+                  border: `1.5px solid ${incomplete ? "#f87171" : TEAL}`,
+                  padding: 20,
+                  boxShadow: incomplete ? "0 1px 6px rgba(248,113,113,0.18)" : "0 1px 4px rgba(78,206,200,0.1)",
+                }}
+              >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                  <span style={{ fontWeight: 700, fontSize: 14, color: TEAL }}>Flashcard {slide.slide_number}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: incomplete ? "#dc2626" : TEAL }}>Flashcard {slide.slide_number}</span>
+                    {incomplete && (
+                      <span
+                        title={`Missing: ${missing.join(", ")}`}
+                        style={{ fontSize: 11, fontWeight: 700, background: "#fee2e2", color: "#dc2626", borderRadius: 20, padding: "2px 10px" }}
+                      >
+                        ⚠ Incomplete · missing {missing.length} field{missing.length === 1 ? "" : "s"}
+                      </span>
+                    )}
+                  </div>
                   <button onClick={() => deleteSlide(slide.id)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
                 </div>
 
@@ -585,6 +701,15 @@ export default function LessonDetailPage() {
                     />
                   </label>
                 </div>
+
+                {/* Dictionary category assignment */}
+                <SlideCategoryAssigner
+                  categories={dictCategories}
+                  assignedItems={dictItems.filter(i => i.slide_id === slide.id)}
+                  onAdd={(categoryId) => addSlideToCategory(slide.id, categoryId)}
+                  onRemove={removeSlideFromCategory}
+                  onCreateCategory={createDictCategory}
+                />
               </div>
             );
           })}
@@ -605,6 +730,140 @@ function VideoUploadCell({ objectKey, uploading, onFile }: { objectKey: string |
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: "#f9fafb", border: "1px solid #e5e7eb" }}>
       <UploadButton label="Upload Video" accept="video/*" uploading={uploading} onFile={onFile} />
       {objectKey && <span style={{ fontSize: 11, color: "#6b7280" }}>✓ {objectKey.split("/").pop()}</span>}
+    </div>
+  );
+}
+
+// Per-flashcard control for assigning the slide to dictionary categories, with
+// an inline "new category" form so admins can categorize while building cards.
+function SlideCategoryAssigner({
+  categories, assignedItems, onAdd, onRemove, onCreateCategory,
+}: {
+  categories: DictCategory[];
+  assignedItems: DictItem[];
+  onAdd: (categoryId: string) => Promise<void>;
+  onRemove: (itemId: string) => Promise<void>;
+  onCreateCategory: (fields: { name: string; pinyin: string; zhTrad: string; zhSimp: string }) => Promise<string | null>;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [pinyin, setPinyin] = useState("");
+  const [zhTrad, setZhTrad] = useState("");
+  const [zhSimp, setZhSimp] = useState("");
+  const [zhLink, setZhLink] = useState<ZhLink>("trad_leads");
+  const [pinyinManual, setPinyinManual] = useState(false);
+
+  const assignedCatIds = new Set(assignedItems.map(i => i.category_id));
+  const available = categories.filter(c => !assignedCatIds.has(c.id));
+
+  function resetForm() {
+    setName(""); setPinyin(""); setZhTrad(""); setZhSimp("");
+    setZhLink("trad_leads"); setPinyinManual(false); setFormOpen(false);
+  }
+
+  function handleTradChange(v: string) {
+    if (zhLink === "simp_leads") { setZhLink("unlinked"); setZhTrad(v); }
+    else if (zhLink === "trad_leads") {
+      setZhTrad(v);
+      if (tradToSimp) setZhSimp(tradToSimp(v));
+      if (!pinyinManual) setPinyin(v ? getPinyin(v, { toneType: "symbol" }) : "");
+    } else setZhTrad(v);
+  }
+  function handleSimpChange(v: string) {
+    if (zhLink === "trad_leads") { setZhLink("unlinked"); setZhSimp(v); }
+    else if (zhLink === "simp_leads") {
+      setZhSimp(v);
+      if (simpToTrad) setZhTrad(simpToTrad(v));
+      if (!pinyinManual) setPinyin(v ? getPinyin(v, { toneType: "symbol" }) : "");
+    } else setZhSimp(v);
+  }
+
+  async function handleCreate() {
+    if (!name.trim() || creating) return;
+    setCreating(true);
+    const id = await onCreateCategory({ name, pinyin, zhTrad, zhSimp });
+    if (id) { await onAdd(id); resetForm(); }
+    setCreating(false);
+  }
+
+  return (
+    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px dashed #e5e7eb" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 8 }}>Dictionary Categories</div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {/* Assigned category chips */}
+        {assignedItems.map(item => {
+          const cat = categories.find(c => c.id === item.category_id);
+          return (
+            <span key={item.id} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, background: "#fdf2f8", color: PINK, border: `1px solid ${PINK}`, borderRadius: 20, padding: "3px 6px 3px 12px" }}>
+              {cat?.name ?? "Unknown category"}
+              <button
+                onClick={() => onRemove(item.id)}
+                title="Remove from category"
+                style={{ background: "none", border: "none", color: PINK, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px" }}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
+        {assignedItems.length === 0 && (
+          <span className="subtle" style={{ fontSize: 12 }}>Not in any category yet.</span>
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        {/* Add to existing category */}
+        <select
+          value=""
+          onChange={e => { if (e.target.value) onAdd(e.target.value); }}
+          disabled={available.length === 0}
+          style={{ fontSize: 13, padding: "6px 10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", color: available.length ? "#374151" : "#9ca3af", maxWidth: 240 }}
+        >
+          <option value="">{available.length ? "Add to category…" : "All categories added"}</option>
+          {available.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+
+        <button
+          onClick={() => setFormOpen(o => !o)}
+          style={{ fontSize: 13, fontWeight: 600, padding: "6px 12px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer" }}
+        >
+          {formOpen ? "Cancel" : "+ New Category"}
+        </button>
+      </div>
+
+      {/* Inline new-category form */}
+      {formOpen && (
+        <div style={{ marginTop: 12, background: "#fafafa", borderRadius: 10, padding: 14, border: "1px solid #e5e7eb" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+              Name (English)
+              <input value={name} onChange={e => setName(e.target.value)} style={inputStyle} placeholder="e.g. Pets" />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+              Pinyin
+              <input value={pinyin} onChange={e => { setPinyinManual(true); setPinyin(e.target.value); }} style={inputStyle} placeholder="chǒng wù" />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+              Name (Traditional Chinese)
+              <input value={zhTrad} onChange={e => handleTradChange(e.target.value)} style={inputStyle} placeholder="例：寵物" />
+            </label>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
+              Name (Simplified Chinese)
+              <input value={zhSimp} onChange={e => handleSimpChange(e.target.value)} style={inputStyle} placeholder="例：宠物" />
+            </label>
+          </div>
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <button className="btn btn-primary" onClick={handleCreate} disabled={creating || !name.trim()}>
+              {creating ? "Creating…" : "Create & Add"}
+            </button>
+            <button onClick={resetForm} style={{ fontSize: 13, fontWeight: 600, padding: "8px 16px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", cursor: "pointer" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
