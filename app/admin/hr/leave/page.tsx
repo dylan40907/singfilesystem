@@ -33,6 +33,14 @@ type LeaveBalanceRow = {
   pto_carryover: number;
   hours_worked_override: number | null;
   unpaid_override: number | null;
+  sick_accrual_amount: number | null;
+  sick_accrual_per: number | null;
+  sick_accrual_anchor_hours: number | null;
+  sick_accrual_anchor_accrued: number | null;
+  pto_accrual_amount: number | null;
+  pto_accrual_per: number | null;
+  pto_accrual_anchor_hours: number | null;
+  pto_accrual_anchor_accrued: number | null;
 };
 
 type EditField = "sick" | "pto" | "unpaid" | "hours_worked";
@@ -182,42 +190,78 @@ function sumClockedHours(entries: ClockEntryRow[], startYmd: string, endYmd: str
   return totalMs / 3_600_000;
 }
 
+// Default sick accrual: 1 hour earned per 30 hours worked.
+const DEFAULT_SICK_RATE = 30;
+
+function isOverrideActive(amount: number | null | undefined, per: number | null | undefined): boolean {
+  return amount != null && per != null && Number(amount) > 0 && Number(per) > 0;
+}
+
 function computeSickBalance(
   bal: LeaveBalanceRow | null,
   hoursWorked: number,
   entries: LeaveEntryRow[],
-): { carryover: number; accrued: number; accruedRaw: number; used: number; adjustments: number; balance: number; cap: number; initial: number } {
+): { carryover: number; accrued: number; accruedRaw: number; used: number; adjustments: number; balance: number; cap: number; initial: number; overrideActive: boolean; overrideAmount: number; overridePer: number } {
   const cap = bal?.sick_annual_cap ?? 40;
   const carryover = Number(bal?.sick_carryover ?? 0);
-  const accruedRaw = bal?.sick_frontloaded ? cap : Math.floor(hoursWorked * 60 / 30) / 60;
+  const overrideActive = isOverrideActive(bal?.sick_accrual_amount, bal?.sick_accrual_per);
+  const overrideAmount = Number(bal?.sick_accrual_amount ?? 0);
+  const overridePer = Number(bal?.sick_accrual_per ?? 0);
+  let accruedRaw: number;
+  if (overrideActive) {
+    // From now on: keep the accrual frozen at the anchor, then earn at the custom rate
+    // for hours worked beyond the anchor. rate = worked-hours per 1 accrued-hour.
+    const rate = overridePer / overrideAmount;
+    const anchorHours = Number(bal?.sick_accrual_anchor_hours ?? 0);
+    const anchorAccrued = Number(bal?.sick_accrual_anchor_accrued ?? 0);
+    const extra = Math.max(0, hoursWorked - anchorHours);
+    accruedRaw = anchorAccrued + Math.floor(extra * 60 / rate) / 60;
+  } else if (bal?.sick_frontloaded) {
+    accruedRaw = cap;
+  } else {
+    accruedRaw = Math.floor(hoursWorked * 60 / DEFAULT_SICK_RATE) / 60;
+  }
   const accrued = Math.min(accruedRaw, cap);
   const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + Number(e.hours), 0);
   const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + Number(e.hours), 0);
   const initial = Number(bal?.sick_initial_balance ?? 0);
   const balance = Math.min(carryover + initial + accrued + adjustments - used, MAX_BALANCE);
-  return { carryover, accrued, accruedRaw, used, adjustments, balance, cap, initial };
+  return { carryover, accrued, accruedRaw, used, adjustments, balance, cap, initial, overrideActive, overrideAmount, overridePer };
 }
 
 function computePtoBalance(
   bal: LeaveBalanceRow | null,
   hoursWorked: number,
   entries: LeaveEntryRow[],
-): { active: boolean; plan: number; weeks: number; accrualRate: number; carryover: number; initial: number; accrued: number; used: number; adjustments: number; balance: number } {
+): { active: boolean; plan: number; weeks: number; accrualRate: number; carryover: number; initial: number; accrued: number; used: number; adjustments: number; balance: number; overrideActive: boolean; overrideAmount: number; overridePer: number } {
   const active = bal?.pto_active ?? false;
   const plan = bal?.pto_plan_hours ?? 0;
   const weeks = bal?.pto_weeks ?? 48;
   const carryover = Number(bal?.pto_carryover ?? 0);
+  const overrideActive = isOverrideActive(bal?.pto_accrual_amount, bal?.pto_accrual_per);
+  const overrideAmount = Number(bal?.pto_accrual_amount ?? 0);
+  const overridePer = Number(bal?.pto_accrual_per ?? 0);
   let accrued = 0;
   let accrualRate = 0;
   if (active && plan > 0) {
-    accrualRate = (weeks * 40) / plan;
-    accrued = Math.min(Math.floor(hoursWorked * 60 / accrualRate) / 60, plan);
+    if (overrideActive) {
+      // Custom rate from now on: freeze at the anchor, earn at the override rate for
+      // hours beyond it. weeks is ignored; plan still caps the annual total.
+      accrualRate = overridePer / overrideAmount;
+      const anchorHours = Number(bal?.pto_accrual_anchor_hours ?? 0);
+      const anchorAccrued = Number(bal?.pto_accrual_anchor_accrued ?? 0);
+      const extra = Math.max(0, hoursWorked - anchorHours);
+      accrued = Math.min(anchorAccrued + Math.floor(extra * 60 / accrualRate) / 60, plan);
+    } else {
+      accrualRate = (weeks * 40) / plan;
+      accrued = Math.min(Math.floor(hoursWorked * 60 / accrualRate) / 60, plan);
+    }
   }
   const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + Number(e.hours), 0);
   const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + Number(e.hours), 0);
   const initial = Number(bal?.pto_initial_balance ?? 0);
   const balance = Math.min(carryover + initial + accrued + adjustments - used, MAX_BALANCE);
-  return { active, plan, weeks, accrualRate, carryover, initial, accrued, used, adjustments, balance };
+  return { active, plan, weeks, accrualRate, carryover, initial, accrued, used, adjustments, balance, overrideActive, overrideAmount, overridePer };
 }
 
 function defaultBalance(employeeId: string, year: number): LeaveBalanceRow {
@@ -228,7 +272,36 @@ function defaultBalance(employeeId: string, year: number): LeaveBalanceRow {
     pto_initial_balance: 0, sick_initial_balance: 0,
     sick_carryover: 0, pto_carryover: 0,
     hours_worked_override: null, unpaid_override: null,
+    sick_accrual_amount: null, sick_accrual_per: null,
+    sick_accrual_anchor_hours: null, sick_accrual_anchor_accrued: null,
+    pto_accrual_amount: null, pto_accrual_per: null,
+    pto_accrual_anchor_hours: null, pto_accrual_anchor_accrued: null,
   };
+}
+
+// Build the 4 accrual-override columns for an upsert. When the rate is first enabled
+// or changed, it re-anchors at the current hours-worked/accrued so prior accrual is
+// preserved and the new rate only applies going forward. Disabled → all NULL.
+type OverridePatch = { amount: number | null; per: number | null; anchor_hours: number | null; anchor_accrued: number | null };
+function buildOverridePatch(
+  enabled: boolean,
+  amount: number,
+  per: number,
+  prev: { amount: number | null; per: number | null; anchor_hours: number | null; anchor_accrued: number | null },
+  currentHours: number,
+  currentAccrued: number,
+): OverridePatch {
+  if (!enabled || amount <= 0 || per <= 0) {
+    return { amount: null, per: null, anchor_hours: null, anchor_accrued: null };
+  }
+  const prevActive = isOverrideActive(prev.amount, prev.per);
+  const rateChanged = !prevActive
+    || Math.abs(Number(prev.amount) - amount) > 1e-9
+    || Math.abs(Number(prev.per) - per) > 1e-9;
+  if (rateChanged) {
+    return { amount, per, anchor_hours: currentHours, anchor_accrued: currentAccrued };
+  }
+  return { amount, per, anchor_hours: prev.anchor_hours ?? currentHours, anchor_accrued: prev.anchor_accrued ?? currentAccrued };
 }
 
 const REQUEST_LABELS: Record<RequestType, string> = {
@@ -295,6 +368,17 @@ export default function LeavePage() {
   const [cfgSickCarryoverM, setCfgSickCarryoverM] = useState(0);
   const [cfgPtoCarryoverH, setCfgPtoCarryoverH] = useState(0);
   const [cfgPtoCarryoverM, setCfgPtoCarryoverM] = useState(0);
+  // Accrual-rate overrides ("accrue Xh Ym per N hours worked")
+  const [cfgSickRateOverride, setCfgSickRateOverride] = useState(false);
+  const [cfgSickAccrualH, setCfgSickAccrualH] = useState(1);
+  const [cfgSickAccrualM, setCfgSickAccrualM] = useState(0);
+  const [cfgSickAccrualPerH, setCfgSickAccrualPerH] = useState<number>(30);
+  const [cfgSickAccrualPerM, setCfgSickAccrualPerM] = useState<number>(0);
+  const [cfgPtoRateOverride, setCfgPtoRateOverride] = useState(false);
+  const [cfgPtoAccrualH, setCfgPtoAccrualH] = useState(1);
+  const [cfgPtoAccrualM, setCfgPtoAccrualM] = useState(0);
+  const [cfgPtoAccrualPerH, setCfgPtoAccrualPerH] = useState<number>(48);
+  const [cfgPtoAccrualPerM, setCfgPtoAccrualPerM] = useState<number>(0);
   const [cfgBusy, setCfgBusy] = useState(false);
 
   // ── Load profile ──────────────────────────────────────────────────────────
@@ -424,6 +508,25 @@ export default function LeavePage() {
         const [pih, pim] = decToHM(b.pto_initial_balance ?? 0); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
         const [sch, scm] = decToHM(b.sick_carryover ?? 0); setCfgSickCarryoverH(sch); setCfgSickCarryoverM(scm);
         const [pch, pcm] = decToHM(b.pto_carryover ?? 0); setCfgPtoCarryoverH(pch); setCfgPtoCarryoverM(pcm);
+
+        const sickOv = isOverrideActive(b.sick_accrual_amount, b.sick_accrual_per);
+        setCfgSickRateOverride(sickOv);
+        if (sickOv) {
+          const [sah, sam] = decToHM(Number(b.sick_accrual_amount)); setCfgSickAccrualH(sah); setCfgSickAccrualM(sam);
+          const [sph, spm] = decToHM(Number(b.sick_accrual_per)); setCfgSickAccrualPerH(sph); setCfgSickAccrualPerM(spm);
+        } else {
+          setCfgSickAccrualH(1); setCfgSickAccrualM(0); setCfgSickAccrualPerH(DEFAULT_SICK_RATE); setCfgSickAccrualPerM(0);
+        }
+        const ptoOv = isOverrideActive(b.pto_accrual_amount, b.pto_accrual_per);
+        setCfgPtoRateOverride(ptoOv);
+        if (ptoOv) {
+          const [pah, pam] = decToHM(Number(b.pto_accrual_amount)); setCfgPtoAccrualH(pah); setCfgPtoAccrualM(pam);
+          const [pph, ppm] = decToHM(Number(b.pto_accrual_per)); setCfgPtoAccrualPerH(pph); setCfgPtoAccrualPerM(ppm);
+        } else {
+          setCfgPtoAccrualH(1); setCfgPtoAccrualM(0);
+          const [pph, ppm] = decToHM(b.pto_plan_hours > 0 ? (b.pto_weeks * 40) / b.pto_plan_hours : 48);
+          setCfgPtoAccrualPerH(pph); setCfgPtoAccrualPerM(ppm);
+        }
       } catch (e: unknown) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load leave data.");
       } finally {
@@ -458,6 +561,25 @@ export default function LeavePage() {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
+  function overridePatches() {
+    const prevSick = {
+      amount: balance?.sick_accrual_amount ?? null, per: balance?.sick_accrual_per ?? null,
+      anchor_hours: balance?.sick_accrual_anchor_hours ?? null, anchor_accrued: balance?.sick_accrual_anchor_accrued ?? null,
+    };
+    const prevPto = {
+      amount: balance?.pto_accrual_amount ?? null, per: balance?.pto_accrual_per ?? null,
+      anchor_hours: balance?.pto_accrual_anchor_hours ?? null, anchor_accrued: balance?.pto_accrual_anchor_accrued ?? null,
+    };
+    const sick = buildOverridePatch(cfgSickRateOverride, hmToDec(cfgSickAccrualH, cfgSickAccrualM), hmToDec(cfgSickAccrualPerH, cfgSickAccrualPerM), prevSick, hoursWorkedYtd, sickCalc.accrued);
+    const pto = buildOverridePatch(cfgPtoRateOverride, hmToDec(cfgPtoAccrualH, cfgPtoAccrualM), hmToDec(cfgPtoAccrualPerH, cfgPtoAccrualPerM), prevPto, hoursWorkedYtd, ptoCalc.accrued);
+    return {
+      sick_accrual_amount: sick.amount, sick_accrual_per: sick.per,
+      sick_accrual_anchor_hours: sick.anchor_hours, sick_accrual_anchor_accrued: sick.anchor_accrued,
+      pto_accrual_amount: pto.amount, pto_accrual_per: pto.per,
+      pto_accrual_anchor_hours: pto.anchor_hours, pto_accrual_anchor_accrued: pto.anchor_accrued,
+    };
+  }
+
   async function ensureBalanceRow(): Promise<LeaveBalanceRow> {
     if (balance && balance.id) return balance;
     const insertRow = {
@@ -468,6 +590,7 @@ export default function LeavePage() {
       sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
       sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
       pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
+      ...overridePatches(),
       created_by: me?.id ?? null, updated_by: me?.id ?? null,
     };
     const { data, error } = await supabase.from("hr_leave_balances").insert(insertRow).select("*").single();
@@ -489,6 +612,7 @@ export default function LeavePage() {
         sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
         sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
         pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
+        ...overridePatches(),
         updated_by: me?.id ?? null,
       };
       const { data, error } = await supabase
@@ -939,8 +1063,12 @@ export default function LeavePage() {
               lines={[
                 ...(sickCalc.carryover > 0 ? [["Carryover", fmtHours(sickCalc.carryover)] as [string, string]] : []),
                 ["Initial", fmtHours(sickCalc.initial)],
-                [balance?.sick_frontloaded ? "Frontloaded" : "Accrued YTD",
-                  `${fmtHours(sickCalc.accrued)}${!balance?.sick_frontloaded && sickCalc.accruedRaw > sickCalc.cap ? ` (capped at ${sickCalc.cap})` : ""}`],
+                [sickCalc.overrideActive ? "Accrued YTD (custom)" : balance?.sick_frontloaded ? "Frontloaded" : "Accrued YTD",
+                  `${fmtHours(sickCalc.accrued)}${
+                    sickCalc.overrideActive
+                      ? ` (${fmtHours(sickCalc.overrideAmount)} per ${fmtHours(sickCalc.overridePer)})`
+                      : !balance?.sick_frontloaded && sickCalc.accruedRaw > sickCalc.cap ? ` (capped at ${sickCalc.cap})` : ""
+                  }`],
                 ["Used", `−${fmtHours(sickCalc.used)}`],
                 ...(sickCalc.adjustments !== 0 ? [[`Adjustments`, `${sickCalc.adjustments >= 0 ? "+" : ""}${fmtHours(sickCalc.adjustments)}`] as [string, string]] : []),
                 ...(sickCalc.balance >= MAX_BALANCE ? [["Max balance reached", `(${MAX_BALANCE}h cap)`] as [string, string]] : []),
@@ -948,13 +1076,18 @@ export default function LeavePage() {
               onEdit={() => void openEditModal("sick")}
             />
             <BalanceCard
-              title={`PTO${ptoCalc.active ? ` (${ptoCalc.plan}h / ${ptoCalc.weeks}w)` : " (inactive)"}`}
+              title={`PTO${ptoCalc.active ? (ptoCalc.overrideActive ? ` (${ptoCalc.plan}h, custom rate)` : ` (${ptoCalc.plan}h / ${ptoCalc.weeks}w)`) : " (inactive)"}`}
               balance={ptoCalc.balance}
               accent="#0ea5e9"
               lines={ptoCalc.active ? [
                 ...(ptoCalc.carryover > 0 ? [["Carryover", fmtHours(ptoCalc.carryover)] as [string, string]] : []),
                 ["Initial", fmtHours(ptoCalc.initial)],
-                ["Accrued YTD", `${fmtHours(ptoCalc.accrued)}${ptoCalc.accrualRate > 0 ? ` (1h per ${fmtHours(ptoCalc.accrualRate)}, cap ${ptoCalc.plan}h)` : ""}`],
+                [ptoCalc.overrideActive ? "Accrued YTD (custom)" : "Accrued YTD",
+                  `${fmtHours(ptoCalc.accrued)}${
+                    ptoCalc.overrideActive
+                      ? ` (${fmtHours(ptoCalc.overrideAmount)} per ${fmtHours(ptoCalc.overridePer)}, cap ${ptoCalc.plan}h)`
+                      : ptoCalc.accrualRate > 0 ? ` (1h per ${fmtHours(ptoCalc.accrualRate)}, cap ${ptoCalc.plan}h)` : ""
+                  }`],
                 ["Used", `−${fmtHours(ptoCalc.used)}`],
                 ...(ptoCalc.adjustments !== 0 ? [[`Adjustments`, `${ptoCalc.adjustments >= 0 ? "+" : ""}${fmtHours(ptoCalc.adjustments)}`] as [string, string]] : []),
                 ...(ptoCalc.balance >= MAX_BALANCE ? [["Max balance reached", `(${MAX_BALANCE}h cap)`] as [string, string]] : []),
@@ -1072,8 +1205,8 @@ export default function LeavePage() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <div style={{ gridColumn: "1 / -1", fontSize: 13, fontWeight: 800, color: "#111827" }}>Sick</div>
                 <div style={{ gridColumn: "1 / -1" }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-                    <input type="checkbox" checked={cfgSickFrontloaded} onChange={(e) => setCfgSickFrontloaded(e.target.checked)} />
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, opacity: cfgSickRateOverride ? 0.5 : 1 }}>
+                    <input type="checkbox" checked={cfgSickFrontloaded} disabled={cfgSickRateOverride} onChange={(e) => setCfgSickFrontloaded(e.target.checked)} />
                     Frontload 40 hrs upfront (no accrual, no carryover required)
                   </label>
                 </div>
@@ -1085,6 +1218,14 @@ export default function LeavePage() {
                   <FieldLabel>Initial sick balance</FieldLabel>
                   <HMInput h={cfgSickInitialH} m={cfgSickInitialM} onChangeH={setCfgSickInitialH} onChangeM={setCfgSickInitialM} />
                 </div>
+                <RateOverrideEditor
+                  label="Override sick accrual rate"
+                  enabled={cfgSickRateOverride}
+                  onToggle={setCfgSickRateOverride}
+                  h={cfgSickAccrualH} m={cfgSickAccrualM} perH={cfgSickAccrualPerH} perM={cfgSickAccrualPerM}
+                  onChangeH={setCfgSickAccrualH} onChangeM={setCfgSickAccrualM} onChangePerH={setCfgSickAccrualPerH} onChangePerM={setCfgSickAccrualPerM}
+                  note="Replaces the default 1h-per-30h rule (and frontload) for this employee."
+                />
 
                 <div style={{ gridColumn: "1 / -1", fontSize: 13, fontWeight: 800, color: "#111827", marginTop: 6 }}>PTO</div>
                 <div style={{ gridColumn: "1 / -1" }}>
@@ -1104,8 +1245,8 @@ export default function LeavePage() {
                   </Select>
                 </div>
                 <div>
-                  <FieldLabel>Working weeks/year</FieldLabel>
-                  <Select value={cfgPtoWeeks} onChange={(e) => setCfgPtoWeeks(Number(e.target.value))} disabled={!cfgPtoActive}>
+                  <FieldLabel>Working weeks/year{cfgPtoRateOverride ? " (unused)" : ""}</FieldLabel>
+                  <Select value={cfgPtoWeeks} onChange={(e) => setCfgPtoWeeks(Number(e.target.value))} disabled={!cfgPtoActive || cfgPtoRateOverride}>
                     <option value={48}>48</option>
                     <option value={50}>50</option>
                     <option value={52}>52</option>
@@ -1119,6 +1260,14 @@ export default function LeavePage() {
                   <FieldLabel>Initial PTO balance</FieldLabel>
                   <HMInput h={cfgPtoInitialH} m={cfgPtoInitialM} onChangeH={setCfgPtoInitialH} onChangeM={setCfgPtoInitialM} />
                 </div>
+                <RateOverrideEditor
+                  label="Override PTO accrual rate"
+                  enabled={cfgPtoRateOverride}
+                  onToggle={setCfgPtoRateOverride}
+                  h={cfgPtoAccrualH} m={cfgPtoAccrualM} perH={cfgPtoAccrualPerH} perM={cfgPtoAccrualPerM}
+                  onChangeH={setCfgPtoAccrualH} onChangeM={setCfgPtoAccrualM} onChangePerH={setCfgPtoAccrualPerH} onChangePerM={setCfgPtoAccrualPerM}
+                  note="Replaces the weeks/plan rate. PTO must be activated and Plan (hrs/year) still caps the annual total."
+                />
               </div>
               <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
                 <button className="btn" onClick={saveSettings} disabled={cfgBusy} style={{ minWidth: 140 }}>
@@ -1186,6 +1335,40 @@ function HMInput({ h, m, onChangeH, onChangeM, large }: { h: number; m: number; 
         />
         <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>m</span>
       </div>
+    </div>
+  );
+}
+
+function RateOverrideEditor({
+  label, enabled, onToggle, h, m, perH, perM, onChangeH, onChangeM, onChangePerH, onChangePerM, note,
+}: {
+  label: string;
+  enabled: boolean; onToggle: (v: boolean) => void;
+  h: number; m: number; perH: number; perM: number;
+  onChangeH: (v: number) => void; onChangeM: (v: number) => void;
+  onChangePerH: (v: number) => void; onChangePerM: (v: number) => void;
+  note?: string;
+}) {
+  return (
+    <div style={{ gridColumn: "1 / -1" }}>
+      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 700 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => onToggle(e.target.checked)} />
+        {label}
+      </label>
+      {enabled && (
+        <>
+          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Accrue</span>
+            <HMInput h={h} m={m} onChangeH={onChangeH} onChangeM={onChangeM} />
+            <span style={{ fontSize: 14, fontWeight: 600 }}>per</span>
+            <HMInput h={perH} m={perM} onChangeH={onChangePerH} onChangeM={onChangePerM} />
+            <span style={{ fontSize: 13, color: "#6b7280", fontWeight: 600 }}>worked</span>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+            {note ? note + " " : ""}Saving freezes the current balance; the new rate applies only to hours worked from now on. Uncheck to revert to the default rate.
+          </div>
+        </>
+      )}
     </div>
   );
 }
