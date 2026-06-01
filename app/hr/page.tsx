@@ -4682,6 +4682,8 @@ type LeaveEntryRow = {
   entry_type: string;
   start_date: string;
   end_date: string;
+  start_time: string | null;
+  end_time: string | null;
   hours: number;
   notes: string | null;
   created_at: string;
@@ -4693,6 +4695,8 @@ type LeaveRequestRow = {
   entry_type: string;
   start_date: string;
   end_date: string;
+  start_time: string | null;
+  end_time: string | null;
   hours: number;
   notes: string | null;
   status: "pending" | "approved" | "denied";
@@ -4730,6 +4734,13 @@ function calcPtoBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entrie
   const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + e.hours, 0);
   const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + e.hours, 0);
   return Math.min(bal.pto_carryover + bal.pto_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
+}
+
+function fmtLeaveTime(hms: string): string {
+  const [h, m] = hms.split(":").map(Number);
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const ampm = h < 12 ? "AM" : "PM";
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
@@ -4808,6 +4819,8 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
       entry_type: reqType,
       start_date: reqStart,
       end_date: endDate,
+      start_time: isSingleDay ? reqStartTime : null,
+      end_time: isSingleDay ? reqEndTime : null,
       hours: hrs,
       notes: reqNotes.trim() || null,
       status: "pending",
@@ -4971,7 +4984,7 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   {statusBadge(r.status)}
                   <span style={{ fontWeight: 700, fontSize: 14 }}>{entryTypeLabel(r.entry_type)}</span>
-                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date === r.end_date ? r.start_date : `${r.start_date} – ${r.end_date}`} · {r.entry_type === "unpaid" ? `${Math.round(Number(r.hours))} day${Math.round(Number(r.hours)) !== 1 ? "s" : ""}` : (() => { const m = Math.round(Number(r.hours) * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })()}</span>
+                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date === r.end_date ? r.start_date : `${r.start_date} – ${r.end_date}`}{r.entry_type !== "unpaid" && r.start_time && r.end_time ? ` · ${fmtLeaveTime(r.start_time)} – ${fmtLeaveTime(r.end_time)}` : ""} · {r.entry_type === "unpaid" ? `${Math.round(Number(r.hours))} day${Math.round(Number(r.hours)) !== 1 ? "s" : ""}` : (() => { const m = Math.round(Number(r.hours) * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })()}</span>
                 </div>
                 {r.notes && <div className="subtle" style={{ marginTop: 6, fontSize: 13 }}>{r.notes}</div>}
                 {r.review_notes && (

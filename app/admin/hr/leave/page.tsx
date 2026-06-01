@@ -65,6 +65,8 @@ type LeaveEntryRow = {
   entry_type: LeaveEntryType;
   start_date: string;
   end_date: string;
+  start_time: string | null;
+  end_time: string | null;
   hours: number;
   notes: string | null;
   created_at: string;
@@ -76,6 +78,8 @@ type LeaveRequestRow = {
   entry_type: RequestType;
   start_date: string;
   end_date: string;
+  start_time: string | null;
+  end_time: string | null;
   hours: number;
   notes: string | null;
   status: RequestStatus;
@@ -160,6 +164,13 @@ function fmtYmd(ymd: string): string {
 function fmtRange(s: string, e: string): string {
   if (s === e) return fmtYmd(s);
   return `${fmtYmd(s)} – ${fmtYmd(e)}`;
+}
+
+function fmtLeaveTime(hms: string): string {
+  const [h, m] = hms.split(":").map(Number);
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  const ampm = h < 12 ? "AM" : "PM";
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function decToHM(hours: number): [number, number] {
@@ -669,6 +680,8 @@ export default function LeavePage() {
       const { error } = await supabase.from("hr_leave_entries").insert({
         employee_id: selectedEmployeeId, entry_type: logType,
         start_date: logStart, end_date: effectiveEnd, hours,
+        start_time: isSingleDay ? logStartTime : null,
+        end_time: isSingleDay ? logEndTime : null,
         notes: logNotes.trim() || null, created_by: me?.id ?? null,
       });
       if (error) throw error;
@@ -707,6 +720,7 @@ export default function LeavePage() {
       const { error: entryErr } = await supabase.from("hr_leave_entries").insert({
         employee_id: req.employee_id, entry_type: req.entry_type,
         start_date: req.start_date, end_date: req.end_date,
+        start_time: req.start_time, end_time: req.end_time,
         hours: req.hours, notes: req.notes,
         created_by: me?.id ?? null,
       });
@@ -1021,7 +1035,7 @@ export default function LeavePage() {
                         </span>
                       </div>
                       <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
-                        {fmtRange(req.start_date, req.end_date)} · {req.entry_type === "unpaid" ? `${Math.round(Number(req.hours))} day${Math.round(Number(req.hours)) !== 1 ? "s" : ""}` : fmtHours(Number(req.hours))}
+                        {fmtRange(req.start_date, req.end_date)}{req.entry_type !== "unpaid" && req.start_time && req.end_time ? ` · ${fmtLeaveTime(req.start_time)} – ${fmtLeaveTime(req.end_time)}` : ""} · {req.entry_type === "unpaid" ? `${Math.round(Number(req.hours))} day${Math.round(Number(req.hours)) !== 1 ? "s" : ""}` : fmtHours(Number(req.hours))}
                         {req.notes && <> · <em>{req.notes}</em></>}
                       </div>
                       <div className="subtle" style={{ fontSize: 12, marginTop: 2 }}>
@@ -1292,7 +1306,12 @@ export default function LeavePage() {
                     <tbody>
                       {entries.map((e) => (
                         <tr key={e.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                          <Td>{fmtRange(e.start_date, e.end_date)}</Td>
+                          <Td>
+                            {fmtRange(e.start_date, e.end_date)}
+                            {e.entry_type !== "unpaid" && e.start_time && e.end_time && (
+                              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{fmtLeaveTime(e.start_time)} – {fmtLeaveTime(e.end_time)}</div>
+                            )}
+                          </Td>
                           <Td><TypePill type={e.entry_type} /></Td>
                           <Td align="right">{e.entry_type === "unpaid" ? `${Math.round(Number(e.hours))} day${Math.round(Number(e.hours)) !== 1 ? "s" : ""}` : `${e.entry_type.endsWith("_adjustment") && Number(e.hours) >= 0 ? "+" : ""}${fmtHours(Number(e.hours))}`}</Td>
                           <Td>{e.notes || <span className="subtle">—</span>}</Td>

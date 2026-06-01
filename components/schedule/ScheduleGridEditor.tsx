@@ -96,12 +96,27 @@ type BlockFormState = {
   editBlockId?: string; // set when editing existing block
 } | null;
 
+type LeaveReqRow = {
+  id: string;
+  employee_id: string;
+  entry_type: string;
+  start_date: string;
+  end_date: string;
+  start_time: string | null;
+  end_time: string | null;
+  hours: number;
+  status: "pending" | "approved" | "denied";
+  notes: string | null;
+};
+
 export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly = false }: ScheduleGridEditorProps) {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [rooms, setRooms] = useState<ScheduleRoom[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlockType[]>([]);
   const [employees, setEmployees] = useState<EmployeeLite[]>([]);
   const [loading, setLoading] = useState(true);
+  const [leaveReqs, setLeaveReqs] = useState<LeaveReqRow[]>([]);
+  const [leavePanelOpen, setLeavePanelOpen] = useState(true);
 
   const [activeDay, setActiveDay] = useState<number>(1);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
@@ -185,6 +200,65 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   // No document listener needed — outside clicks handled by backdrop divs
 
   const { filter: campusFilter } = useCampusFilter();
+
+  // ── Time-off (PTO/sick) for the week being scheduled ────────────────────────
+  useEffect(() => {
+    const ws = schedule?.week_start;
+    if (!ws) { setLeaveReqs([]); return; }
+    const [y, m, d] = ws.split("-").map(Number);
+    const endDt = new Date(Date.UTC(y, m - 1, d));
+    endDt.setUTCDate(endDt.getUTCDate() + 6);
+    const weekEnd = `${endDt.getUTCFullYear()}-${String(endDt.getUTCMonth() + 1).padStart(2, "0")}-${String(endDt.getUTCDate()).padStart(2, "0")}`;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("hr_leave_requests")
+        .select("id, employee_id, entry_type, start_date, end_date, start_time, end_time, hours, status, notes")
+        .lte("start_date", weekEnd)
+        .gte("end_date", ws);
+      if (!cancelled) setLeaveReqs((data as LeaveReqRow[]) ?? []);
+    })();
+    return () => { cancelled = true; };
+  }, [schedule?.week_start]);
+
+  // Expand requests to per-day items within the week, flagging scheduling conflicts.
+  const weekLeave = useMemo(() => {
+    type LeaveItem = { id: string; emp: EmployeeLite | undefined; empId: string; date: string; dayOfWeek: number; type: string; status: string; startTime: string | null; endTime: string | null; hours: number; notes: string | null; conflict: boolean; conflictMsg?: string };
+    const ws = schedule?.week_start;
+    if (!ws) return [] as LeaveItem[];
+    const empById = new Map(employees.map((e) => [e.id, e]));
+    const toMin = (hms: string) => { const [h, mm] = hms.split(":").map(Number); return h * 60 + (mm || 0); };
+    const fmtT = (hms: string) => { const [h, mm] = hms.split(":").map(Number); const h12 = h % 12 === 0 ? 12 : h % 12; return `${h12}:${String(mm).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; };
+    const [y, m, d] = ws.split("-").map(Number);
+    const weekDates: string[] = [];
+    for (let i = 0; i < 7; i++) { const dt = new Date(Date.UTC(y, m - 1, d)); dt.setUTCDate(dt.getUTCDate() + i); weekDates.push(`${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`); }
+    const items: LeaveItem[] = [];
+    for (const r of leaveReqs) {
+      const emp = empById.get(r.employee_id);
+      if (!emp) continue; // outside this campus/schedule's employee set
+      for (let di = 0; di < 7; di++) {
+        const date = weekDates[di];
+        if (date < r.start_date || date > r.end_date) continue;
+        const dayOfWeek = di + 1;
+        let conflict = false;
+        let conflictMsg: string | undefined;
+        if (r.status !== "denied") {
+          const empBlocks = blocks.filter((b) => b.employee_id === r.employee_id && b.day_of_week === dayOfWeek && b.block_type !== "lunch_break");
+          for (const b of empBlocks) {
+            if (!r.start_time || !r.end_time) { conflict = true; conflictMsg = `Scheduled ${fmtT(b.start_time)} – ${fmtT(b.end_time)}`; break; }
+            const ls = toMin(r.start_time), le = toMin(r.end_time);
+            const bs = toMin(b.start_time), be = toMin(b.end_time);
+            if (bs < le && ls < be) { conflict = true; conflictMsg = `Scheduled ${fmtT(b.start_time)} – ${fmtT(b.end_time)}`; break; }
+          }
+        }
+        items.push({ id: `${r.id}:${date}`, emp, empId: r.employee_id, date, dayOfWeek, type: r.entry_type, status: r.status, startTime: r.start_time, endTime: r.end_time, hours: r.hours, notes: r.notes, conflict, conflictMsg });
+      }
+    }
+    items.sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
+    return items;
+  }, [leaveReqs, employees, blocks, schedule?.week_start]);
+
+  const leaveConflictCount = useMemo(() => weekLeave.filter((i) => i.conflict).length, [weekLeave]);
 
   // Fetch all data
   const fetchData = useCallback(async () => {
@@ -1600,6 +1674,54 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
             </div>
           </div>
         </>
+      )}
+
+      {/* Time-off (PTO/sick) panel */}
+      {schedule && weekLeave.length > 0 && (
+        <div style={{ marginBottom: 8, padding: "8px 12px", background: leaveConflictCount > 0 ? "#fef2f2" : "#f9fafb", borderRadius: 10, border: leaveConflictCount > 0 ? "1.5px solid #fca5a5" : "1.5px solid #e5e7eb" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, fontWeight: 800, color: "#374151" }}>🌴 Time off this week ({weekLeave.length})</span>
+            {leaveConflictCount > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 800, color: "#991b1b", background: "#fee2e2", border: "1.5px solid #fca5a5", borderRadius: 999, padding: "2px 10px" }}>
+                ⚠ {leaveConflictCount} scheduling conflict{leaveConflictCount !== 1 ? "s" : ""}
+              </span>
+            )}
+            <button
+              onClick={() => setLeavePanelOpen((v) => !v)}
+              style={{ marginLeft: "auto", border: "1.5px solid #e5e7eb", background: "white", borderRadius: 7, padding: "3px 10px", fontSize: 12, fontWeight: 700, color: "#6b7280", cursor: "pointer" }}
+            >
+              {leavePanelOpen ? "Hide" : "Show"}
+            </button>
+          </div>
+          {leavePanelOpen && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+              {weekLeave.map((it) => {
+                const fmtT = (hms: string) => { const [h, mm] = hms.split(":").map(Number); const h12 = h % 12 === 0 ? 12 : h % 12; return `${h12}:${String(mm).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; };
+                const typeLabel = it.type === "sick_paid" ? "Sick" : it.type === "pto" ? "PTO" : it.type === "unpaid" ? "Unpaid" : it.type;
+                const typeColor = it.type === "sick_paid" ? "#e6178d" : it.type === "pto" ? "#0ea5e9" : "#6b7280";
+                const statusCfg = it.status === "approved" ? { bg: "#dcfce7", fg: "#15803d", bd: "#86efac", label: "Approved" }
+                  : it.status === "denied" ? { bg: "#f3f4f6", fg: "#9ca3af", bd: "#e5e7eb", label: "Denied" }
+                  : { bg: "#fef3c7", fg: "#92400e", bd: "#fde68a", label: "Pending" };
+                const isDenied = it.status === "denied";
+                return (
+                  <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "6px 10px", borderRadius: 8, background: it.conflict ? "#fff1f2" : "white", border: it.conflict ? "1.5px solid #fca5a5" : "1px solid #e5e7eb", opacity: isDenied ? 0.6 : 1 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: "#6b7280", minWidth: 54 }}>{["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][it.dayOfWeek - 1]} {it.date.slice(5).replace("-", "/")}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{it.emp ? getDisplayName(it.emp) : it.empId}</span>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: "white", background: typeColor, borderRadius: 999, padding: "2px 8px" }}>{typeLabel}</span>
+                    <span style={{ fontSize: 12, color: "#374151", textDecoration: isDenied ? "line-through" : undefined }}>
+                      {it.type !== "unpaid" && it.startTime && it.endTime ? `${fmtT(it.startTime)} – ${fmtT(it.endTime)}` : "All day"}
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: statusCfg.fg, background: statusCfg.bg, border: `1.5px solid ${statusCfg.bd}`, borderRadius: 999, padding: "1px 8px" }}>{statusCfg.label}</span>
+                    {it.conflict && (
+                      <span style={{ fontSize: 11, fontWeight: 800, color: "#991b1b", marginLeft: "auto" }}>⚠ Conflict{it.conflictMsg ? ` · ${it.conflictMsg}` : ""}</span>
+                    )}
+                    {it.notes && !it.conflict && <span style={{ fontSize: 11, color: "#9ca3af", fontStyle: "italic", marginLeft: "auto" }}>{it.notes}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Paint mode toolbar */}

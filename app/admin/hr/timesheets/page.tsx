@@ -48,6 +48,8 @@ type LeaveEntry = {
   entry_type: string;
   start_date: string;
   end_date: string;
+  start_time: string | null;
+  end_time: string | null;
   hours: number;
   notes: string | null;
 };
@@ -81,12 +83,6 @@ type ModalTarget = {
   employeeProfileId: string | null;
   dateStr: string;
   dateLabel: string;
-};
-
-type LeaveModalTarget = {
-  employeeName: string;
-  dateLabel: string;
-  entries: LeaveEntry[];
 };
 
 // ─── Pay period helpers ───────────────────────────────────────────────────────
@@ -180,17 +176,41 @@ function leaveTypeLabel(t: string): string {
 function SessionModal({
   target,
   entries: initialEntries,
+  leaveEntries: initialLeave,
   onClose,
   onEntriesChanged,
+  onLeaveChanged,
 }: {
   target: ModalTarget;
   entries: ClockEntry[];
+  leaveEntries: LeaveEntry[];
   onClose: () => void;
   onEntriesChanged: (updated: ClockEntry[]) => void;
+  onLeaveChanged: (updated: LeaveEntry[]) => void;
 }) {
   const [entries, setEntries] = useState<ClockEntry[]>(
     [...initialEntries].sort((a, b) => a.session_start.localeCompare(b.session_start))
   );
+  const [leaves, setLeaves] = useState<LeaveEntry[]>(
+    [...initialLeave].sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""))
+  );
+  const [leaveEditTimes, setLeaveEditTimes] = useState<Record<string, { start: string; end: string }>>(() => {
+    const map: Record<string, { start: string; end: string }> = {};
+    for (const l of initialLeave) {
+      map[l.id] = { start: (l.start_time ?? "").slice(0, 5), end: (l.end_time ?? "").slice(0, 5) };
+    }
+    return map;
+  });
+  const [leaveSaving, setLeaveSaving] = useState<Set<string>>(new Set());
+  const [leaveConfirmDelete, setLeaveConfirmDelete] = useState<string | null>(null);
+  // Add-leave form
+  const [addingLeave, setAddingLeave] = useState(false);
+  const [addLeaveType, setAddLeaveType] = useState<"sick_paid" | "pto">("sick_paid");
+  const [addLeaveStart, setAddLeaveStart] = useState("09:00");
+  const [addLeaveEnd, setAddLeaveEnd] = useState("17:00");
+  const [addLeaveNotes, setAddLeaveNotes] = useState("");
+  const [addLeaveSaving, setAddLeaveSaving] = useState(false);
+  const [addLeaveError, setAddLeaveError] = useState<string | null>(null);
   const [editTimes, setEditTimes] = useState<Record<string, { in: string; out: string }>>(() => {
     const map: Record<string, { in: string; out: string }> = {};
     for (const e of initialEntries) {
@@ -524,6 +544,92 @@ function SessionModal({
     setAddNotes("");
   }
 
+  // ── Leave handlers ──────────────────────────────────────────────────────────
+  function leaveTimeToMin(hhmm: string): number {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + (m || 0);
+  }
+
+  async function saveLeaveTimes(leaveId: string) {
+    const lv = leaves.find((l) => l.id === leaveId);
+    if (!lv) return;
+    const t = leaveEditTimes[leaveId];
+    if (!t || !t.start || !t.end) return;
+    if ((lv.start_time ?? "").slice(0, 5) === t.start && (lv.end_time ?? "").slice(0, 5) === t.end) return;
+    const sMin = leaveTimeToMin(t.start);
+    const eMin = leaveTimeToMin(t.end);
+    if (eMin <= sMin) return;
+    const startSec = `${t.start}:00`;
+    const endSec = `${t.end}:00`;
+    const hours = (eMin - sMin) / 60;
+    setLeaveSaving((p) => new Set(p).add(leaveId));
+    const { error } = await supabase.from("hr_leave_entries").update({ start_time: startSec, end_time: endSec, hours }).eq("id", leaveId);
+    setLeaveSaving((p) => { const n = new Set(p); n.delete(leaveId); return n; });
+    if (!error) {
+      const updated = leaves.map((l) => (l.id === leaveId ? { ...l, start_time: startSec, end_time: endSec, hours } : l));
+      setLeaves(updated);
+      onLeaveChanged(updated);
+    }
+  }
+
+  async function deleteLeave(leaveId: string) {
+    const { error } = await supabase.from("hr_leave_entries").delete().eq("id", leaveId);
+    if (!error) {
+      const updated = leaves.filter((l) => l.id !== leaveId);
+      setLeaves(updated);
+      onLeaveChanged(updated);
+    }
+    setLeaveConfirmDelete(null);
+  }
+
+  function openAddLeave() {
+    setAddingLeave(true);
+    setAddLeaveError(null);
+    setAddLeaveType("sick_paid");
+    setAddLeaveStart("09:00");
+    setAddLeaveEnd("17:00");
+    setAddLeaveNotes("");
+  }
+
+  async function saveNewLeave() {
+    setAddLeaveError(null);
+    if (!addLeaveStart || !addLeaveEnd) { setAddLeaveError("Enter both start and end times."); return; }
+    const sMin = leaveTimeToMin(addLeaveStart);
+    const eMin = leaveTimeToMin(addLeaveEnd);
+    if (eMin <= sMin) { setAddLeaveError("End time must be after start time."); return; }
+    const hours = (eMin - sMin) / 60;
+    setAddLeaveSaving(true);
+    const { data: { session: authSession } } = await supabase.auth.getSession();
+    const { data, error } = await supabase
+      .from("hr_leave_entries")
+      .insert({
+        employee_id: target.employeeId,
+        entry_type: addLeaveType,
+        start_date: target.dateStr,
+        end_date: target.dateStr,
+        start_time: `${addLeaveStart}:00`,
+        end_time: `${addLeaveEnd}:00`,
+        hours,
+        notes: addLeaveNotes.trim() || null,
+        created_by: authSession?.user?.id ?? null,
+      })
+      .select("id, employee_id, entry_type, start_date, end_date, start_time, end_time, hours, notes")
+      .single();
+    setAddLeaveSaving(false);
+    if (error || !data) { setAddLeaveError(error?.message ?? "Failed to add leave."); return; }
+    const newLeave = data as LeaveEntry;
+    const updated = [...leaves, newLeave].sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""));
+    setLeaves(updated);
+    setLeaveEditTimes((p) => ({ ...p, [newLeave.id]: { start: (newLeave.start_time ?? "").slice(0, 5), end: (newLeave.end_time ?? "").slice(0, 5) } }));
+    onLeaveChanged(updated);
+    setAddingLeave(false);
+    setAddLeaveNotes("");
+  }
+
+  const leaveTotalMins = leaves
+    .filter((l) => l.entry_type !== "unpaid")
+    .reduce((s, l) => s + Math.round(Number(l.hours) * 60), 0);
+
   const blockTypeColor = (t: string) =>
     t === "break" ? "#22c55e" : t === "lunch_break" ? "#f97316" : "#6366f1";
   const blockTypeLabel = (t: string) =>
@@ -573,7 +679,83 @@ function SessionModal({
             >
               {scheduleOpen ? "▲ Hide" : "▼ View"} Full Day Schedule
             </button>
+            <button
+              onClick={openAddLeave}
+              disabled={addingLeave}
+              style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: addingLeave ? "default" : "pointer",
+                border: "1.5px solid #f59e0b", background: "#fffbeb", color: "#b45309",
+                opacity: addingLeave ? 0.5 : 1,
+              }}
+            >
+              + Add Leave
+            </button>
           </div>
+
+          {/* Add Leave inline form */}
+          {addingLeave && (
+            <div style={{ border: "1.5px solid #fcd34d", background: "#fffbeb", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e" }}>New leave entry</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#b45309" }}>
+                  Type
+                  <select
+                    value={addLeaveType}
+                    onChange={(e) => setAddLeaveType(e.target.value as "sick_paid" | "pto")}
+                    style={{ padding: "4px 8px", borderRadius: 7, border: "1.5px solid #fcd34d", fontSize: 13, fontWeight: 600, background: "white" }}
+                  >
+                    <option value="sick_paid">Sick (paid)</option>
+                    <option value="pto">PTO</option>
+                  </select>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#b45309" }}>
+                  From
+                  <input
+                    type="time"
+                    value={addLeaveStart}
+                    onChange={(e) => setAddLeaveStart(e.target.value)}
+                    style={{ padding: "4px 8px", borderRadius: 7, border: "1.5px solid #fcd34d", fontSize: 13, fontWeight: 600 }}
+                  />
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#b45309" }}>
+                  To
+                  <input
+                    type="time"
+                    value={addLeaveEnd}
+                    onChange={(e) => setAddLeaveEnd(e.target.value)}
+                    style={{ padding: "4px 8px", borderRadius: 7, border: "1.5px solid #fcd34d", fontSize: 13, fontWeight: 600 }}
+                  />
+                </label>
+              </div>
+              <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 700, color: "#b45309" }}>
+                Notes (optional)
+                <textarea
+                  value={addLeaveNotes}
+                  onChange={(e) => setAddLeaveNotes(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. doctor appointment, partial-day PTO…"
+                  style={{ padding: "6px 10px", borderRadius: 7, border: "1.5px solid #fcd34d", fontSize: 13, fontWeight: 500, fontFamily: "inherit", resize: "vertical" }}
+                />
+              </label>
+              {addLeaveError && <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 600 }}>{addLeaveError}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={saveNewLeave}
+                  disabled={addLeaveSaving}
+                  style={{ padding: "5px 14px", borderRadius: 7, border: "1.5px solid #f59e0b", background: "#f59e0b", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                >
+                  {addLeaveSaving ? "Adding…" : "Add Leave"}
+                </button>
+                <button
+                  onClick={() => { setAddingLeave(false); setAddLeaveError(null); }}
+                  disabled={addLeaveSaving}
+                  style={{ padding: "5px 14px", borderRadius: 7, border: "1px solid #d1d5db", background: "white", color: "#6b7280", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Add Session inline form */}
           {adding && (
@@ -653,12 +835,13 @@ function SessionModal({
             </div>
           )}
 
-          {entries.length === 0 && !adding && (
+          {entries.length === 0 && leaves.length === 0 && !adding && !addingLeave && (
             <div style={{ color: "#6b7280", fontSize: 14, padding: "8px 0" }}>
-              No timesheet entries for this person today.
+              No timesheet or leave entries for this person today.
             </div>
           )}
-          {entries.map((entry, idx) => {
+          {(() => {
+          const renderSession = (entry: ClockEntry, idx: number) => {
             const mins = entryPaidMins(entry);
             const inTime = editTimes[entry.id]?.in ?? "";
             const outTime = editTimes[entry.id]?.out ?? "";
@@ -889,52 +1072,102 @@ function SessionModal({
                 </div>
               </div>
             );
-          })}
-        </div>
-
-        <div style={{ padding: "12px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Total paid time</span>
-          <span style={{ fontSize: 17, fontWeight: 900, color: "#111827" }}>{minsToHHMM(totalMins)}</span>
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ─── Leave Detail Modal ───────────────────────────────────────────────────────
-
-function LeaveModal({ target, onClose }: { target: LeaveModalTarget; onClose: () => void }) {
-  return (
-    <>
-      <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300 }} onClick={onClose} />
-      <div
-        style={{
-          position: "fixed", top: "50%", left: "50%", transform: "translate(-50%,-50%)",
-          zIndex: 301, background: "white", borderRadius: 16,
-          boxShadow: "0 8px 40px rgba(0,0,0,0.2)",
-          width: "min(420px, 95vw)", maxHeight: "80vh", overflowY: "auto",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 16 }}>{target.employeeName}</div>
-            <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>{target.dateLabel} — Leave</div>
-          </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
-        </div>
-        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
-          {target.entries.map((e) => (
-            <div key={e.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "10px 14px" }}>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{leaveTypeLabel(e.entry_type)}</div>
-              <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>
-                {e.entry_type === "unpaid"
-                  ? `${Math.round(Number(e.hours))} day${Math.round(Number(e.hours)) !== 1 ? "s" : ""}`
-                  : `${Number(e.hours)}h`}
+          };
+          const renderLeave = (lv: LeaveEntry) => {
+            const t = leaveEditTimes[lv.id] ?? { start: "", end: "" };
+            const isUnpaid = lv.entry_type === "unpaid";
+            const accent = lv.entry_type === "sick_paid" ? "#e6178d" : lv.entry_type === "pto" ? "#0ea5e9" : "#6b7280";
+            const bg = lv.entry_type === "sick_paid" ? "#fdf2f8" : lv.entry_type === "pto" ? "#f0f9ff" : "#f9fafb";
+            const label = leaveTypeLabel(lv.entry_type);
+            const lvSaving = leaveSaving.has(lv.id);
+            return (
+              <div key={lv.id} style={{ border: `1.5px solid ${accent}`, borderRadius: 12, overflow: "hidden" }}>
+                <div style={{ padding: "10px 14px", background: bg, borderBottom: `1px solid ${accent}40`, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#374151", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 999, background: accent, color: "white", fontSize: 12, fontWeight: 800 }}>{label}</span>
+                    {!isUnpaid && lv.start_time && lv.end_time && (
+                      <span>{fmtScheduled(lv.start_time)} – {fmtScheduled(lv.end_time)}</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: accent }}>
+                    {isUnpaid ? `${Math.round(Number(lv.hours))}d` : minsToHHMM(Math.round(Number(lv.hours) * 60))}
+                  </div>
+                </div>
+                <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                  {!isUnpaid && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", minWidth: 36 }}>From</span>
+                      <input
+                        type="time"
+                        value={t.start}
+                        onChange={(e) => setLeaveEditTimes((p) => ({ ...p, [lv.id]: { ...(p[lv.id] ?? { start: "", end: "" }), start: e.target.value } }))}
+                        onBlur={() => saveLeaveTimes(lv.id)}
+                        style={{ padding: "3px 8px", borderRadius: 7, border: "1.5px solid #d1d5db", fontSize: 13, fontWeight: 600 }}
+                      />
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", minWidth: 24 }}>To</span>
+                      <input
+                        type="time"
+                        value={t.end}
+                        onChange={(e) => setLeaveEditTimes((p) => ({ ...p, [lv.id]: { ...(p[lv.id] ?? { start: "", end: "" }), end: e.target.value } }))}
+                        onBlur={() => saveLeaveTimes(lv.id)}
+                        style={{ padding: "3px 8px", borderRadius: 7, border: "1.5px solid #d1d5db", fontSize: 13, fontWeight: 600 }}
+                      />
+                      {lvSaving && <span style={{ fontSize: 12, color: "#9ca3af" }}>saving…</span>}
+                    </div>
+                  )}
+                  {lv.notes && (
+                    <div style={{ fontSize: 13, color: "#374151", fontStyle: "italic" }}>📝 {lv.notes}</div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    {leaveConfirmDelete === lv.id ? (
+                      <>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>Delete this {label} entry?</span>
+                        <button
+                          onClick={() => deleteLeave(lv.id)}
+                          style={{ padding: "4px 12px", borderRadius: 7, border: "1.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          Yes, Delete
+                        </button>
+                        <button
+                          onClick={() => setLeaveConfirmDelete(null)}
+                          style={{ padding: "4px 12px", borderRadius: 7, border: "1px solid #e5e7eb", background: "white", color: "#6b7280", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => setLeaveConfirmDelete(lv.id)}
+                        style={{ background: "none", border: "1px solid #fca5a5", borderRadius: 7, padding: "4px 12px", fontSize: 12, fontWeight: 700, color: "#991b1b", cursor: "pointer" }}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 4, paddingTop: 8, borderTop: "1px solid #f3f4f6", fontSize: 11, color: "#9ca3af", fontStyle: "italic" }}>
+                    {label} leave entry
+                  </div>
+                </div>
               </div>
-              {e.notes && <div style={{ fontSize: 13, color: "#374151", marginTop: 4, fontStyle: "italic" }}>{e.notes}</div>}
-            </div>
-          ))}
+            );
+          };
+          let sIdx = 0;
+          const combined: { t: string; el: () => React.ReactNode }[] = [
+            ...entries.map((e) => ({ t: e.session_start, el: () => renderSession(e, sIdx++) })),
+            ...leaves.map((lv) => ({ t: lv.start_time ?? "00:00:00", el: () => renderLeave(lv) })),
+          ].sort((a, b) => a.t.localeCompare(b.t));
+          return combined.map((c) => c.el());
+          })()}
+        </div>
+
+        <div style={{ padding: "12px 20px", borderTop: "1.5px solid #e5e7eb", background: "#f9fafb", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Totals</span>
+          <div style={{ display: "flex", gap: 16, alignItems: "baseline", flexWrap: "wrap" }}>
+            {leaveTotalMins > 0 && (
+              <span style={{ fontSize: 14, fontWeight: 800, color: "#b45309" }}>Leave {minsToHHMM(leaveTotalMins)}</span>
+            )}
+            <span style={{ fontSize: 17, fontWeight: 900, color: "#111827" }}>Worked {minsToHHMM(totalMins)}</span>
+          </div>
         </div>
       </div>
     </>
@@ -1084,7 +1317,6 @@ export default function TimesheetsPage() {
   const [loading, setLoading] = useState(true);
   const [periodIndex, setPeriodIndex] = useState(() => getPeriodIndex(new Date()));
   const [modal, setModal] = useState<ModalTarget | null>(null);
-  const [leaveModal, setLeaveModal] = useState<LeaveModalTarget | null>(null);
   const [editRequestsOpen, setEditRequestsOpen] = useState(false);
 
   const periodStart = useMemo(() => getPeriodStart(periodIndex), [periodIndex]);
@@ -1170,7 +1402,7 @@ export default function TimesheetsPage() {
         .not("clocked_in_at", "is", null),
       supabase
         .from("hr_leave_entries")
-        .select("id, employee_id, entry_type, start_date, end_date, hours, notes")
+        .select("id, employee_id, entry_type, start_date, end_date, start_time, end_time, hours, notes")
         .gte("start_date", start)
         .lte("start_date", end)
         .in("entry_type", ["sick_paid", "pto", "unpaid"]),
@@ -1238,7 +1470,7 @@ export default function TimesheetsPage() {
       // Expand date range across period days
       const [sy, sm, sd] = entry.start_date.split("-").map(Number);
       const [ey, em, ed] = entry.end_date.split("-").map(Number);
-      let cur = new Date(Date.UTC(sy, sm - 1, sd));
+      const cur = new Date(Date.UTC(sy, sm - 1, sd));
       const endDate = new Date(Date.UTC(ey, em - 1, ed));
       while (cur <= endDate) {
         const ds = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, "0")}-${String(cur.getUTCDate()).padStart(2, "0")}`;
@@ -1300,6 +1532,15 @@ export default function TimesheetsPage() {
     });
   }
 
+  function handleLeaveChanged(empId: string, dateStr: string, updated: LeaveEntry[]) {
+    const dayPrevIds = new Set((leaveByEmpDay.get(empId)?.get(dateStr) ?? []).map((e) => e.id));
+    const updatedIds = new Set(updated.map((u) => u.id));
+    setLeaveEntries((prev) => {
+      const kept = prev.filter((e) => !updatedIds.has(e.id) && !dayPrevIds.has(e.id));
+      return [...kept, ...updated];
+    });
+  }
+
   const cell = (style: React.CSSProperties): React.CSSProperties => ({
     padding: "8px 10px",
     borderRight: "1px solid #e5e7eb",
@@ -1312,6 +1553,12 @@ export default function TimesheetsPage() {
   const modalEntries = modal
     ? [...(entriesByEmpDay.get(modal.employeeId)?.get(modal.dateStr) ?? [])].sort(
         (a, b) => a.session_start.localeCompare(b.session_start)
+      )
+    : [];
+
+  const modalLeave = modal
+    ? [...(leaveByEmpDay.get(modal.employeeId)?.get(modal.dateStr) ?? [])].sort(
+        (a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? "")
       )
     : [];
 
@@ -1396,14 +1643,35 @@ export default function TimesheetsPage() {
                       const mins = dayMap?.get(ds) ?? 0;
                       const dayLeaveEntries = leaveByEmpDay.get(emp.id)?.get(ds);
                       const hasClockData = !!status;
-                      const hasLeaveOnly = !hasClockData && !!dayLeaveEntries?.length;
+                      const hasLeave = !!dayLeaveEntries?.length;
+                      const leaveLabel = hasLeave ? (dayLeaveEntries!.length === 1 ? leaveTypeLabel(dayLeaveEntries![0].entry_type) : "Leave") : "";
                       const dateLabel = `${DAY_ABBRS[i]} ${workingDays[i].toLocaleDateString("en-US", { month: "numeric", day: "numeric" })}`;
+                      const openModal = () => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), employeeProfileId: emp.profile_id, dateStr: ds, dateLabel });
 
                       return (
                         <td key={i} style={cell({ textAlign: "center", padding: "6px 8px" })}>
-                          {hasClockData ? (
+                          {hasClockData && hasLeave ? (
                             <button
-                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), employeeProfileId: emp.profile_id, dateStr: ds, dateLabel })}
+                              onClick={openModal}
+                              title={`Worked + ${leaveLabel}`}
+                              style={{
+                                display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+                                background: "white",
+                                border: "1.5px solid #d1d5db",
+                                borderRadius: 8, padding: "4px 8px", minWidth: 52,
+                                cursor: "pointer",
+                              }}
+                            >
+                              <div style={{ display: "flex", width: "100%", height: 5, borderRadius: 3, overflow: "hidden" }}>
+                                <div style={{ flex: 1, background: "#22c55e" }} />
+                                <div style={{ flex: 1, background: "#9ca3af" }} />
+                              </div>
+                              <span style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{status === "open" ? "Clocked in" : minsToHHMM(mins)}</span>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "#6b7280" }}>+ {leaveLabel}</span>
+                            </button>
+                          ) : hasClockData ? (
+                            <button
+                              onClick={openModal}
                               style={{
                                 display: "inline-block",
                                 background:
@@ -1429,24 +1697,28 @@ export default function TimesheetsPage() {
                             >
                               {status === "open" ? "Clocked in" : minsToHHMM(mins)}
                             </button>
-                          ) : hasLeaveOnly ? (
+                          ) : hasLeave ? (
                             <button
-                              onClick={() => setLeaveModal({ employeeName: getDisplayName(emp), dateLabel, entries: dayLeaveEntries })}
+                              onClick={openModal}
+                              title={leaveLabel}
                               style={{
-                                display: "inline-block",
+                                display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2,
                                 background: "#f3f4f6", color: "#374151",
                                 border: "1.5px solid #d1d5db",
                                 borderRadius: 8, padding: "4px 10px",
                                 fontWeight: 700, fontSize: 12,
-                                cursor: "pointer",
+                                cursor: "pointer", minWidth: 48,
                               }}
                             >
-                              {dayLeaveEntries.length === 1 ? leaveTypeLabel(dayLeaveEntries[0].entry_type) : "Leave"}
+                              <span>{leaveLabel}</span>
+                              {dayLeaveEntries!.length === 1 && dayLeaveEntries![0].entry_type !== "unpaid" && dayLeaveEntries![0].start_time && dayLeaveEntries![0].end_time && (
+                                <span style={{ fontSize: 10, fontWeight: 600, color: "#6b7280" }}>{fmtScheduled(dayLeaveEntries![0].start_time!)}–{fmtScheduled(dayLeaveEntries![0].end_time!)}</span>
+                              )}
                             </button>
                           ) : (
                             <button
-                              onClick={() => setModal({ employeeId: emp.id, employeeName: getDisplayName(emp), employeeProfileId: emp.profile_id, dateStr: ds, dateLabel })}
-                              title="Add session"
+                              onClick={openModal}
+                              title="Add session or leave"
                               style={{
                                 display: "inline-block",
                                 background: "transparent",
@@ -1528,13 +1800,11 @@ export default function TimesheetsPage() {
         <SessionModal
           target={modal}
           entries={modalEntries}
+          leaveEntries={modalLeave}
           onClose={() => setModal(null)}
           onEntriesChanged={(updated) => handleEntriesChanged(modal.employeeId, modal.dateStr, updated)}
+          onLeaveChanged={(updated) => handleLeaveChanged(modal.employeeId, modal.dateStr, updated)}
         />
-      )}
-
-      {leaveModal && (
-        <LeaveModal target={leaveModal} onClose={() => setLeaveModal(null)} />
       )}
 
       {editRequestsOpen && (
