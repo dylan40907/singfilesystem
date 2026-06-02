@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
@@ -154,15 +155,6 @@ function accentForDepth(d: number) {
   return ORG_ACCENTS[((d % ORG_ACCENTS.length) + ORG_ACCENTS.length) % ORG_ACCENTS.length];
 }
 
-// Two-letter initials derived from the display label (ignores the legal-name parenthetical).
-function initialsFor(label: string) {
-  const base = (label.split("(")[0] ?? label).trim() || label;
-  const parts = base.split(/\s+/).filter(Boolean);
-  const a = parts[0]?.[0] ?? "";
-  const b = parts.length > 1 ? parts[parts.length - 1][0] : "";
-  return (a + b).toUpperCase() || "?";
-}
-
 function safeSortByName(a: HrEmployee, b: HrEmployee) {
   const al = (a.legal_last_name ?? "").toLowerCase();
   const bl = (b.legal_last_name ?? "").toLowerCase();
@@ -177,39 +169,6 @@ function safeSortByName(a: HrEmployee, b: HrEmployee) {
   if (am !== bm) return am < bm ? -1 : 1;
 
   return a.id < b.id ? -1 : 1;
-}
-
-function IconButton({
-  title,
-  onClick,
-  disabled,
-  children,
-}: {
-  title: string;
-  onClick?: () => void;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      className="btn"
-      title={title}
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        padding: "6px 10px",
-        borderRadius: 10,
-        border: "1px solid var(--border)",
-        background: disabled ? "rgba(0,0,0,0.04)" : "white",
-        fontWeight: 800,
-        fontSize: 12,
-        opacity: disabled ? 0.55 : 1,
-      }}
-    >
-      {children}
-    </button>
-  );
 }
 
 type PickerMode = "root" | "child" | "insertAbove";
@@ -260,6 +219,10 @@ export default function HrOrgChartPage() {
   const [popoverPos, setPopoverPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
+  // Hover tooltip — reveals the full name/job level since the boxes truncate.
+  // Follows the cursor and has pointer-events:none so it never blocks the click popover.
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; name: string; jl: string } | null>(null);
+
   // Canvas view state: zoom level, collapsed subtrees, and drag-to-pan bookkeeping.
   const [zoom, setZoom] = useState(1);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -299,6 +262,7 @@ export default function HrOrgChartPage() {
       scrollTop: el.scrollTop,
     };
     setIsPanning(true);
+    setTooltip(null);
   }
 
   function onCanvasMouseMove(e: React.MouseEvent) {
@@ -870,9 +834,12 @@ export default function HrOrgChartPage() {
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              setTooltip(null);
               openPopoverForNode(employeeId, e.currentTarget as any, (e as any).clientX, (e as any).clientY);
             }}
-            title="Click for actions"
+            onMouseEnter={(e) => setTooltip({ x: e.clientX, y: e.clientY, name: label, jl })}
+            onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, name: label, jl })}
+            onMouseLeave={() => setTooltip(null)}
             aria-label={`${label} — ${jl}`}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -882,14 +849,11 @@ export default function HrOrgChartPage() {
               }
             }}
           >
-            <span className="avatar" style={{ background: accent }} aria-hidden="true">
-              {initialsFor(label)}
-            </span>
             <span className="node-body">
-              <span className="name-text" title={`${label} — ${jl}`}>
+              <span className="name-text">
                 {label}
               </span>
-              <span className="joblevel-text" title={jl}>
+              <span className="joblevel-text">
                 {jl}
               </span>
               {hasKids ? (
@@ -982,17 +946,6 @@ export default function HrOrgChartPage() {
               <button type="button" className="btn" onClick={openManageJobLevels} disabled={jobLevelsLoading}>
                 Manage Job Levels
               </button>
-
-              <IconButton
-                title="Reload"
-                onClick={() => {
-                  if (!selectedCampusId) return;
-                  void loadCampusData(selectedCampusId);
-                }}
-                disabled={!selectedCampusId}
-              >
-                ↻
-              </IconButton>
             </div>
           ) : status ? (
             <span className="badge badge-pink">{status}</span>
@@ -1771,11 +1724,15 @@ export default function HrOrgChartPage() {
                 user-select: none;
                 display: flex;
                 align-items: center;
-                gap: 11px;
                 text-align: left;
-                width: 244px;
-                padding: 12px 14px;
-                border-radius: 16px;
+                /* Width is driven by the NAME only (max-content ignores the wide
+                   subtree below); the job level is excluded from sizing and
+                   truncated to fit. Capped so very long names wrap to two lines. */
+                width: max-content;
+                min-width: 64px;
+                max-width: 150px;
+                padding: 10px 12px;
+                border-radius: 14px;
                 border: 1px solid var(--border);
                 border-top: 3px solid var(--accent, var(--pink));
                 background: white;
@@ -1795,26 +1752,13 @@ export default function HrOrgChartPage() {
                 outline-offset: 2px;
               }
 
-              .orgchart-card .avatar {
-                flex: 0 0 auto;
-                width: 40px;
-                height: 40px;
-                border-radius: 12px;
-                color: white;
-                font-weight: 850;
-                font-size: 14px;
-                letter-spacing: 0.3px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
-              }
-
               .orgchart-card .node-body {
                 min-width: 0;
-                flex: 1 1 auto;
+                max-width: 100%;
+                flex: 0 1 auto;
                 display: flex;
                 flex-direction: column;
+                align-items: flex-start;
                 gap: 3px;
               }
 
@@ -1835,11 +1779,13 @@ export default function HrOrgChartPage() {
                 font-weight: 650;
                 color: var(--muted);
                 line-height: 1.2;
-                display: -webkit-box;
-                -webkit-line-clamp: 1;
-                -webkit-box-orient: vertical;
+                /* Don't let the (often long) job level widen the box: contribute 0
+                   to intrinsic width, then fill the name-driven width and truncate. */
+                width: 0;
+                min-width: 100%;
+                white-space: nowrap;
                 overflow: hidden;
-                word-break: break-word;
+                text-overflow: ellipsis;
               }
 
               .orgchart-card .reports-pill {
@@ -1927,6 +1873,35 @@ export default function HrOrgChartPage() {
         )}
       </div>
       {dialogModal}
+
+      {/* Hover tooltip (full name + job level). Rendered to <body>, follows the
+          cursor, pointer-events:none so it never interferes with the click popover. */}
+      {tooltip && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              style={{
+                position: "fixed",
+                left: tooltip.x + 14,
+                top: tooltip.y - 12,
+                zIndex: 99999,
+                background: "#1e293b",
+                color: "white",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                fontWeight: 500,
+                maxWidth: 320,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+                pointerEvents: "none",
+                lineHeight: 1.5,
+              }}
+            >
+              <div style={{ fontWeight: 800 }}>{tooltip.name}</div>
+              <div style={{ color: "#94a3b8" }}>{tooltip.jl}</div>
+            </div>,
+            document.body
+          )
+        : null}
     </main>
   );
 }
