@@ -53,10 +53,12 @@ export default function UsersPage() {
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Song-topic permissions modal
-  const [permUser, setPermUser] = useState<AppUser | null>(null);
+  // Song-topic permissions modal. Keyed by EMAIL so the same locks are edited
+  // whether opened from an existing user row or a whitelist entry (no account yet).
+  const [permTarget, setPermTarget] = useState<{ email: string; name: string } | null>(null);
   const [permInitialLocked, setPermInitialLocked] = useState<Set<string>>(new Set());
   const [permLoading, setPermLoading] = useState(false);
+  const [permSaving, setPermSaving] = useState(false);
   const [actionBusy, setActionBusy] = useState<Record<string, boolean>>({});
   const [newEmail, setNewEmail] = useState("");
   const [newNotes, setNewNotes] = useState("");
@@ -216,16 +218,16 @@ export default function UsersPage() {
     setActionBusy(p => ({ ...p, [id]: val }));
   }
 
-  async function openPermissions(user: AppUser) {
-    setPermUser(user);
+  async function openPermissions(email: string, name: string) {
+    setPermTarget({ email, name });
     setPermLoading(true);
     setError("");
-    const { data, error: e } = await supabase.rpc("admin_list_user_lesson_locks", {
-      target_user_id: user.id,
+    const { data, error: e } = await supabase.rpc("admin_list_email_lesson_locks", {
+      p_email: email,
     });
     if (e) {
       setError(e.message);
-      setPermUser(null);
+      setPermTarget(null);
     } else {
       setPermInitialLocked(new Set(((data ?? []) as { lesson_id: string }[]).map(r => r.lesson_id)));
     }
@@ -233,16 +235,16 @@ export default function UsersPage() {
   }
 
   async function savePermissions(lockedIds: string[]) {
-    if (!permUser) return;
-    setBusy(permUser.id, true);
+    if (!permTarget) return;
+    setPermSaving(true);
     setError("");
-    const { error: e } = await supabase.rpc("admin_set_user_lesson_locks", {
-      target_user_id: permUser.id,
+    const { error: e } = await supabase.rpc("admin_set_email_lesson_locks", {
+      p_email: permTarget.email,
       locked_lesson_ids: lockedIds,
     });
     if (e) setError(e.message);
-    else setPermUser(null);
-    setBusy(permUser.id, false);
+    else setPermTarget(null);
+    setPermSaving(false);
   }
 
   async function addToWhitelist() {
@@ -291,15 +293,16 @@ export default function UsersPage() {
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px" }}>
       {modal}
 
-      {permUser && (
+      {permTarget && (
         <PermissionsModal
-          user={permUser}
+          email={permTarget.email}
+          name={permTarget.name}
           categories={categories}
           lessons={lessons}
           initialLocked={permInitialLocked}
           loading={permLoading}
-          saving={!!actionBusy[permUser.id]}
-          onCancel={() => setPermUser(null)}
+          saving={permSaving}
+          onCancel={() => setPermTarget(null)}
           onSave={savePermissions}
         />
       )}
@@ -355,6 +358,13 @@ export default function UsersPage() {
                 <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{entry.email}</span>
                 {entry.notes && <span className="subtle" style={{ fontSize: 12 }}>{entry.notes}</span>}
                 <span className="subtle" style={{ fontSize: 11 }}>{new Date(entry.added_at).toLocaleDateString()}</span>
+                <button
+                  onClick={() => openPermissions(entry.email, "")}
+                  title="Edit which song topics this email can view (applies now if they have an account, otherwise on sign-up)"
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600 }}
+                >
+                  🔒 Song Topics
+                </button>
                 <button
                   onClick={() => removeFromWhitelist(entry.email)}
                   style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}
@@ -450,7 +460,7 @@ function UserList({
   onRemove?: (u: AppUser) => void;
   onDelete?: (u: AppUser) => void;
   onExpiry?: (u: AppUser, dateStr: string | null) => void;
-  onPermissions?: (u: AppUser) => void;
+  onPermissions?: (email: string, name: string) => void;
   expiryToInputDate?: (iso: string | null) => string;
   busy: Record<string, boolean>;
 }) {
@@ -488,33 +498,12 @@ function UserList({
             </span>
 
             {onExpiry && (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600 }}>Expires (midnight PDT)</label>
-                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <input
-                    type="date"
-                    value={expiryInputValue}
-                    onChange={e => onExpiry(user, e.target.value || null)}
-                    disabled={isBusy}
-                    style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}
-                  />
-                  {expiryInputValue && (
-                    <button
-                      onClick={() => onExpiry(user, null)}
-                      disabled={isBusy}
-                      title="Clear expiry"
-                      style={{ fontSize: 11, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "0 4px" }}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-              </div>
+              <ExpiryField user={user} initial={expiryInputValue} disabled={isBusy} onCommit={onExpiry} />
             )}
 
             {onPermissions && (
               <button
-                onClick={() => onPermissions(user)}
+                onClick={() => onPermissions(user.email, fullName)}
                 disabled={isBusy}
                 title="Edit which song topics this account can view"
                 style={{ fontSize: 13, padding: "6px 14px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600 }}
@@ -570,10 +559,65 @@ function UserList({
   );
 }
 
+// ─── Expiry date field ─────────────────────────────────────────────────────────
+// Keeps the picked date in local state and only commits to the server on blur (or
+// the clear button). Committing on every onChange used to fire an RPC + full reload
+// per keystroke, which reset the field and prevented finishing the date.
+function ExpiryField({
+  user,
+  initial,
+  disabled,
+  onCommit,
+}: {
+  user: AppUser;
+  initial: string;
+  disabled?: boolean;
+  onCommit: (u: AppUser, dateStr: string | null) => void;
+}) {
+  const [value, setValue] = useState(initial);
+
+  // Re-sync when the upstream (server) value changes, e.g. after a successful save/reload.
+  useEffect(() => { setValue(initial); }, [initial]);
+
+  function commit(next: string) {
+    const normalized = next || null;
+    // Skip the network call + reload if nothing actually changed.
+    if ((initial || null) === normalized) return;
+    onCommit(user, normalized);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+      <label style={{ fontSize: 10, color: "#6b7280", fontWeight: 600 }}>Expires (midnight PDT)</label>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <input
+          type="date"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onBlur={() => commit(value)}
+          disabled={disabled}
+          style={{ fontSize: 12, padding: "4px 8px", borderRadius: 6, border: "1px solid #d1d5db" }}
+        />
+        {value && (
+          <button
+            onClick={() => { setValue(""); commit(""); }}
+            disabled={disabled}
+            title="Clear expiry"
+            style={{ fontSize: 11, color: "#6b7280", background: "none", border: "none", cursor: "pointer", padding: "0 4px" }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Song-topic permissions modal ──────────────────────────────────────────────
 
 function PermissionsModal({
-  user,
+  email,
+  name,
   categories,
   lessons,
   initialLocked,
@@ -582,7 +626,8 @@ function PermissionsModal({
   onCancel,
   onSave,
 }: {
-  user: AppUser;
+  email: string;
+  name: string;
   categories: Category[];
   lessons: Lesson[];
   initialLocked: Set<string>;
@@ -610,7 +655,7 @@ function PermissionsModal({
     return result.filter(s => s.items.length > 0);
   }, [categories, lessons]);
 
-  const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
+  const fullName = name;
   const allLocked = lessons.length > 0 && lessons.every(l => locked.has(l.id));
 
   function toggleLesson(id: string) {
@@ -663,7 +708,7 @@ function PermissionsModal({
         <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid #f0f0f0" }}>
           <div style={{ fontSize: 18, fontWeight: 800, color: "#111827" }}>Song Topic Permissions</div>
           <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
-            {fullName ? `${fullName} · ` : ""}{user.email}
+            {fullName ? `${fullName} · ` : ""}{email}
           </div>
           <div className="subtle" style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}>
             Locked song topics appear with a 🔒 in this account's app and can't be opened. Everything starts unlocked.
