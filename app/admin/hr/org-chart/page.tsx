@@ -148,6 +148,21 @@ function employeeLabelWithJobLevel(e: HrEmployee) {
   return `${employeeLabel(e)} — ${jobLevelName(e)}`;
 }
 
+// Depth-based accent palette for org-chart nodes.
+const ORG_ACCENTS = ["#e6178d", "#7c3aed", "#2563eb", "#0891b2", "#059669", "#d97706"];
+function accentForDepth(d: number) {
+  return ORG_ACCENTS[((d % ORG_ACCENTS.length) + ORG_ACCENTS.length) % ORG_ACCENTS.length];
+}
+
+// Two-letter initials derived from the display label (ignores the legal-name parenthetical).
+function initialsFor(label: string) {
+  const base = (label.split("(")[0] ?? label).trim() || label;
+  const parts = base.split(/\s+/).filter(Boolean);
+  const a = parts[0]?.[0] ?? "";
+  const b = parts.length > 1 ? parts[parts.length - 1][0] : "";
+  return (a + b).toUpperCase() || "?";
+}
+
 function safeSortByName(a: HrEmployee, b: HrEmployee) {
   const al = (a.legal_last_name ?? "").toLowerCase();
   const bl = (b.legal_last_name ?? "").toLowerCase();
@@ -234,11 +249,71 @@ export default function HrOrgChartPage() {
   const [pickerParentEmployeeId, setPickerParentEmployeeId] = useState<string>("");
   const [pickerEmployeeId, setPickerEmployeeId] = useState<string>("");
 
+  // Move (reparent) modal
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveEmployeeId, setMoveEmployeeId] = useState<string>("");
+  const [moveTargetParentId, setMoveTargetParentId] = useState<string>("");
+
   // Node context popover
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [popoverEmployeeId, setPopoverEmployeeId] = useState<string>("");
   const [popoverPos, setPopoverPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Canvas view state: zoom level, collapsed subtrees, and drag-to-pan bookkeeping.
+  const [zoom, setZoom] = useState(1);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const panRef = useRef<{ dragging: boolean; startX: number; startY: number; scrollLeft: number; scrollTop: number }>({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
+  const [isPanning, setIsPanning] = useState(false);
+
+  function toggleCollapse(employeeId: string) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(employeeId)) next.delete(employeeId);
+      else next.add(employeeId);
+      return next;
+    });
+  }
+
+  function clampZoom(z: number) {
+    return Math.min(1.6, Math.max(0.4, Math.round(z * 100) / 100));
+  }
+
+  function onCanvasMouseDown(e: React.MouseEvent) {
+    // Only pan when grabbing empty canvas space, not when interacting with a node.
+    if ((e.target as HTMLElement).closest(".node")) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    panRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    };
+    setIsPanning(true);
+  }
+
+  function onCanvasMouseMove(e: React.MouseEvent) {
+    if (!panRef.current.dragging) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    el.scrollLeft = panRef.current.scrollLeft - (e.clientX - panRef.current.startX);
+    el.scrollTop = panRef.current.scrollTop - (e.clientY - panRef.current.startY);
+  }
+
+  function endPan() {
+    if (!panRef.current.dragging) return;
+    panRef.current.dragging = false;
+    setIsPanning(false);
+  }
 
   const employeesById = useMemo(() => {
     const m = new Map<string, HrEmployee>();
@@ -618,6 +693,65 @@ export default function HrOrgChartPage() {
     }
   }
 
+  // Collect an employee and all of its descendants (used to prevent reparent cycles).
+  function collectSubtree(rootId: string): Set<string> {
+    const out = new Set<string>();
+    const stack = [rootId];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (out.has(id)) continue;
+      out.add(id);
+      for (const k of childrenByParentId.get(id) ?? []) stack.push(k);
+    }
+    return out;
+  }
+
+  function openMove(employeeId: string) {
+    setMoveEmployeeId(employeeId);
+    setMoveTargetParentId(nodeByEmployeeId.get(employeeId)?.parent_employee_id ?? "");
+    setMoveOpen(true);
+  }
+
+  function closeMove() {
+    setMoveOpen(false);
+    setMoveEmployeeId("");
+    setMoveTargetParentId("");
+  }
+
+  async function reparentEmployee() {
+    if (!selectedCampusId || !moveEmployeeId) return;
+
+    const newParent = moveTargetParentId || null;
+
+    // Guards: can't parent to self or to one of your own descendants (would create a cycle).
+    if (newParent === moveEmployeeId) {
+      setStatus("Cannot set a node as its own manager.");
+      return;
+    }
+    if (newParent && collectSubtree(moveEmployeeId).has(newParent)) {
+      setStatus("Cannot move a node under one of its own reports.");
+      return;
+    }
+
+    setStatus("Moving...");
+    try {
+      const { error } = await supabase
+        .from("hr_org_chart_nodes")
+        .update({ parent_employee_id: newParent })
+        .eq("campus_id", selectedCampusId)
+        .eq("employee_id", moveEmployeeId);
+
+      if (error) throw error;
+
+      closeMove();
+      await loadCampusData(selectedCampusId);
+      setStatus("✅ Moved.");
+      setTimeout(() => setStatus(""), 900);
+    } catch (e: any) {
+      setStatus("Move error: " + (e?.message ?? "unknown"));
+    }
+  }
+
   async function removeFromChart(employeeId: string) {
     if (!selectedCampusId) return;
     const ok = await confirm("Remove this employee from the org chart? (Children will become top-level.)", { title: "Remove from Chart", confirmLabel: "Remove", danger: true });
@@ -716,43 +850,87 @@ export default function HrOrgChartPage() {
     return campuses;
   }, [campuses, isCampusAdmin, lockedCampusId]);
 
-  function renderTree(employeeId: string) {
+  function renderTree(employeeId: string, depth: number = 0) {
     const emp = employeesById.get(employeeId);
     const kids = childrenByParentId.get(employeeId) ?? [];
     const label = emp ? employeeLabel(emp) : employeeId;
     const jl = jobLevelName(emp);
+    const hasKids = kids.length > 0;
+    const isCollapsed = collapsed.has(employeeId);
+    const accent = accentForDepth(depth);
+    const canAddChild = !!selectedCampusId && availableEmployeesForCampus.length > 0;
 
     return (
-      <li key={employeeId}>
-        <button
-          type="button"
-          className="node-btn"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openPopoverForNode(employeeId, e.currentTarget as any, (e as any).clientX, (e as any).clientY);
-          }}
-          title="Click for actions"
-          aria-label={`${label} — ${jl}`}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
+      <li key={employeeId} className={hasKids && !isCollapsed ? "has-children" : undefined}>
+        <div className="node">
+          <button
+            type="button"
+            className="node-btn"
+            style={{ ["--accent" as any]: accent }}
+            onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              openPopoverForNode(employeeId, e.currentTarget as any, undefined, undefined);
-            }
-          }}
-        >
-          <div className="name-box">
-            <div className="name-text" title={`${label} — ${jl}`}>
-              {label}
-            </div>
-            <div className="joblevel-text" title={jl}>
-              {jl}
-            </div>
-          </div>
-        </button>
+              openPopoverForNode(employeeId, e.currentTarget as any, (e as any).clientX, (e as any).clientY);
+            }}
+            title="Click for actions"
+            aria-label={`${label} — ${jl}`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                openPopoverForNode(employeeId, e.currentTarget as any, undefined, undefined);
+              }
+            }}
+          >
+            <span className="avatar" style={{ background: accent }} aria-hidden="true">
+              {initialsFor(label)}
+            </span>
+            <span className="node-body">
+              <span className="name-text" title={`${label} — ${jl}`}>
+                {label}
+              </span>
+              <span className="joblevel-text" title={jl}>
+                {jl}
+              </span>
+              {hasKids ? (
+                <span className="reports-pill">
+                  {kids.length} {kids.length === 1 ? "report" : "reports"}
+                </span>
+              ) : null}
+            </span>
+          </button>
 
-        {kids.length > 0 ? <ul>{kids.map((k) => renderTree(k))}</ul> : null}
+          {/* Hover quick-action: add a direct report under this node */}
+          <button
+            type="button"
+            className="quick-add"
+            title={canAddChild ? "Add direct report" : "No available employees to add"}
+            disabled={!canAddChild}
+            onClick={(e) => {
+              e.stopPropagation();
+              openChildPicker(employeeId);
+            }}
+          >
+            ＋
+          </button>
+
+          {/* Collapse / expand subtree */}
+          {hasKids ? (
+            <button
+              type="button"
+              className={`collapse-toggle${isCollapsed ? " collapsed" : ""}`}
+              title={isCollapsed ? `Expand ${kids.length} ${kids.length === 1 ? "report" : "reports"}` : "Collapse"}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleCollapse(employeeId);
+              }}
+            >
+              {isCollapsed ? `+${kids.length}` : "−"}
+            </button>
+          ) : null}
+        </div>
+
+        {hasKids && !isCollapsed ? <ul>{kids.map((k) => renderTree(k, depth + 1))}</ul> : null}
       </li>
     );
   }
@@ -760,13 +938,65 @@ export default function HrOrgChartPage() {
   return (
     <main className="stack">
       <div className="container">
-        <div className="row-between" style={{ marginTop: 16 }}>
+        <div className="row-between" style={{ marginTop: 16, gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div className="stack" style={{ gap: 6 }}>
             <h1 className="h1">Org Chart</h1>
             <div className="subtle">Build a campus-based org chart by assigning parent/child relationships.</div>
           </div>
 
-          {status ? <span className="badge badge-pink">{status}</span> : null}
+          {isAdmin ? (
+            <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+              {status ? <span className="badge badge-pink">{status}</span> : null}
+
+              <select
+                className="select"
+                style={{ width: "min(240px, 60vw)" }}
+                value={selectedCampusId}
+                onChange={(e) => setSelectedCampusId(e.target.value)}
+                disabled={isCampusAdmin}
+                title="Org charts are campus-scoped. You can only place employees from the selected campus."
+              >
+                <option value="">— Select a campus —</option>
+                {accessibleCampuses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!selectedCampusId || availableEmployeesForCampus.length === 0}
+                onClick={openRootPicker}
+                title={
+                  !selectedCampusId
+                    ? "Select a campus first"
+                    : availableEmployeesForCampus.length === 0
+                    ? "No more employees available"
+                    : "Add a top-level employee"
+                }
+              >
+                Add top-level employee
+              </button>
+              <button type="button" className="btn" onClick={openManageJobLevels} disabled={jobLevelsLoading}>
+                Manage Job Levels
+              </button>
+
+              <IconButton
+                title="Reload"
+                onClick={() => {
+                  if (!selectedCampusId) return;
+                  void loadCampusData(selectedCampusId);
+                }}
+                disabled={!selectedCampusId}
+              >
+                ↻
+              </IconButton>
+            </div>
+          ) : status ? (
+            <span className="badge badge-pink">{status}</span>
+          ) : null}
         </div>
 
         {!isAdmin ? (
@@ -778,72 +1008,82 @@ export default function HrOrgChartPage() {
           </div>
         ) : (
           <>
-            <div className="card" style={{ marginTop: 14, padding: 16 }}>
-              <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "end" }}>
-                <div style={{ width: "min(520px, 100%)" }}>
-                  <div style={{ fontWeight: 900, marginBottom: 8 }}>Campus</div>
-                  <select className="select" value={selectedCampusId} onChange={(e) => setSelectedCampusId(e.target.value)} disabled={isCampusAdmin}>
-                    <option value="">— Select a campus —</option>
-                    {accessibleCampuses.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <div className="subtle" style={{ marginTop: 8 }}>
-                    Org charts are campus-scoped. You can only place employees from the selected campus.
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={!selectedCampusId || availableEmployeesForCampus.length === 0}
-                  onClick={openRootPicker}
-                  title={
-                    !selectedCampusId
-                      ? "Select a campus first"
-                      : availableEmployeesForCampus.length === 0
-                      ? "No more employees available"
-                      : "Add a top-level employee"
-                  }
-                >
-                  Add top-level employee
-                </button>
-                <button type="button" className="btn" onClick={openManageJobLevels} disabled={jobLevelsLoading}>
-                  Manage Job Levels
-                </button>
-
-
-                <IconButton
-                  title="Reload"
-                  onClick={() => {
-                    if (!selectedCampusId) return;
-                    void loadCampusData(selectedCampusId);
-                  }}
-                  disabled={!selectedCampusId}
-                >
-                  ↻
-                </IconButton>
-              </div>
-            </div>
-
             {!selectedCampusId ? (
               <div className="card" style={{ marginTop: 14 }}>
                 <div className="subtle">(Pick a campus to view/build its org chart.)</div>
               </div>
             ) : (
-              <div className="card" style={{ marginTop: 14, padding: 16, overflow: "auto" }}>
+              <div className="card orgchart-card" style={{ marginTop: 14, padding: 0, overflow: "hidden" }}>
+                <div className="orgchart-toolbar">
+                  <div className="orgchart-toolbar-info">
+                    <span className="orgchart-count">{nodes.length}</span>
+                    <span className="subtle">{nodes.length === 1 ? "person placed" : "people placed"}</span>
+                    {availableEmployeesForCampus.length > 0 ? (
+                      <span className="subtle orgchart-unplaced">· {availableEmployeesForCampus.length} not yet placed</span>
+                    ) : null}
+                  </div>
+
+                  <div className="orgchart-zoom">
+                    <button
+                      type="button"
+                      className="zoom-btn"
+                      title="Collapse all"
+                      onClick={() => setCollapsed(new Set(nodes.map((n) => n.employee_id)))}
+                    >
+                      Collapse all
+                    </button>
+                    <button type="button" className="zoom-btn" title="Expand all" onClick={() => setCollapsed(new Set())}>
+                      Expand all
+                    </button>
+                    <span className="zoom-divider" />
+                    <button type="button" className="zoom-btn icon" title="Zoom out" onClick={() => setZoom((z) => clampZoom(z - 0.1))}>
+                      −
+                    </button>
+                    <button type="button" className="zoom-pct" title="Reset zoom" onClick={() => setZoom(1)}>
+                      {Math.round(zoom * 100)}%
+                    </button>
+                    <button type="button" className="zoom-btn icon" title="Zoom in" onClick={() => setZoom((z) => clampZoom(z + 0.1))}>
+                      ＋
+                    </button>
+                  </div>
+                </div>
+
                 {nodes.length === 0 ? (
-                  <div className="subtle">
-                    This campus org chart is empty. Click <b>Add top-level employee</b> to start.
+                  <div className="orgchart-empty">
+                    <div className="orgchart-empty-icon">🗂️</div>
+                    <div className="orgchart-empty-title">This campus org chart is empty</div>
+                    <div className="subtle">
+                      Click <b>Add top-level employee</b> above to place the first person at the top of the chart.
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      style={{ marginTop: 12 }}
+                      disabled={availableEmployeesForCampus.length === 0}
+                      onClick={openRootPicker}
+                    >
+                      Add top-level employee
+                    </button>
                   </div>
                 ) : rootEmployeeIds.length === 0 ? (
-                  <div className="subtle">No top-level nodes found (everything has a parent). Use “Make top-level” from a node menu.</div>
+                  <div className="orgchart-empty">
+                    <div className="orgchart-empty-icon">⚠️</div>
+                    <div className="orgchart-empty-title">No top-level nodes found</div>
+                    <div className="subtle">Everything has a parent. Use “Make top-level” from a node’s action menu to set a root.</div>
+                  </div>
                 ) : (
-                  <div className="orgchart-wrap">
-                    <div className="tree">
-                      <ul className="root">{rootEmployeeIds.map((rid) => renderTree(rid))}</ul>
+                  <div
+                    ref={canvasRef}
+                    className={`orgchart-canvas${isPanning ? " panning" : ""}`}
+                    onMouseDown={onCanvasMouseDown}
+                    onMouseMove={onCanvasMouseMove}
+                    onMouseUp={endPan}
+                    onMouseLeave={endPan}
+                  >
+                    <div className="orgchart-scale" style={{ zoom }}>
+                      <div className="tree">
+                        <ul className="root">{rootEmployeeIds.map((rid) => renderTree(rid))}</ul>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -857,7 +1097,7 @@ export default function HrOrgChartPage() {
                 style={{
                   position: "fixed",
                   left: Math.min(popoverPos.x + 10, typeof window !== "undefined" ? window.innerWidth - 260 : popoverPos.x + 10),
-                  top: Math.min(popoverPos.y + 10, typeof window !== "undefined" ? window.innerHeight - 220 : popoverPos.y + 10),
+                  top: Math.min(popoverPos.y + 10, typeof window !== "undefined" ? window.innerHeight - 360 : popoverPos.y + 10),
                   width: 250,
                   background: "white",
                   border: "1px solid var(--border)",
@@ -901,9 +1141,24 @@ export default function HrOrgChartPage() {
                   style={{ width: "100%", marginBottom: 8 }}
                   onClick={() => {
                     closePopover();
+                    openMove(popoverEmployeeId);
+                  }}
+                  disabled={!selectedCampusId || nodes.length < 2}
+                  title={nodes.length < 2 ? "No other nodes to move under" : "Change this person's manager"}
+                >
+                  Move under…
+                </button>
+
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: "100%", marginBottom: 8 }}
+                  onClick={() => {
+                    closePopover();
                     void makeTopLevel(popoverEmployeeId);
                   }}
-                  disabled={!selectedCampusId}
+                  disabled={!selectedCampusId || !nodeByEmployeeId.get(popoverEmployeeId)?.parent_employee_id}
+                  title={!nodeByEmployeeId.get(popoverEmployeeId)?.parent_employee_id ? "Already at the top level" : "Detach from manager and place at top level"}
                 >
                   Make top-level
                 </button>
@@ -923,6 +1178,90 @@ export default function HrOrgChartPage() {
 
                 <div className="subtle" style={{ marginTop: 10 }}>
                   Tip: “Remove” detaches children to top-level.
+                </div>
+              </div>
+            ) : null}
+
+            {/* Move (reparent) modal */}
+            {moveOpen ? (
+              <div
+                role="dialog"
+                aria-modal="true"
+                style={{
+                  position: "fixed",
+                  inset: 0,
+                  background: "rgba(0,0,0,0.55)",
+                  zIndex: 210,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+                onMouseDown={(e) => {
+                  if (e.currentTarget === e.target) closeMove();
+                }}
+              >
+                <div className="card" style={{ width: "min(560px, 100%)", padding: 16, borderRadius: 16 }}>
+                  <div className="row-between" style={{ gap: 10 }}>
+                    <div className="stack" style={{ gap: 4 }}>
+                      <div style={{ fontWeight: 950, fontSize: 16 }}>Move employee</div>
+                      <div className="subtle">
+                        Moving:{" "}
+                        <b>
+                          {(() => {
+                            const m = employeesById.get(moveEmployeeId);
+                            return m ? employeeLabelWithJobLevel(m) : moveEmployeeId;
+                          })()}
+                        </b>
+                      </div>
+                    </div>
+                    <button type="button" className="btn" onClick={closeMove} title="Close">
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="hr" />
+
+                  <div className="stack" style={{ gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>New manager</div>
+                      <select className="select" value={moveTargetParentId} onChange={(e) => setMoveTargetParentId(e.target.value)}>
+                        <option value="">— Top level (no manager) —</option>
+                        {(() => {
+                          const subtree = collectSubtree(moveEmployeeId);
+                          return nodes
+                            .map((n) => n.employee_id)
+                            .filter((id) => !subtree.has(id))
+                            .map((id) => employeesById.get(id))
+                            .filter((e): e is HrEmployee => !!e)
+                            .sort((a, b) => employeeLabelWithJobLevel(a).localeCompare(employeeLabelWithJobLevel(b)))
+                            .map((e) => (
+                              <option key={e.id} value={e.id}>
+                                {employeeLabelWithJobLevel(e)}
+                              </option>
+                            ));
+                        })()}
+                      </select>
+                    </div>
+
+                    <div className="row" style={{ gap: 10, justifyContent: "flex-end" }}>
+                      <button type="button" className="btn" onClick={closeMove}>
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={moveTargetParentId === (nodeByEmployeeId.get(moveEmployeeId)?.parent_employee_id ?? "")}
+                        onClick={() => void reparentEmployee()}
+                      >
+                        Move
+                      </button>
+                    </div>
+
+                    <div className="subtle">
+                      The employee keeps their own reports — the whole subtree moves with them. Their own reports are excluded as
+                      targets to prevent loops.
+                    </div>
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1198,143 +1537,292 @@ export default function HrOrgChartPage() {
             )}
 
 
-<style jsx>{`
-              .orgchart-wrap {
-                min-width: 1100px;
-                overflow-x: auto;
-                padding-bottom: 8px;
+<style jsx global>{`
+              /* NOTE: global (not scoped) because the chart nodes are produced by the
+                 renderTree() helper, whose JSX styled-jsx does not tag with its scope
+                 class. Every selector is namespaced under .orgchart-card so nothing leaks. */
+
+              /* ── Card / toolbar / canvas shell ───────────────────────── */
+              .orgchart-card {
+                display: flex;
+                flex-direction: column;
               }
 
-              /* Classic UL/LI org chart connectors */
-              .tree ul {
+              .orgchart-card .orgchart-toolbar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                flex-wrap: wrap;
+                padding: 12px 16px;
+                border-bottom: 1px solid var(--border);
+                background: #fbfbfd;
+              }
+
+              .orgchart-card .orgchart-toolbar-info {
+                display: flex;
+                align-items: baseline;
+                gap: 6px;
+              }
+
+              .orgchart-card .orgchart-count {
+                font-size: 18px;
+                font-weight: 850;
+                color: var(--pink);
+              }
+
+              .orgchart-card .orgchart-unplaced {
+                opacity: 0.85;
+              }
+
+              .orgchart-card .orgchart-zoom {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+              }
+
+              .orgchart-card .zoom-btn {
+                appearance: none;
+                border: 1px solid var(--border);
+                background: white;
+                color: var(--text);
+                border-radius: 9px;
+                padding: 6px 10px;
+                font-size: 12px;
+                font-weight: 750;
+                cursor: pointer;
+                line-height: 1;
+                transition: background 120ms ease, border-color 120ms ease;
+              }
+              .orgchart-card .zoom-btn:hover {
+                background: #f5f5f7;
+              }
+              .orgchart-card .zoom-btn.icon {
+                width: 30px;
+                height: 30px;
+                font-size: 16px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+              }
+
+              .orgchart-card .zoom-pct {
+                appearance: none;
+                border: 1px solid var(--border);
+                background: white;
+                border-radius: 9px;
+                min-width: 52px;
+                height: 30px;
+                font-size: 12px;
+                font-weight: 800;
+                cursor: pointer;
+                color: var(--text);
+              }
+              .orgchart-card .zoom-pct:hover {
+                background: #f5f5f7;
+              }
+
+              .orgchart-card .zoom-divider {
+                width: 1px;
+                height: 20px;
+                background: var(--border);
+                margin: 0 2px;
+              }
+
+              /* ── Empty states ────────────────────────────────────────── */
+              .orgchart-card .orgchart-empty {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                padding: 56px 24px;
+                gap: 6px;
+              }
+              .orgchart-card .orgchart-empty-icon {
+                font-size: 40px;
+                margin-bottom: 4px;
+              }
+              .orgchart-card .orgchart-empty-title {
+                font-weight: 850;
+                font-size: 16px;
+              }
+
+              /* ── Pannable / zoomable canvas ──────────────────────────── */
+              .orgchart-card .orgchart-canvas {
+                overflow: auto;
+                max-height: min(84vh, 1200px);
+                min-height: 520px;
+                cursor: grab;
+                background-color: #fcfcfd;
+                background-image: radial-gradient(rgba(17, 24, 39, 0.07) 1px, transparent 1px);
+                background-size: 22px 22px;
+              }
+              .orgchart-card .orgchart-canvas.panning {
+                cursor: grabbing;
+              }
+
+              .orgchart-card .orgchart-scale {
+                display: inline-block;
+                min-width: 100%;
+                padding: 44px 48px 56px;
+                --line: #c7cfdb;
+              }
+
+              .orgchart-card .tree {
+                display: inline-block;
+                min-width: 100%;
+              }
+
+              /* ── Classic UL/LI org-chart connectors ──────────────────── */
+              .orgchart-card .tree ul {
                 display: flex;
                 justify-content: center;
                 align-items: flex-start;
-                gap: 34px;
-                padding-top: 26px;
+                gap: 26px;
+                padding-top: 34px;
                 position: relative;
-                transition: all 0.2s;
+                margin: 0;
+                padding-left: 0;
               }
 
-              .tree li {
+              .orgchart-card .tree li {
+                list-style: none;
                 text-align: center;
-                list-style-type: none;
                 position: relative;
-                padding: 26px 18px 0 18px; /* horizontal spacing */
-                transition: all 0.2s;
+                padding: 34px 14px 0 14px;
               }
 
-              .tree li::before,
-              .tree li::after {
+              /* Top connector: each child reaches up to a shared horizontal bar */
+              .orgchart-card .tree li::before,
+              .orgchart-card .tree li::after {
                 content: "";
                 position: absolute;
                 top: 0;
                 right: 50%;
-                border-top: 1px solid rgba(0, 0, 0, 0.22);
+                border-top: 2px solid var(--line);
                 width: 50%;
-                height: 26px;
+                height: 34px;
               }
-
-              .tree li::after {
+              .orgchart-card .tree li::after {
                 right: auto;
                 left: 50%;
-                border-left: 1px solid rgba(0, 0, 0, 0.22);
+                border-left: 2px solid var(--line);
               }
 
-              .tree li:only-child::after,
-              .tree li:only-child::before {
+              /* Single child: just a straight vertical line, no horizontal bar */
+              .orgchart-card .tree li:only-child::after,
+              .orgchart-card .tree li:only-child::before {
                 display: none;
               }
-
-              .tree li:only-child {
+              .orgchart-card .tree li:only-child {
                 padding-top: 0;
               }
 
-              .tree li:first-child::before,
-              .tree li:last-child::after {
+              /* Trim the outer halves of the first/last children's bars */
+              .orgchart-card .tree li:first-child::before,
+              .orgchart-card .tree li:last-child::after {
                 border: 0 none;
               }
-
-              .tree li:last-child::before {
-                border-right: 1px solid rgba(0, 0, 0, 0.22);
-                border-radius: 0 10px 0 0;
+              .orgchart-card .tree li:last-child::before {
+                border-right: 2px solid var(--line);
+                border-radius: 0 8px 0 0;
+              }
+              .orgchart-card .tree li:first-child::after {
+                border-left: 2px solid var(--line);
+                border-radius: 8px 0 0 0;
               }
 
-              .tree li:first-child::after {
-                border-left: 1px solid rgba(0, 0, 0, 0.22);
-                border-radius: 10px 0 0 0;
-              }
-
-              .tree ul ul::before {
+              /* Vertical drop from a parent node down into its children's row */
+              .orgchart-card .tree ul ul::before,
+              .orgchart-card .tree .has-children > ul::before {
                 content: "";
                 position: absolute;
                 top: 0;
                 left: 50%;
-                border-left: 1px solid rgba(0, 0, 0, 0.22);
+                border-left: 2px solid var(--line);
                 width: 0;
-                height: 26px;
+                height: 34px;
               }
 
-              .tree .root {
-                padding-left: 0;
+              .orgchart-card .tree .root {
+                padding: 0;
                 margin: 0;
               }
-
-              .tree:after,
-              .tree ul:after {
-                content: "";
-                display: table;
-                clear: both;
+              .orgchart-card .tree .root > li {
+                padding-top: 0;
+              }
+              .orgchart-card .tree .root > li::before,
+              .orgchart-card .tree .root > li::after {
+                display: none;
               }
 
-              /* Node UI: rounded, clickable rectangles */
-              .node-btn {
+              /* ── Node card ───────────────────────────────────────────── */
+              .orgchart-card .node {
+                position: relative;
+                display: inline-block;
+              }
+
+              .orgchart-card .node-btn {
                 appearance: none;
-                border: 0;
-                background: transparent;
-                padding: 0;
+                position: relative;
                 margin: 0;
                 cursor: pointer;
                 user-select: none;
-                display: inline-flex;
+                display: flex;
                 align-items: center;
-                justify-content: center;
-                border-radius: 18px;
+                gap: 11px;
+                text-align: left;
+                width: 244px;
+                padding: 12px 14px;
+                border-radius: 16px;
+                border: 1px solid var(--border);
+                border-top: 3px solid var(--accent, var(--pink));
+                background: white;
+                box-shadow: 0 6px 16px rgba(17, 24, 39, 0.07);
+                transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
               }
-
-              .node-btn:focus-visible .name-box {
-                outline: 2px solid rgba(236, 72, 153, 0.8); /* pink-ish focus ring */
+              .orgchart-card .node-btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 14px 28px rgba(17, 24, 39, 0.14);
+              }
+              .orgchart-card .node-btn:active {
+                transform: translateY(0);
+                box-shadow: 0 6px 16px rgba(17, 24, 39, 0.1);
+              }
+              .orgchart-card .node-btn:focus-visible {
+                outline: 2px solid var(--accent, var(--pink));
                 outline-offset: 2px;
               }
 
-              .name-box {
-                min-width: 210px; /* forces siblings to spread out */
-                max-width: 280px;
-                padding: 12px 14px;
-                border-radius: 18px;
-                border: 1px solid var(--border);
-                background: white;
-                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.06);
-                text-align: left;
-                transition: transform 120ms ease, box-shadow 120ms ease;
+              .orgchart-card .avatar {
+                flex: 0 0 auto;
+                width: 40px;
+                height: 40px;
+                border-radius: 12px;
+                color: white;
+                font-weight: 850;
+                font-size: 14px;
+                letter-spacing: 0.3px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
               }
 
-              .node-btn:hover .name-box {
-                transform: translateY(-1px);
-                box-shadow: 0 14px 26px rgba(0, 0, 0, 0.1);
+              .orgchart-card .node-body {
+                min-width: 0;
+                flex: 1 1 auto;
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
               }
 
-              .node-btn:active .name-box {
-                transform: translateY(0px);
-                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.08);
-              }
-
-              .name-text {
-                font-weight: 950;
-                font-size: 13px;
+              .orgchart-card .name-text {
+                font-weight: 800;
+                font-size: 13.5px;
                 line-height: 1.25;
-                color: #111;
-
+                color: #111827;
                 display: -webkit-box;
                 -webkit-line-clamp: 2;
                 -webkit-box-orient: vertical;
@@ -1342,18 +1830,97 @@ export default function HrOrgChartPage() {
                 word-break: break-word;
               }
 
-              .joblevel-text {
-                margin-top: 6px;
-                font-size: 12px;
-                font-weight: 800;
-                color: rgba(0, 0, 0, 0.62);
+              .orgchart-card .joblevel-text {
+                font-size: 11.5px;
+                font-weight: 650;
+                color: var(--muted);
                 line-height: 1.2;
-
                 display: -webkit-box;
                 -webkit-line-clamp: 1;
                 -webkit-box-orient: vertical;
                 overflow: hidden;
                 word-break: break-word;
+              }
+
+              .orgchart-card .reports-pill {
+                align-self: flex-start;
+                margin-top: 4px;
+                font-size: 10.5px;
+                font-weight: 750;
+                color: #475569;
+                background: #eef1f6;
+                border-radius: 999px;
+                padding: 2px 8px;
+                line-height: 1.4;
+              }
+
+              /* ── Hover quick-add (＋) ─────────────────────────────────── */
+              .orgchart-card .quick-add {
+                position: absolute;
+                top: -10px;
+                right: -10px;
+                width: 26px;
+                height: 26px;
+                border-radius: 50%;
+                border: 1px solid var(--border);
+                background: white;
+                color: var(--pink);
+                font-size: 16px;
+                font-weight: 800;
+                line-height: 1;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 4px 10px rgba(17, 24, 39, 0.16);
+                opacity: 0;
+                transform: scale(0.8);
+                transition: opacity 120ms ease, transform 120ms ease, background 120ms ease, color 120ms ease;
+              }
+              .orgchart-card .node:hover .quick-add {
+                opacity: 1;
+                transform: scale(1);
+              }
+              .orgchart-card .quick-add:hover:not(:disabled) {
+                background: var(--pink);
+                color: white;
+                border-color: var(--pink);
+              }
+              .orgchart-card .quick-add:disabled {
+                opacity: 0;
+                cursor: not-allowed;
+              }
+
+              /* ── Collapse / expand toggle ────────────────────────────── */
+              .orgchart-card .collapse-toggle {
+                position: absolute;
+                bottom: -13px;
+                left: 50%;
+                transform: translateX(-50%);
+                min-width: 24px;
+                height: 22px;
+                padding: 0 7px;
+                border-radius: 999px;
+                border: 2px solid var(--line);
+                background: white;
+                color: #374151;
+                font-size: 12px;
+                font-weight: 800;
+                line-height: 1;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 1;
+                transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+              }
+              .orgchart-card .collapse-toggle:hover {
+                background: #f5f5f7;
+              }
+              .orgchart-card .collapse-toggle.collapsed {
+                border-color: var(--pink);
+                color: var(--pink);
+                background: rgba(230, 23, 141, 0.06);
               }
             `}</style>
           </>
