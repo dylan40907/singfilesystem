@@ -37,6 +37,8 @@ type DeletedUser = {
   deleted_by_label: string | null;
 };
 
+type StudentGroup = { id: string; name: string; created_at: string; member_count: number; lock_count: number };
+
 type Category = { id: string; name: string; order_index: number };
 type Lesson = {
   id: string;
@@ -64,11 +66,15 @@ export default function UsersPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [deletedUsers, setDeletedUsers] = useState<DeletedUser[]>([]);
+  const [groups, setGroups] = useState<StudentGroup[]>([]);
+  const [groupAssignments, setGroupAssignments] = useState<Record<string, string>>({}); // lower(email) -> group_id
+  const [newGroupName, setNewGroupName] = useState("");
+  const [addingGroup, setAddingGroup] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Song-topic permissions modal. Keyed by EMAIL so the same locks are edited
-  // whether opened from an existing user row or a whitelist entry (no account yet).
-  const [permTarget, setPermTarget] = useState<{ email: string; name: string } | null>(null);
+  // Song-topic permissions modal. Edits either an EMAIL's locks (a user/whitelist
+  // row — same data whichever you open) or a GROUP's locks. Both reuse one modal.
+  const [permTarget, setPermTarget] = useState<{ kind: "email" | "group"; email: string; name: string; groupId?: string } | null>(null);
   const [permInitialLocked, setPermInitialLocked] = useState<Set<string>>(new Set());
   const [permLoading, setPermLoading] = useState(false);
   const [permSaving, setPermSaving] = useState(false);
@@ -82,13 +88,15 @@ export default function UsersPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: uData }, { data: wData }, { data: aData }, { data: cData }, { data: lData }, { data: dData }] = await Promise.all([
+    const [{ data: uData }, { data: wData }, { data: aData }, { data: cData }, { data: lData }, { data: dData }, { data: gData }, { data: gaData }] = await Promise.all([
       supabase.rpc("admin_list_learning_users"),
       supabase.from("learning_email_whitelist").select("*").order("added_at", { ascending: false }),
       supabase.from("learning_approved_emails").select("email"),
       supabase.from("learning_categories").select("id, name, order_index").order("order_index"),
       supabase.from("learning_lessons").select("id, category_id, title, is_locked, is_published, order_index").order("order_index"),
       supabase.rpc("admin_list_deleted_users"),
+      supabase.rpc("admin_list_student_groups"),
+      supabase.rpc("admin_list_user_group_assignments"),
     ]);
     setUsers((uData ?? []) as AppUser[]);
     setWhitelist((wData ?? []) as WhitelistEntry[]);
@@ -96,6 +104,10 @@ export default function UsersPage() {
     setCategories((cData ?? []) as Category[]);
     setLessons((lData ?? []) as Lesson[]);
     setDeletedUsers((dData ?? []) as DeletedUser[]);
+    setGroups((gData ?? []) as StudentGroup[]);
+    const amap: Record<string, string> = {};
+    ((gaData ?? []) as { email: string; group_id: string | null }[]).forEach(r => { if (r.group_id) amap[r.email.toLowerCase()] = r.group_id; });
+    setGroupAssignments(amap);
     setLoading(false);
   }
 
@@ -234,7 +246,7 @@ export default function UsersPage() {
   }
 
   async function openPermissions(email: string, name: string) {
-    setPermTarget({ email, name });
+    setPermTarget({ kind: "email", email, name });
     setPermLoading(true);
     setError("");
     const { data, error: e } = await supabase.rpc("admin_list_email_lesson_locks", {
@@ -249,17 +261,62 @@ export default function UsersPage() {
     setPermLoading(false);
   }
 
+  async function openGroupPermissions(group: StudentGroup) {
+    setPermTarget({ kind: "group", email: "", name: group.name, groupId: group.id });
+    setPermLoading(true);
+    setError("");
+    const { data, error: e } = await supabase.rpc("admin_list_group_lesson_locks", {
+      p_group_id: group.id,
+    });
+    if (e) {
+      setError(e.message);
+      setPermTarget(null);
+    } else {
+      setPermInitialLocked(new Set(((data ?? []) as { lesson_id: string }[]).map(r => r.lesson_id)));
+    }
+    setPermLoading(false);
+  }
+
   async function savePermissions(lockedIds: string[]) {
     if (!permTarget) return;
     setPermSaving(true);
     setError("");
-    const { error: e } = await supabase.rpc("admin_set_email_lesson_locks", {
-      p_email: permTarget.email,
-      locked_lesson_ids: lockedIds,
-    });
+    const { error: e } = permTarget.kind === "group"
+      ? await supabase.rpc("admin_set_group_lesson_locks", { p_group_id: permTarget.groupId, locked_lesson_ids: lockedIds })
+      : await supabase.rpc("admin_set_email_lesson_locks", { p_email: permTarget.email, locked_lesson_ids: lockedIds });
     if (e) setError(e.message);
-    else setPermTarget(null);
+    else { setPermTarget(null); await loadAll(); }
     setPermSaving(false);
+  }
+
+  async function createGroup() {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setAddingGroup(true);
+    setError("");
+    const { error: e } = await supabase.rpc("admin_create_student_group", { p_name: name });
+    if (e) setError(e.message);
+    else { setNewGroupName(""); await loadAll(); }
+    setAddingGroup(false);
+  }
+
+  async function deleteGroup(group: StudentGroup) {
+    const ok = await confirm(
+      `Delete the group "${group.name}"? Members will be unassigned but keep their current locks. This doesn't delete any accounts.`,
+      { title: "Delete Group", confirmLabel: "Delete", danger: true },
+    );
+    if (!ok) return;
+    setError("");
+    const { error: e } = await supabase.rpc("admin_delete_student_group", { p_group_id: group.id });
+    if (e) setError(e.message);
+    await loadAll();
+  }
+
+  async function assignGroup(email: string, groupId: string | null) {
+    setError("");
+    const { error: e } = await supabase.rpc("admin_assign_user_group", { p_email: email, p_group_id: groupId });
+    if (e) setError(e.message);
+    await loadAll();
   }
 
   async function addToWhitelist() {
@@ -373,6 +430,7 @@ export default function UsersPage() {
                 <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{entry.email}</span>
                 {entry.notes && <span className="subtle" style={{ fontSize: 12 }}>{entry.notes}</span>}
                 <span className="subtle" style={{ fontSize: 11 }}>{new Date(entry.added_at).toLocaleDateString()}</span>
+                <GroupSelect groups={groups} value={groupAssignments[entry.email.toLowerCase()]} onChange={(gid) => assignGroup(entry.email, gid)} />
                 <button
                   onClick={() => openPermissions(entry.email, "")}
                   title="Edit which song topics this email can view (applies now if they have an account, otherwise on sign-up)"
@@ -385,6 +443,51 @@ export default function UsersPage() {
                   style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}
                 >
                   Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Student groups */}
+      <section style={{ background: "#fff", borderRadius: 16, border: "1px solid #e5e7eb", padding: 24, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
+        <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Student Groups</h2>
+        <p className="subtle" style={{ fontSize: 13, marginBottom: 16 }}>
+          A group carries its own set of locked song topics. Assigning a user (or a whitelist email) to a group copies the group&apos;s locks onto that account. You can still override an individual afterward in their Song Topics editor.
+        </p>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+          <input
+            value={newGroupName}
+            onChange={e => setNewGroupName(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && createGroup()}
+            placeholder="New group name (e.g. Mrs. Lee's Class)"
+            style={{ flex: 1, minWidth: 220, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}
+          />
+          <button className="btn btn-primary" onClick={createGroup} disabled={addingGroup || !newGroupName.trim()}>
+            {addingGroup ? "Creating…" : "+ Create Group"}
+          </button>
+        </div>
+
+        {groups.length === 0 ? (
+          <div className="subtle" style={{ fontSize: 13 }}>No groups yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {groups.map(g => (
+              <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "#f9fafb", borderRadius: 8, padding: "8px 12px", border: "1px solid #e5e7eb" }}>
+                <span style={{ fontWeight: 700, fontSize: 14, flex: 1 }}>{g.name}</span>
+                <span className="subtle" style={{ fontSize: 12 }}>
+                  {g.member_count} member{g.member_count === 1 ? "" : "s"} · {g.lock_count} locked
+                </span>
+                <button
+                  onClick={() => openGroupPermissions(g)}
+                  style={{ fontSize: 12, padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer", whiteSpace: "nowrap", fontWeight: 600 }}
+                >
+                  🔒 Song Topics
+                </button>
+                <button onClick={() => deleteGroup(g)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>
+                  Delete
                 </button>
               </div>
             ))}
@@ -415,6 +518,9 @@ export default function UsersPage() {
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
             onPermissions={openPermissions}
+            groups={groups}
+            groupAssignments={groupAssignments}
+            onAssignGroup={assignGroup}
           />
         )}
       </section>
@@ -432,6 +538,9 @@ export default function UsersPage() {
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
             onPermissions={openPermissions}
+            groups={groups}
+            groupAssignments={groupAssignments}
+            onAssignGroup={assignGroup}
           />
         </section>
       )}
@@ -449,6 +558,9 @@ export default function UsersPage() {
             expiryToInputDate={expiryToInputDate}
             busy={actionBusy}
             onPermissions={openPermissions}
+            groups={groups}
+            groupAssignments={groupAssignments}
+            onAssignGroup={assignGroup}
           />
         </section>
       )}
@@ -494,6 +606,21 @@ export default function UsersPage() {
   );
 }
 
+// Dropdown to assign an email (user row or whitelist row) to a student group.
+function GroupSelect({ groups, value, onChange }: { groups: StudentGroup[]; value: string | undefined; onChange: (groupId: string | null) => void }) {
+  return (
+    <select
+      value={value ?? ""}
+      onChange={e => onChange(e.target.value || null)}
+      title="Assign to a student group (copies the group's locked song topics onto this account)"
+      style={{ fontSize: 12, padding: "5px 8px", borderRadius: 8, border: `1px solid ${value ? PINK : "#d1d5db"}`, background: "#fff", color: value ? "#111827" : "#9ca3af", maxWidth: 160, fontWeight: value ? 600 : 400 }}
+    >
+      <option value="">No group</option>
+      {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+    </select>
+  );
+}
+
 function UserList({
   users,
   isWhitelisted,
@@ -505,6 +632,9 @@ function UserList({
   onPermissions,
   expiryToInputDate,
   busy,
+  groups,
+  groupAssignments,
+  onAssignGroup,
 }: {
   users: AppUser[];
   isWhitelisted: (email: string) => boolean;
@@ -516,6 +646,9 @@ function UserList({
   onPermissions?: (email: string, name: string) => void;
   expiryToInputDate?: (iso: string | null) => string;
   busy: Record<string, boolean>;
+  groups?: StudentGroup[];
+  groupAssignments?: Record<string, string>;
+  onAssignGroup?: (email: string, groupId: string | null) => void;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -552,6 +685,10 @@ function UserList({
 
             {onExpiry && (
               <ExpiryField user={user} initial={expiryInputValue} disabled={isBusy} onCommit={onExpiry} />
+            )}
+
+            {onAssignGroup && (
+              <GroupSelect groups={groups ?? []} value={groupAssignments?.[user.email.toLowerCase()]} onChange={(gid) => onAssignGroup(user.email, gid)} />
             )}
 
             {onPermissions && (

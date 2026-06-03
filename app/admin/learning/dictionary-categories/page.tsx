@@ -149,12 +149,16 @@ export default function DictionaryCategoriesPage() {
     if (idx === -1) return;
     const swapIdx = idx + dir;
     if (swapIdx < 0 || swapIdx >= categories.length) return;
-    const a = categories[idx], b = categories[swapIdx];
-    await Promise.all([
-      supabase.from("learning_dictionary_categories").update({ order_index: b.order_index }).eq("id", a.id),
-      supabase.from("learning_dictionary_categories").update({ order_index: a.order_index }).eq("id", b.id),
-    ]);
-    await load();
+    const arr = [...categories];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    const prev = categories;
+    const reindexed = arr.map((c, i) => ({ ...c, order_index: i }));
+    setCategories(reindexed);
+    await Promise.all(
+      reindexed
+        .filter(c => prev.find(x => x.id === c.id)?.order_index !== c.order_index)
+        .map(c => supabase.from("learning_dictionary_categories").update({ order_index: c.order_index }).eq("id", c.id))
+    );
   }
 
   async function addTermToCategory(categoryId: string, slideId: string) {
@@ -180,12 +184,16 @@ export default function DictionaryCategoriesPage() {
     if (idx === -1) return;
     const swapIdx = idx + dir;
     if (swapIdx < 0 || swapIdx >= catItems.length) return;
-    const a = catItems[idx], b = catItems[swapIdx];
-    await Promise.all([
-      supabase.from("learning_dictionary_category_items").update({ order_index: b.order_index }).eq("id", a.id),
-      supabase.from("learning_dictionary_category_items").update({ order_index: a.order_index }).eq("id", b.id),
-    ]);
-    await load();
+    [catItems[idx], catItems[swapIdx]] = [catItems[swapIdx], catItems[idx]];
+    const reindexed = catItems.map((it, i) => ({ ...it, order_index: i }));
+    const orderById = new Map(reindexed.map(it => [it.id, it.order_index]));
+    const prevItems = items;
+    setItems(prev => prev.map(it => orderById.has(it.id) ? { ...it, order_index: orderById.get(it.id)! } : it));
+    await Promise.all(
+      reindexed
+        .filter(it => prevItems.find(x => x.id === it.id)?.order_index !== it.order_index)
+        .map(it => supabase.from("learning_dictionary_category_items").update({ order_index: it.order_index }).eq("id", it.id))
+    );
   }
 
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;

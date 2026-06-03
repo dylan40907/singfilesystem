@@ -47,6 +47,7 @@ export default function LearningAdminPage() {
   const [newLessonTitle, setNewLessonTitle] = useState("");
   const [newLessonCat, setNewLessonCat] = useState<string>("");
   const [addingLesson, setAddingLesson] = useState(false);
+  const [addLevelOpen, setAddLevelOpen] = useState(false);
 
   useEffect(() => { load(); }, []);
 
@@ -155,10 +156,54 @@ export default function LearningAdminPage() {
   const lessonsByCategory = (catId: string | null) =>
     lessons.filter(l => l.category_id === catId);
 
+  // Reorders update local state immediately (no reload/scroll jump) and persist
+  // by reassigning a clean 0..n sequence — robust even if order_index had ties.
+  async function moveCategory(id: string, dir: -1 | 1) {
+    const idx = categories.findIndex(c => c.id === id);
+    if (idx === -1) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= categories.length) return;
+    const arr = [...categories];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    const prev = categories;
+    const reindexed = arr.map((c, i) => ({ ...c, order_index: i }));
+    setCategories(reindexed);
+    await Promise.all(
+      reindexed
+        .filter(c => prev.find(x => x.id === c.id)?.order_index !== c.order_index)
+        .map(c => supabase.from("learning_categories").update({ order_index: c.order_index }).eq("id", c.id))
+    );
+  }
+
+  async function moveLesson(lesson: Lesson, dir: -1 | 1) {
+    const group = lessonsByCategory(lesson.category_id);
+    const idx = group.findIndex(l => l.id === lesson.id);
+    if (idx === -1) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= group.length) return;
+    const arr = [...group];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    const reindexed = arr.map((l, i) => ({ ...l, order_index: i }));
+    const prevGroup = group;
+    // Place the reordered group back into the same slots of the full lessons array.
+    setLessons(prevLessons => {
+      const positions: number[] = [];
+      prevLessons.forEach((l, i) => { if (l.category_id === lesson.category_id) positions.push(i); });
+      const result = [...prevLessons];
+      reindexed.forEach((l, k) => { result[positions[k]] = l; });
+      return result;
+    });
+    await Promise.all(
+      reindexed
+        .filter(l => prevGroup.find(x => x.id === l.id)?.order_index !== l.order_index)
+        .map(l => supabase.from("learning_lessons").update({ order_index: l.order_index }).eq("id", l.id))
+    );
+  }
+
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
 
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 20px" }}>
+    <div style={{ maxWidth: 1180, margin: "0 auto", padding: "32px 20px" }}>
       {modal}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32 }}>
         <div>
@@ -184,135 +229,180 @@ export default function LearningAdminPage() {
         </div>
       )}
 
-      {/* Levels */}
-      <section style={{ marginBottom: 40 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>Levels</h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-          {categories.map(cat => (
-            <div key={cat.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#f9fafb", borderRadius: 10, padding: "10px 14px", border: "1px solid #e5e7eb" }}>
-              <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{cat.name}</span>
-              <span className="subtle" style={{ fontSize: 13 }}>{lessonsByCategory(cat.id).length} song topic{lessonsByCategory(cat.id).length === 1 ? "" : "s"}</span>
-              <button
-                style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: "2px 6px" }}
-                onClick={() => deleteCategory(cat.id)}
-              >
-                Delete
+      <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 24, alignItems: "start" }}>
+        {/* ── LEFT: Levels sidebar ── */}
+        <aside style={{ position: "sticky", top: 16, maxHeight: "calc(100vh - 32px)", overflowY: "auto", paddingRight: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Levels</h2>
+            <button
+              onClick={() => setAddLevelOpen(o => !o)}
+              style={{ fontSize: 13, fontWeight: 600, padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${PINK}`, color: PINK, background: "#fff", cursor: "pointer" }}
+            >
+              {addLevelOpen ? "Cancel" : "+ Add Level"}
+            </button>
+          </div>
+
+          {addLevelOpen && (
+            <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+              <input
+                value={newCatName}
+                onChange={e => setNewCatName(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addCategory()}
+                placeholder="New level name"
+                autoFocus
+                style={{ flex: 1, minWidth: 0, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 10px", fontSize: 14 }}
+              />
+              <button className="btn btn-primary" onClick={addCategory} disabled={addingCat || !newCatName.trim()} style={{ padding: "6px 12px", fontSize: 13 }}>
+                {addingCat ? "…" : "Add"}
               </button>
             </div>
-          ))}
-          {categories.length === 0 && <div className="subtle">No categories yet.</div>}
-        </div>
+          )}
 
-        {/* Add level */}
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            value={newCatName}
-            onChange={e => setNewCatName(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && addCategory()}
-            placeholder="New level name"
-            style={{ flex: 1, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}
-          />
-          <button
-            className="btn btn-primary"
-            onClick={addCategory}
-            disabled={addingCat || !newCatName.trim()}
-          >
-            {addingCat ? "Adding…" : "Add Level"}
-          </button>
-        </div>
-      </section>
-
-      {/* Song topics by level */}
-      {[...categories.map(c => ({ id: c.id, name: c.name })), { id: "__none__", name: "Unleveled" }].map(section => {
-        const sectionLessons = lessonsByCategory(section.id === "__none__" ? null : section.id);
-        if (section.id === "__none__" && sectionLessons.length === 0) return null;
-        return (
-          <section key={section.id} style={{ marginBottom: 40 }}>
-            <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ background: PINK, color: "#fff", borderRadius: 20, padding: "3px 14px", fontSize: 14 }}>{section.name}</span>
-            </h2>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-              {sectionLessons.map(lesson => (
-                <div key={lesson.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 10, padding: "12px 14px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-                  {/* Thumbnail */}
-                  {lesson.thumbnail_url ? (
-                    <img src={lesson.thumbnail_url} alt="" style={{ width: 48, height: 48, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />
-                  ) : (
-                    <div style={{ width: 48, height: 48, borderRadius: 6, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <span style={{ fontSize: 20 }}>🖼</span>
-                    </div>
-                  )}
-
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lesson.title}</div>
-                    {(lesson.title_zh_traditional || lesson.title_zh_simplified) && (
-                      <div className="subtle" style={{ fontSize: 12 }}>
-                        {[lesson.title_zh_traditional, lesson.title_zh_simplified].filter(Boolean).join(" / ")}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Published badge */}
-                  <button
-                    onClick={() => togglePublished(lesson)}
-                    style={{
-                      fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, border: "none", cursor: "pointer",
-                      background: lesson.is_published ? "#dcfce7" : "#f3f4f6",
-                      color: lesson.is_published ? "#16a34a" : "#6b7280",
-                    }}
-                  >
-                    {lesson.is_published ? "Published" : "Draft"}
-                  </button>
-
-                  <Link
-                    href={`/admin/learning/lesson/${lesson.id}`}
-                    style={{ fontSize: 13, fontWeight: 600, color: PINK, textDecoration: "none", padding: "4px 10px", borderRadius: 8, border: `1px solid ${PINK}`, whiteSpace: "nowrap" }}
-                  >
-                    Edit
-                  </Link>
-
-                  <button
-                    style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: "2px 6px" }}
-                    onClick={() => deleteLesson(lesson.id)}
-                  >
-                    ✕
-                  </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {categories.map((cat, i) => (
+              <div key={cat.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "#f9fafb", borderRadius: 10, padding: "8px 10px", border: "1px solid #e5e7eb" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                  <button onClick={() => moveCategory(cat.id, -1)} disabled={i === 0} style={iconBtnStyle}>▲</button>
+                  <button onClick={() => moveCategory(cat.id, 1)} disabled={i === categories.length - 1} style={iconBtnStyle}>▼</button>
                 </div>
-              ))}
-              {sectionLessons.length === 0 && <div className="subtle" style={{ fontSize: 14, padding: "4px 2px" }}>No song topics in this level.</div>}
-            </div>
-          </section>
-        );
-      })}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{cat.name}</div>
+                  <div className="subtle" style={{ fontSize: 12 }}>{lessonsByCategory(cat.id).length} song topic{lessonsByCategory(cat.id).length === 1 ? "" : "s"}</div>
+                </div>
+                <button
+                  style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: "2px 4px" }}
+                  onClick={() => deleteCategory(cat.id)}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+            {categories.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>No levels yet.</div>}
+          </div>
+        </aside>
 
-      {/* Add song topic */}
-      <section>
-        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 16 }}>Add Song Topic</h2>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input
-            value={newLessonTitle}
-            onChange={e => setNewLessonTitle(e.target.value)}
-            placeholder="Song topic title"
-            style={{ flex: 1, minWidth: 180, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}
-          />
-          <select
-            value={newLessonCat}
-            onChange={e => setNewLessonCat(e.target.value)}
-            style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14, background: "#fff" }}
-          >
-            <option value="">No level</option>
-            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <button
-            className="btn btn-primary"
-            onClick={addLesson}
-            disabled={addingLesson || !newLessonTitle.trim()}
-          >
-            {addingLesson ? "Adding…" : "Add Song Topic"}
-          </button>
+        {/* ── RIGHT: Song topics ── */}
+        <div style={{ minWidth: 0 }}>
+          <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 14 }}>Song Topics</h2>
+
+          {/* Add song topic (kept at the top) */}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 24, background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <input
+              value={newLessonTitle}
+              onChange={e => setNewLessonTitle(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && newLessonTitle.trim() && addLesson()}
+              placeholder="New song topic title"
+              style={{ flex: 1, minWidth: 180, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}
+            />
+            <select
+              value={newLessonCat}
+              onChange={e => setNewLessonCat(e.target.value)}
+              style={{ border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14, background: "#fff" }}
+            >
+              <option value="">No level</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            <button className="btn btn-primary" onClick={addLesson} disabled={addingLesson || !newLessonTitle.trim()}>
+              {addingLesson ? "Adding…" : "+ Add Song Topic"}
+            </button>
+          </div>
+
+          {[...categories.map(c => ({ id: c.id, name: c.name })), { id: "__none__", name: "Unleveled" }].map(section => {
+            const sectionLessons = lessonsByCategory(section.id === "__none__" ? null : section.id);
+            if (section.id === "__none__" && sectionLessons.length === 0) return null;
+            return (
+              <section key={section.id} style={{ marginBottom: 26 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ background: PINK, color: "#fff", borderRadius: 20, padding: "3px 14px", fontSize: 13 }}>{section.name}</span>
+                </h3>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {sectionLessons.map((lesson, li) => (
+                    <div key={lesson.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 10, padding: "10px 14px", border: "1px solid #e5e7eb", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+                      {/* Reorder within level */}
+                      <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                        <button onClick={() => moveLesson(lesson, -1)} disabled={li === 0} style={iconBtnStyle}>▲</button>
+                        <button onClick={() => moveLesson(lesson, 1)} disabled={li === sectionLessons.length - 1} style={iconBtnStyle}>▼</button>
+                      </div>
+
+                      {/* Thumbnail */}
+                      {lesson.thumbnail_url ? (
+                        <img src={lesson.thumbnail_url} alt="" style={{ width: 48, height: 48, borderRadius: 6, objectFit: "cover", flexShrink: 0, border: "1px solid #e5e7eb" }} />
+                      ) : (
+                        <div style={{ width: 48, height: 48, borderRadius: 6, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1px solid #e5e7eb" }}>
+                          <span style={{ fontSize: 20 }}>🖼</span>
+                        </div>
+                      )}
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lesson.title}</div>
+                        {(lesson.title_zh_traditional || lesson.title_zh_simplified) && (
+                          <div className="subtle" style={{ fontSize: 12 }}>
+                            {[lesson.title_zh_traditional, lesson.title_zh_simplified].filter(Boolean).join(" / ")}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Status pill (label only) */}
+                      <span
+                        style={{
+                          fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+                          background: lesson.is_published ? "#dcfce7" : "#f3f4f6",
+                          color: lesson.is_published ? "#16a34a" : "#6b7280",
+                        }}
+                      >
+                        {lesson.is_published ? "● Published" : "○ Draft"}
+                      </span>
+
+                      {/* Publish/unpublish action button (verb makes the action obvious) */}
+                      <button
+                        onClick={() => togglePublished(lesson)}
+                        title={lesson.is_published ? "Hide from the app" : "Make visible in the app"}
+                        style={{
+                          fontSize: 12, fontWeight: 700, padding: "6px 12px", borderRadius: 8, cursor: "pointer", whiteSpace: "nowrap",
+                          border: lesson.is_published ? "1.5px solid #d1d5db" : "none",
+                          background: lesson.is_published ? "#fff" : "#16a34a",
+                          color: lesson.is_published ? "#6b7280" : "#fff",
+                        }}
+                      >
+                        {lesson.is_published ? "Unpublish" : "Publish"}
+                      </button>
+
+                      <Link
+                        href={`/admin/learning/lesson/${lesson.id}`}
+                        style={{ fontSize: 13, fontWeight: 600, color: PINK, textDecoration: "none", padding: "5px 12px", borderRadius: 8, border: `1px solid ${PINK}`, whiteSpace: "nowrap" }}
+                      >
+                        Edit
+                      </Link>
+
+                      <button
+                        style={{ fontSize: 14, color: "#dc2626", background: "none", border: "none", cursor: "pointer", padding: "2px 6px" }}
+                        onClick={() => deleteLesson(lesson.id)}
+                        title="Delete song topic"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  {sectionLessons.length === 0 && <div className="subtle" style={{ fontSize: 14, padding: "4px 2px" }}>No song topics in this level.</div>}
+                </div>
+              </section>
+            );
+          })}
         </div>
-      </section>
+      </div>
     </div>
   );
 }
+
+const iconBtnStyle: React.CSSProperties = {
+  fontSize: 10,
+  width: 22,
+  height: 18,
+  padding: 0,
+  borderRadius: 4,
+  border: "1px solid #e5e7eb",
+  background: "#fff",
+  color: "#6b7280",
+  cursor: "pointer",
+};

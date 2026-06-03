@@ -30,6 +30,8 @@ type Lesson = {
   title_zh_simplified: string | null;
   thumbnail_url: string | null;
   thumbnail_key: string | null;
+  thumbnail_url_simplified: string | null;
+  thumbnail_key_simplified: string | null;
   video_key: string | null;
   karaoke_key: string | null;
   video_key_simplified: string | null;
@@ -53,20 +55,20 @@ type Slide = {
   image_key_simplified: string | null;
   image_url_simplified: string | null;
   audio_key_simplified: string | null;
+  is_enabled: boolean;
 };
 
-// A flashcard is "complete" only when every field below is filled. Any missing
-// field flags the card with a red hue so admins notice it needs attention.
+// A flashcard is "complete" when each field below is filled. For the
+// traditional/simplified pairs (Chinese, image, audio), having EITHER side is
+// enough — a blank simplified field automatically falls back to the traditional
+// one in the app, so it is not counted as missing.
 function missingSlideFields(s: Slide): string[] {
   const missing: string[] = [];
-  if (!s.term_chinese) missing.push("Chinese (Traditional)");
-  if (!s.term_chinese_simplified) missing.push("Chinese (Simplified)");
+  if (!s.term_chinese && !s.term_chinese_simplified) missing.push("Chinese");
   if (!s.pinyin) missing.push("Pinyin");
   if (!s.term_english) missing.push("English");
-  if (!s.image_key) missing.push("Traditional image");
-  if (!s.image_key_simplified) missing.push("Simplified image");
-  if (!s.audio_key) missing.push("Traditional audio");
-  if (!s.audio_key_simplified) missing.push("Simplified audio");
+  if (!s.image_key && !s.image_key_simplified) missing.push("Image");
+  if (!s.audio_key && !s.audio_key_simplified) missing.push("Audio");
   return missing;
 }
 
@@ -165,7 +167,7 @@ export default function LessonDetailPage() {
   const [isPublished, setIsPublished] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
-  const [uploadingThumb, setUploadingThumb] = useState(false);
+  const [uploadingThumb, setUploadingThumb] = useState<{ traditional: boolean; simplified: boolean }>({ traditional: false, simplified: false });
   const [uploadingVideo, setUploadingVideo] = useState<Record<VideoType, boolean>>({
     video: false, karaoke: false, video_simplified: false, karaoke_simplified: false,
   });
@@ -236,18 +238,21 @@ export default function LessonDetailPage() {
     setSaving(false);
   }
 
-  async function uploadThumbnail(file: File) {
-    setUploadingThumb(true);
+  async function uploadThumbnail(file: File, variant: "traditional" | "simplified") {
+    setUploadingThumb(p => ({ ...p, [variant]: true }));
     setError("");
     try {
       const { objectKey } = await uploadToR2(file, "thumbnails");
       const url = await getPresignedUrl(objectKey, 604800);
-      const { error: e } = await supabase.from("learning_lessons").update({ thumbnail_key: objectKey, thumbnail_url: url }).eq("id", id);
+      const keyCol = variant === "simplified" ? "thumbnail_key_simplified" : "thumbnail_key";
+      const urlCol = variant === "simplified" ? "thumbnail_url_simplified" : "thumbnail_url";
+      const { error: e } = await supabase.from("learning_lessons").update({ [keyCol]: objectKey, [urlCol]: url }).eq("id", id);
       if (e) throw new Error(e.message);
-      if (lesson?.thumbnail_key && lesson.thumbnail_key !== objectKey) await deleteFromR2(lesson.thumbnail_key).catch(() => {});
-      setLesson(prev => prev ? { ...prev, thumbnail_key: objectKey, thumbnail_url: url } : prev);
+      const oldKey = lesson?.[keyCol] as string | null;
+      if (oldKey && oldKey !== objectKey) await deleteFromR2(oldKey).catch(() => {});
+      setLesson(prev => prev ? { ...prev, [keyCol]: objectKey, [urlCol]: url } : prev);
     } catch (e: any) { setError(e.message ?? "Upload failed"); }
-    setUploadingThumb(false);
+    setUploadingThumb(p => ({ ...p, [variant]: false }));
   }
 
   const videoKeyMap: Record<VideoType, keyof Lesson> = {
@@ -279,6 +284,47 @@ export default function LessonDetailPage() {
       setSlideLinks(prev => ({ ...prev, [(data as Slide).id]: "trad_leads" }));
     }
     setAddingSlide(false);
+  }
+
+  // Insert a new flashcard at a specific position (afterNumber = the slide_number
+  // to insert after; 0 = insert at the very top). Updates local state in place —
+  // no reload, so the page stays put and the new card appears where you clicked.
+  async function insertSlideAfter(afterNumber: number) {
+    setAddingSlide(true);
+    const tempNum = (slides.length > 0 ? Math.max(...slides.map(s => s.slide_number)) : 0) + 1000;
+    const { data, error: e } = await supabase.from("learning_slides").insert({ lesson_id: id, slide_number: tempNum }).select().single();
+    if (e || !data) { setError(e?.message ?? "Failed to add flashcard"); setAddingSlide(false); return; }
+    const ordered = [...slides].sort((a, b) => a.slide_number - b.slide_number);
+    const pos = afterNumber === 0 ? 0 : ordered.findIndex(s => s.slide_number === afterNumber) + 1;
+    ordered.splice(pos, 0, data as Slide);
+    const reindexed = ordered.map((s, i) => ({ ...s, slide_number: i + 1 }));
+    setSlides(reindexed);
+    setSlideLinks(prev => ({ ...prev, [(data as Slide).id]: "trad_leads" }));
+    await Promise.all(reindexed.map(s => supabase.from("learning_slides").update({ slide_number: s.slide_number }).eq("id", s.id)));
+    setAddingSlide(false);
+  }
+
+  async function moveSlide(slide: Slide, dir: -1 | 1) {
+    const ordered = [...slides].sort((a, b) => a.slide_number - b.slide_number);
+    const idx = ordered.findIndex(s => s.id === slide.id);
+    if (idx === -1) return;
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= ordered.length) return;
+    [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
+    const prev = slides;
+    const reindexed = ordered.map((s, i) => ({ ...s, slide_number: i + 1 }));
+    setSlides(reindexed);
+    await Promise.all(
+      reindexed
+        .filter(s => prev.find(x => x.id === s.id)?.slide_number !== s.slide_number)
+        .map(s => supabase.from("learning_slides").update({ slide_number: s.slide_number }).eq("id", s.id))
+    );
+  }
+
+  async function toggleSlideEnabled(slide: Slide) {
+    const next = !(slide.is_enabled ?? true);
+    await supabase.from("learning_slides").update({ is_enabled: next }).eq("id", slide.id);
+    setSlides(prev => prev.map(s => s.id === slide.id ? { ...s, is_enabled: next } : s));
   }
 
   // ── Dictionary category assignment (per flashcard) ──
@@ -534,16 +580,23 @@ export default function LessonDetailPage() {
         <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 18 }}>Media</h2>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            {lesson.thumbnail_url ? (
-              <img src={lesson.thumbnail_url} alt="Thumbnail" style={{ width: 72, height: 72, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
-            ) : (
-              <div style={{ width: 72, height: 72, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb" }}>🖼</div>
-            )}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Thumbnail</div>
-              <UploadButton label="Upload Image" accept="image/*" uploading={uploadingThumb} onFile={uploadThumbnail} />
-              {lesson.thumbnail_key && <div className="subtle" style={{ fontSize: 11, marginTop: 4 }}>✓ {lesson.thumbnail_key.split("/").pop()}</div>}
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>Thumbnail</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, maxWidth: 360 }}>
+              {/* Traditional */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280" }}>Traditional (繁體)</div>
+                <MediaImagePreview ownUrl={lesson.thumbnail_url} fallbackUrl={lesson.thumbnail_url_simplified} />
+                <UploadButton label={lesson.thumbnail_key ? "Replace" : "Upload"} accept="image/*" uploading={uploadingThumb.traditional} onFile={f => uploadThumbnail(f, "traditional")} />
+                {!lesson.thumbnail_key && lesson.thumbnail_key_simplified && <FallbackNote from="Simplified" />}
+              </div>
+              {/* Simplified */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                <div style={{ fontWeight: 700, fontSize: 12, color: "#6b7280" }}>Simplified (简体)</div>
+                <MediaImagePreview ownUrl={lesson.thumbnail_url_simplified} fallbackUrl={lesson.thumbnail_url} />
+                <UploadButton label={lesson.thumbnail_key_simplified ? "Replace" : "Upload"} accept="image/*" uploading={uploadingThumb.simplified} onFile={f => uploadThumbnail(f, "simplified")} />
+                {!lesson.thumbnail_key_simplified && lesson.thumbnail_key && <FallbackNote from="Traditional" />}
+              </div>
             </div>
           </div>
 
@@ -583,23 +636,35 @@ export default function LessonDetailPage() {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {slides.map((slide) => {
+          {slides.length > 0 && <InsertHere onClick={() => insertSlideAfter(0)} disabled={addingSlide} />}
+          {slides.map((slide, si) => {
             const missing = missingSlideFields(slide);
-            const incomplete = missing.length > 0;
+            const disabled = !(slide.is_enabled ?? true);
+            const incomplete = !disabled && missing.length > 0;
             return (
+              <div key={slide.id} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div
-                key={slide.id}
                 style={{
-                  background: incomplete ? "#fef2f2" : "#fff",
+                  background: disabled ? "#f3f4f6" : incomplete ? "#fef2f2" : "#fff",
                   borderRadius: 16,
-                  border: `1.5px solid ${incomplete ? "#f87171" : TEAL}`,
+                  border: `1.5px solid ${disabled ? "#d1d5db" : incomplete ? "#f87171" : TEAL}`,
                   padding: 20,
-                  boxShadow: incomplete ? "0 1px 6px rgba(248,113,113,0.18)" : "0 1px 4px rgba(78,206,200,0.1)",
+                  boxShadow: disabled ? "none" : incomplete ? "0 1px 6px rgba(248,113,113,0.18)" : "0 1px 4px rgba(78,206,200,0.1)",
+                  opacity: disabled ? 0.72 : 1,
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <span style={{ fontWeight: 700, fontSize: 14, color: incomplete ? "#dc2626" : TEAL }}>Flashcard {slide.slide_number}</span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                      <button onClick={() => moveSlide(slide, -1)} disabled={si === 0} style={iconBtnStyle}>▲</button>
+                      <button onClick={() => moveSlide(slide, 1)} disabled={si === slides.length - 1} style={iconBtnStyle}>▼</button>
+                    </div>
+                    <span style={{ fontWeight: 700, fontSize: 14, color: disabled ? "#6b7280" : incomplete ? "#dc2626" : TEAL }}>Flashcard {slide.slide_number}</span>
+                    {disabled && (
+                      <span style={{ fontSize: 11, fontWeight: 700, background: "#e5e7eb", color: "#6b7280", borderRadius: 20, padding: "2px 10px" }}>
+                        Disabled · hidden in app
+                      </span>
+                    )}
                     {incomplete && (
                       <span
                         title={`Missing: ${missing.join(", ")}`}
@@ -609,7 +674,12 @@ export default function LessonDetailPage() {
                       </span>
                     )}
                   </div>
-                  <button onClick={() => deleteSlide(slide.id)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                    <button onClick={() => toggleSlideEnabled(slide)} style={{ fontSize: 12, fontWeight: 600, color: disabled ? "#16a34a" : "#b45309", background: "none", border: "none", cursor: "pointer" }}>
+                      {disabled ? "Enable" : "Disable"}
+                    </button>
+                    <button onClick={() => deleteSlide(slide.id)} style={{ fontSize: 12, color: "#dc2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
+                  </div>
                 </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 14 }}>
@@ -620,19 +690,17 @@ export default function LessonDetailPage() {
                     </div>
                     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                        {slide.image_url ? (
-                          <img src={slide.image_url} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
-                        ) : (
-                          <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
-                        )}
+                        <MediaImagePreview ownUrl={slide.image_url} fallbackUrl={slide.image_url_simplified} />
                         <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image`]} onFile={f => uploadSlideImage(slide.id, f, "traditional")} />
+                        {!slide.image_key && slide.image_key_simplified && <FallbackNote from="Simplified" />}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
                         <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
                           <span style={{ fontSize: 22 }}>🔊</span>
-                          {slide.audio_key && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
+                          {slide.audio_key ? <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span> : slide.audio_key_simplified ? <span style={{ fontSize: 16, color: "#9ca3af" }}>↳</span> : null}
                         </div>
                         <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio`]} onFile={f => uploadSlideAudio(slide.id, f, "traditional")} />
+                        {!slide.audio_key && slide.audio_key_simplified && <FallbackNote from="Simplified" />}
                       </div>
                     </div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
@@ -653,19 +721,17 @@ export default function LessonDetailPage() {
                     </div>
                     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
-                        {slide.image_url_simplified ? (
-                          <img src={slide.image_url_simplified} alt="" style={{ width: 80, height: 80, borderRadius: 8, objectFit: "cover", border: "1px solid #e5e7eb" }} />
-                        ) : (
-                          <div style={{ width: 80, height: 80, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>
-                        )}
+                        <MediaImagePreview ownUrl={slide.image_url_simplified} fallbackUrl={slide.image_url} />
                         <UploadButton label="Image" accept="image/*" uploading={!!slideUploads[`${slide.id}-image-simplified`]} onFile={f => uploadSlideImage(slide.id, f, "simplified")} />
+                        {!slide.image_key_simplified && slide.image_key && <FallbackNote from="Traditional" />}
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
                         <div style={{ width: 80, height: 80, borderRadius: 8, background: "#fdf4ff", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: "1px solid #e9d5ff", gap: 2 }}>
                           <span style={{ fontSize: 22 }}>🔊</span>
-                          {slide.audio_key_simplified && <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span>}
+                          {slide.audio_key_simplified ? <span style={{ fontSize: 9, color: "#7c3aed", fontWeight: 600 }}>✓</span> : slide.audio_key ? <span style={{ fontSize: 16, color: "#9ca3af" }}>↳</span> : null}
                         </div>
                         <UploadButton label="Audio" accept="audio/*" uploading={!!slideUploads[`${slide.id}-audio-simplified`]} onFile={f => uploadSlideAudio(slide.id, f, "simplified")} />
+                        {!slide.audio_key_simplified && slide.audio_key && <FallbackNote from="Traditional" />}
                       </div>
                     </div>
                     <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>
@@ -711,6 +777,8 @@ export default function LessonDetailPage() {
                   onCreateCategory={createDictCategory}
                 />
               </div>
+              <InsertHere onClick={() => insertSlideAfter(slide.slide_number)} disabled={addingSlide} />
+              </div>
             );
           })}
 
@@ -724,6 +792,59 @@ export default function LessonDetailPage() {
     </div>
   );
 }
+
+// Image preview that shows the variant's own image, or — when blank but the OTHER
+// variant has one — the other image faded with a ↳ arrow, signalling that this
+// variant will fall back to it in the app. Falls back to a placeholder otherwise.
+function MediaImagePreview({ ownUrl, fallbackUrl, size = 80 }: { ownUrl: string | null; fallbackUrl: string | null; size?: number }) {
+  if (ownUrl) {
+    return <img src={ownUrl} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover", border: "1px solid #d1d5db" }} />;
+  }
+  if (fallbackUrl) {
+    return (
+      <div style={{ position: "relative", width: size, height: size }} title="Blank — will use the other version">
+        <img src={fallbackUrl} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover", border: "1px dashed #d1d5db", opacity: 0.35 }} />
+        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, color: "#6b7280" }}>↳</div>
+      </div>
+    );
+  }
+  return <div style={{ width: size, height: size, borderRadius: 8, background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center", border: "1px solid #e5e7eb", fontSize: 22 }}>🖼</div>;
+}
+
+// Small caption shown under a blank field that will inherit the other variant.
+function FallbackNote({ from }: { from: "Traditional" | "Simplified" }) {
+  return <div style={{ fontSize: 10, color: "#6b7280", fontWeight: 600 }}>↳ uses {from}</div>;
+}
+
+// Thin "insert a flashcard here" affordance shown between/around cards.
+function InsertHere({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, opacity: disabled ? 0.5 : 1 }}>
+      <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        title="Add a flashcard here"
+        style={{ fontSize: 12, fontWeight: 700, color: PINK, background: "#fff", border: `1px dashed ${PINK}`, borderRadius: 20, padding: "3px 14px", cursor: disabled ? "default" : "pointer" }}
+      >
+        + Add flashcard here
+      </button>
+      <div style={{ flex: 1, height: 1, background: "#e5e7eb" }} />
+    </div>
+  );
+}
+
+const iconBtnStyle: React.CSSProperties = {
+  fontSize: 10,
+  width: 22,
+  height: 18,
+  padding: 0,
+  borderRadius: 4,
+  border: "1px solid #e5e7eb",
+  background: "#fff",
+  color: "#6b7280",
+  cursor: "pointer",
+};
 
 function VideoUploadCell({ objectKey, uploading, onFile }: { objectKey: string | null; uploading: boolean; onFile: (f: File) => void }) {
   return (
