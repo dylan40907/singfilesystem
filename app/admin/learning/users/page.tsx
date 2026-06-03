@@ -25,6 +25,18 @@ type WhitelistEntry = {
   notes: string | null;
 };
 
+type DeletedUser = {
+  id: string;
+  user_id: string | null;
+  email: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  deleted_at: string;
+  deleted_by: string | null;
+  deleted_by_self: boolean;
+  deleted_by_label: string | null;
+};
+
 type Category = { id: string; name: string; order_index: number };
 type Lesson = {
   id: string;
@@ -51,6 +63,7 @@ export default function UsersPage() {
   const [approvedEmails, setApprovedEmails] = useState<string[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [deletedUsers, setDeletedUsers] = useState<DeletedUser[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Song-topic permissions modal. Keyed by EMAIL so the same locks are edited
@@ -69,18 +82,20 @@ export default function UsersPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [{ data: uData }, { data: wData }, { data: aData }, { data: cData }, { data: lData }] = await Promise.all([
+    const [{ data: uData }, { data: wData }, { data: aData }, { data: cData }, { data: lData }, { data: dData }] = await Promise.all([
       supabase.rpc("admin_list_learning_users"),
       supabase.from("learning_email_whitelist").select("*").order("added_at", { ascending: false }),
       supabase.from("learning_approved_emails").select("email"),
       supabase.from("learning_categories").select("id, name, order_index").order("order_index"),
       supabase.from("learning_lessons").select("id, category_id, title, is_locked, is_published, order_index").order("order_index"),
+      supabase.rpc("admin_list_deleted_users"),
     ]);
     setUsers((uData ?? []) as AppUser[]);
     setWhitelist((wData ?? []) as WhitelistEntry[]);
     setApprovedEmails(((aData ?? []) as { email: string }[]).map(r => r.email.toLowerCase()));
     setCategories((cData ?? []) as Category[]);
     setLessons((lData ?? []) as Lesson[]);
+    setDeletedUsers((dData ?? []) as DeletedUser[]);
     setLoading(false);
   }
 
@@ -435,6 +450,44 @@ export default function UsersPage() {
             busy={actionBusy}
             onPermissions={openPermissions}
           />
+        </section>
+      )}
+
+      {/* Deleted users — audit record (kept after the account is gone) */}
+      {deletedUsers.length > 0 && (
+        <section style={{ marginTop: 8 }}>
+          <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Deleted Users ({deletedUsers.length})</h2>
+          <p className="subtle" style={{ fontSize: 13, marginBottom: 14 }}>
+            A record of removed accounts — by an admin or by the user themselves. The accounts no longer exist.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {deletedUsers.map(d => {
+              const fullName = [d.first_name, d.last_name].filter(Boolean).join(" ");
+              const byText = d.deleted_by_self ? "by themself" : `by ${d.deleted_by_label ?? "an admin"}`;
+              return (
+                <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fafafa", borderRadius: 10, padding: "10px 14px", border: "1px solid #eee", flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    {fullName && <div style={{ fontWeight: 700, fontSize: 14, color: "#374151" }}>{fullName}</div>}
+                    <div style={{ fontSize: fullName ? 13 : 14, fontWeight: fullName ? 500 : 600, color: fullName ? "#6b7280" : "#374151" }}>
+                      {d.email ?? "(unknown email)"}
+                    </div>
+                  </div>
+                  <span
+                    style={{
+                      fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20,
+                      background: d.deleted_by_self ? "#fef3c7" : "#e0e7ff",
+                      color: d.deleted_by_self ? "#d97706" : "#4338ca",
+                    }}
+                  >
+                    {byText}
+                  </span>
+                  <span className="subtle" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                    {new Date(d.deleted_at).toLocaleDateString()} {new Date(d.deleted_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
     </div>
