@@ -9,8 +9,11 @@ import { CampusProvider } from "@/lib/CampusContext";
 export default function LayoutShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
-  // Clock page: no navbar, no page wrapper — full-screen standalone UI
-  if (pathname === "/clock" || pathname.startsWith("/clock/")) {
+  // Clock page + public legal pages: no navbar, no page wrapper — standalone UI.
+  if (
+    pathname === "/clock" || pathname.startsWith("/clock/") ||
+    pathname === "/privacy" || pathname === "/terms"
+  ) {
     return <>{children}</>;
   }
 
