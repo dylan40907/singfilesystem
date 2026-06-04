@@ -47,9 +47,6 @@ export default function LegalDocView({ pageKey }: { pageKey: string }) {
         Sing in Chinese
       </div>
       <div style={{ whiteSpace: "pre-wrap", fontSize: 15.5 }}>{doc.content}</div>
-      <div style={{ marginTop: 40, paddingTop: 18, borderTop: "1px solid #e5e7eb", fontSize: 12, color: "#9ca3af" }}>
-        Last updated: {new Date(doc.updated_at).toLocaleDateString()} · Contact: lynn@singinchinese.com
-      </div>
     </main>
   );
 }
