@@ -291,16 +291,18 @@ export default function LessonDetailPage() {
   // no reload, so the page stays put and the new card appears where you clicked.
   async function insertSlideAfter(afterNumber: number) {
     setAddingSlide(true);
-    const tempNum = (slides.length > 0 ? Math.max(...slides.map(s => s.slide_number)) : 0) + 1000;
+    // Insert with a temp number that's unique on insert (max+1), then reorder
+    // everything atomically via the RPC (handles the unique slide_number index).
+    const tempNum = (slides.length > 0 ? Math.max(...slides.map(s => s.slide_number)) : 0) + 1;
     const { data, error: e } = await supabase.from("learning_slides").insert({ lesson_id: id, slide_number: tempNum }).select().single();
     if (e || !data) { setError(e?.message ?? "Failed to add flashcard"); setAddingSlide(false); return; }
     const ordered = [...slides].sort((a, b) => a.slide_number - b.slide_number);
     const pos = afterNumber === 0 ? 0 : ordered.findIndex(s => s.slide_number === afterNumber) + 1;
     ordered.splice(pos, 0, data as Slide);
-    const reindexed = ordered.map((s, i) => ({ ...s, slide_number: i + 1 }));
-    setSlides(reindexed);
+    setSlides(ordered.map((s, i) => ({ ...s, slide_number: i + 1 })));
     setSlideLinks(prev => ({ ...prev, [(data as Slide).id]: "trad_leads" }));
-    await Promise.all(reindexed.map(s => supabase.from("learning_slides").update({ slide_number: s.slide_number }).eq("id", s.id)));
+    const { error: reErr } = await supabase.rpc("admin_reorder_lesson_slides", { p_lesson_id: id, p_ordered_ids: ordered.map(s => s.id) });
+    if (reErr) { setError(reErr.message); await load(); }
     setAddingSlide(false);
   }
 
@@ -311,14 +313,10 @@ export default function LessonDetailPage() {
     const swapIdx = idx + dir;
     if (swapIdx < 0 || swapIdx >= ordered.length) return;
     [ordered[idx], ordered[swapIdx]] = [ordered[swapIdx], ordered[idx]];
-    const prev = slides;
-    const reindexed = ordered.map((s, i) => ({ ...s, slide_number: i + 1 }));
-    setSlides(reindexed);
-    await Promise.all(
-      reindexed
-        .filter(s => prev.find(x => x.id === s.id)?.slide_number !== s.slide_number)
-        .map(s => supabase.from("learning_slides").update({ slide_number: s.slide_number }).eq("id", s.id))
-    );
+    setSlides(ordered.map((s, i) => ({ ...s, slide_number: i + 1 }))); // optimistic
+    // Persist the new order atomically (avoids the unique (lesson_id, slide_number) collision).
+    const { error: e } = await supabase.rpc("admin_reorder_lesson_slides", { p_lesson_id: id, p_ordered_ids: ordered.map(s => s.id) });
+    if (e) { setError(e.message); await load(); }
   }
 
   async function toggleSlideEnabled(slide: Slide) {
