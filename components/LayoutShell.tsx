@@ -12,7 +12,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
   // Clock page + public legal pages: no navbar, no page wrapper — standalone UI.
   if (
     pathname === "/clock" || pathname.startsWith("/clock/") ||
-    pathname === "/privacy" || pathname === "/terms"
+    pathname === "/privacy" || pathname === "/terms" || pathname === "/delete-account"
   ) {
     return <>{children}</>;
   }
