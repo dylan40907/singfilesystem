@@ -1593,12 +1593,12 @@ export default function TimesheetsPage() {
       ) : sortedEmployees.length === 0 ? (
         <div style={{ color: "#6b7280", padding: 20 }}>No active employees found.</div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ borderCollapse: "collapse", background: "white", border: "1.5px solid #e5e7eb", borderRadius: 12, overflow: "hidden", minWidth: "max-content" }}>
+        <div style={{ overflowX: "auto", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
+          <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
             <thead>
               {/* Week labels */}
               <tr>
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", minWidth: 160, position: "sticky", left: 0, zIndex: 2 })} />
+                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", minWidth: 160, position: "sticky", left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })} />
                 <th colSpan={5} style={cell({ background: "#f0f9ff", fontWeight: 700, textAlign: "center", color: "#0369a1", fontSize: 12 })}>
                   Week 1 · {workingDays[0].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })} – {workingDays[4].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}
                 </th>
@@ -1610,7 +1610,7 @@ export default function TimesheetsPage() {
               </tr>
               {/* Day headers */}
               <tr>
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", position: "sticky", left: 0, zIndex: 2 })}>Employee</th>
+                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", position: "sticky", left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>Employee</th>
                 {workingDays.map((d, i) => (
                   <th key={i} style={cell({ background: i < 5 ? "#f0f9ff" : "#f0fdf4", fontWeight: 700, textAlign: "center", color: i < 5 ? "#0369a1" : "#15803d", minWidth: 72 })}>
                     <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>{DAY_ABBRS[i]}</div>
@@ -1635,7 +1635,7 @@ export default function TimesheetsPage() {
 
                 return (
                   <tr key={emp.id} style={{ background: rowBg }}>
-                    <td style={cell({ fontWeight: 700, position: "sticky", left: 0, background: rowBg, zIndex: 1, color: "#111827" })}>
+                    <td style={cell({ fontWeight: 700, position: "sticky", left: 0, background: rowBg, zIndex: 1, color: "#111827", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>
                       {getDisplayName(emp)}
                     </td>
                     {dateStrs.map((ds, i) => {
@@ -1765,7 +1765,7 @@ export default function TimesheetsPage() {
 
               {/* Footer totals */}
               <tr style={{ background: "#f9fafb", borderTop: "2px solid #e5e7eb" }}>
-                <td style={cell({ fontWeight: 800, position: "sticky", left: 0, background: "#f9fafb", zIndex: 1, color: "#374151" })}>Total</td>
+                <td style={cell({ fontWeight: 800, position: "sticky", left: 0, background: "#f9fafb", zIndex: 1, color: "#374151", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>Total</td>
                 {dateStrs.map((ds, i) => {
                   const dayTotal = sortedEmployees.reduce((s, emp) => s + (minuteMap.get(emp.id)?.get(ds) ?? 0), 0);
                   return (
