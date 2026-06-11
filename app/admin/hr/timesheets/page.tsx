@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { todayLA, isoToLATimeInput, isoToLADisplayTime, isoToLADateStr, laWallTimeToISO } from "@/lib/laTime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -128,22 +129,29 @@ function minsToHDecimal(m: number): string {
   const min = m % 60;
   return min === 0 ? `${h}h` : `${h}h ${min}m`;
 }
+// Decimal-hours view, e.g. 472 min → "7.87". Two decimals, rounded half-up
+// (7.865 → 7.87; anything below rounds down). The 1e-9 nudge makes the half-up
+// boundary deterministic against floating-point error.
+function minsToDecimalHours(m: number): string {
+  if (m <= 0) return "--";
+  return (Math.round((m / 60) * 100 + 1e-9) / 100).toFixed(2);
+}
 function getDisplayName(e: Employee): string {
   const nick = Array.isArray(e.nicknames) && e.nicknames.length > 0 ? e.nicknames[0] : null;
-  return `${nick ?? e.legal_first_name} ${e.legal_last_name}`;
+  // "Last, First" on the timesheets page (sorted by last name).
+  return `${e.legal_last_name}, ${nick ?? e.legal_first_name}`;
 }
+// Time read/write is anchored to America/Los_Angeles (see lib/laTime) so editing
+// timesheets from any timezone stores and shows LA wall-clock times.
 function isoToTimeInput(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  return isoToLATimeInput(iso);
 }
 function isoToDisplayTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+  return isoToLADisplayTime(iso);
 }
 function buildISO(dateStr: string, timeHHMMSS: string): string {
-  const [y, mo, d] = dateStr.split("-").map(Number);
-  const parts = timeHHMMSS.split(":").map(Number);
-  const [h, m, s] = [parts[0], parts[1], parts[2] ?? 0];
-  return new Date(y, mo - 1, d, h, m, s).toISOString();
+  const p = timeHHMMSS.split(":").map(Number);
+  return laWallTimeToISO(dateStr, p[0], p[1], p[2] ?? 0);
 }
 function entryPaidMins(e: ClockEntry): number {
   if (!e.clocked_in_at || !e.clocked_out_at) return 0;
@@ -355,9 +363,8 @@ function SessionModal({
     const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
     setSaving((prev) => new Set(prev).add(entryId + "out"));
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-    // Past day: auto clock-out at 11:59:59 PM on session date. Today: use current time.
+    const todayStr = todayLA();
+    // Past day: auto clock-out at 11:59:59 PM LA on session date. Today: use current time.
     const iso = entry.session_date < todayStr
       ? buildISO(entry.session_date, "23:59:59")
       : new Date().toISOString();
@@ -382,8 +389,7 @@ function SessionModal({
     const originalIso = field === "in" ? entry.clocked_in_at : entry.clocked_out_at;
     let baseDateStr = entry.session_date;
     if (originalIso) {
-      const orig = new Date(originalIso);
-      baseDateStr = `${orig.getFullYear()}-${String(orig.getMonth() + 1).padStart(2, "0")}-${String(orig.getDate()).padStart(2, "0")}`;
+      baseDateStr = isoToLADateStr(originalIso);
     }
     const iso = buildISO(baseDateStr, timeVal);
     if (originalIso && isoToTimeInput(originalIso) === timeVal) return;
@@ -1318,6 +1324,9 @@ export default function TimesheetsPage() {
   const [periodIndex, setPeriodIndex] = useState(() => getPeriodIndex(new Date()));
   const [modal, setModal] = useState<ModalTarget | null>(null);
   const [editRequestsOpen, setEditRequestsOpen] = useState(false);
+  // How durations/totals are displayed on this page. Decimal hours (e.g. 7.87)
+  // is the default here; toggle to "hm" for the classic hour:minute view.
+  const [totalsMode, setTotalsMode] = useState<"decimal" | "hm">("decimal");
 
   const periodStart = useMemo(() => getPeriodStart(periodIndex), [periodIndex]);
   const workingDays = useMemo(() => getWorkingDays(periodStart), [periodStart]);
@@ -1516,12 +1525,17 @@ export default function TimesheetsPage() {
 
   // Show all active employees; prioritize ones with entries/leave in this period at the top.
   const sortedEmployees = useMemo(() => {
+    const byLastName = (a: Employee, b: Employee) =>
+      a.legal_last_name.localeCompare(b.legal_last_name, undefined, { sensitivity: "base" }) ||
+      a.legal_first_name.localeCompare(b.legal_first_name, undefined, { sensitivity: "base" });
     const withData: Employee[] = [];
     const withoutData: Employee[] = [];
     for (const e of employees) {
       if (entriesByEmpDay.has(e.id) || leaveByEmpDay.has(e.id)) withData.push(e);
       else withoutData.push(e);
     }
+    withData.sort(byLastName);
+    withoutData.sort(byLastName);
     return [...withData, ...withoutData];
   }, [employees, entriesByEmpDay, leaveByEmpDay]);
 
@@ -1549,6 +1563,12 @@ export default function TimesheetsPage() {
     whiteSpace: "nowrap",
     ...style,
   });
+
+  // Mode-aware total/duration formatters. Decimal mode renders e.g. "7.87";
+  // hour:minute mode keeps the original compact ("7:58") and breakdown
+  // ("15h 58m") styles.
+  const fmtTotal = (mins: number) => (totalsMode === "decimal" ? minsToDecimalHours(mins) : minsToHHMM(mins));
+  const fmtBreakdown = (mins: number) => (totalsMode === "decimal" ? minsToDecimalHours(mins) : minsToHDecimal(mins));
 
   const modalEntries = modal
     ? [...(entriesByEmpDay.get(modal.employeeId)?.get(modal.dateStr) ?? [])].sort(
@@ -1586,6 +1606,16 @@ export default function TimesheetsPage() {
         >
           Edit Requests{pendingEditCount > 0 ? ` (${pendingEditCount})` : ""}
         </button>
+        <button
+          onClick={() => setTotalsMode((m) => (m === "decimal" ? "hm" : "decimal"))}
+          title="Toggle how totals are displayed"
+          style={{
+            padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer",
+            border: "1.5px solid #c7d2fe", background: "#eef2ff", color: "#4338ca",
+          }}
+        >
+          {totalsMode === "decimal" ? "Totals: Decimal (7.87)" : "Totals: H:MM (7:52)"}
+        </button>
       </div>
 
       {loading ? (
@@ -1605,8 +1635,8 @@ export default function TimesheetsPage() {
                 <th colSpan={5} style={cell({ background: "#f0fdf4", fontWeight: 700, textAlign: "center", color: "#15803d", fontSize: 12 })}>
                   Week 2 · {workingDays[5].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })} – {workingDays[9].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}
                 </th>
-                <th style={cell({ background: "#f9fafb" })} />
                 <th colSpan={4} style={cell({ background: "#fdf4ff", fontWeight: 700, textAlign: "center", color: "#7c3aed", fontSize: 12 })}>Hours Breakdown</th>
+                <th style={cell({ background: "#f9fafb", borderRight: "none" })} />
               </tr>
               {/* Day headers */}
               <tr>
@@ -1617,11 +1647,11 @@ export default function TimesheetsPage() {
                     <div style={{ fontSize: 13 }}>{d.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}</div>
                   </th>
                 ))}
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "center", minWidth: 80 })}>Total</th>
                 <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#0369a1" })}>PTO</th>
                 <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#e6178d" })}>Sick</th>
                 <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#374151" })}>Regular</th>
-                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#b45309", borderRight: "none" })}>OT</th>
+                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#b45309" })}>OT</th>
+                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "center", minWidth: 80, borderRight: "none" })}>Total</th>
               </tr>
             </thead>
             <tbody>
@@ -1666,7 +1696,7 @@ export default function TimesheetsPage() {
                                 <div style={{ flex: 1, background: "#22c55e" }} />
                                 <div style={{ flex: 1, background: "#9ca3af" }} />
                               </div>
-                              <span style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{status === "open" ? "Clocked in" : minsToHHMM(mins)}</span>
+                              <span style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{status === "open" ? "Clocked in" : fmtTotal(mins)}</span>
                               <span style={{ fontSize: 10, fontWeight: 700, color: "#6b7280" }}>+ {leaveLabel}</span>
                             </button>
                           ) : hasClockData ? (
@@ -1695,7 +1725,7 @@ export default function TimesheetsPage() {
                                 cursor: "pointer",
                               }}
                             >
-                              {status === "open" ? "Clocked in" : minsToHHMM(mins)}
+                              {status === "open" ? "Clocked in" : fmtTotal(mins)}
                             </button>
                           ) : hasLeave ? (
                             <button
@@ -1744,20 +1774,20 @@ export default function TimesheetsPage() {
                         </td>
                       );
                     })}
-                    <td style={cell({ textAlign: "center", fontWeight: 800, fontSize: 14, color: totalMins > 0 ? "#111827" : "#d1d5db" })}>
-                      {minsToHHMM(totalMins)}
-                    </td>
                     <td style={cell({ textAlign: "center", color: leave.ptoMins > 0 ? "#0369a1" : "#d1d5db", fontWeight: 600 })}>
-                      {minsToHDecimal(leave.ptoMins)}
+                      {fmtBreakdown(leave.ptoMins)}
                     </td>
                     <td style={cell({ textAlign: "center", color: leave.sickMins > 0 ? "#e6178d" : "#d1d5db", fontWeight: 600 })}>
-                      {minsToHDecimal(leave.sickMins)}
+                      {fmtBreakdown(leave.sickMins)}
                     </td>
                     <td style={cell({ textAlign: "center", color: clock.regularMins > 0 ? "#374151" : "#d1d5db", fontWeight: 600 })}>
-                      {minsToHDecimal(clock.regularMins)}
+                      {fmtBreakdown(clock.regularMins)}
                     </td>
-                    <td style={cell({ textAlign: "center", color: clock.otMins > 0 ? "#b45309" : "#d1d5db", fontWeight: 600, borderRight: "none" })}>
-                      {minsToHDecimal(clock.otMins)}
+                    <td style={cell({ textAlign: "center", color: clock.otMins > 0 ? "#b45309" : "#d1d5db", fontWeight: 600 })}>
+                      {fmtBreakdown(clock.otMins)}
+                    </td>
+                    <td style={cell({ textAlign: "center", fontWeight: 800, fontSize: 14, color: totalMins > 0 ? "#111827" : "#d1d5db", borderRight: "none" })}>
+                      {fmtTotal(totalMins)}
                     </td>
                   </tr>
                 );
@@ -1770,7 +1800,7 @@ export default function TimesheetsPage() {
                   const dayTotal = sortedEmployees.reduce((s, emp) => s + (minuteMap.get(emp.id)?.get(ds) ?? 0), 0);
                   return (
                     <td key={i} style={cell({ textAlign: "center", fontWeight: 700, color: dayTotal > 0 ? "#374151" : "#d1d5db", fontSize: 12 })}>
-                      {minsToHHMM(dayTotal)}
+                      {fmtTotal(dayTotal)}
                     </td>
                   );
                 })}
@@ -1782,11 +1812,11 @@ export default function TimesheetsPage() {
                   const grandTotal = totPto + totSick + totReg + totOt;
                   return (
                     <>
-                      <td style={cell({ textAlign: "center", fontWeight: 800, color: "#111827" })}>{minsToHHMM(grandTotal)}</td>
-                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totPto > 0 ? "#0369a1" : "#d1d5db" })}>{minsToHDecimal(totPto)}</td>
-                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totSick > 0 ? "#e6178d" : "#d1d5db" })}>{minsToHDecimal(totSick)}</td>
-                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totReg > 0 ? "#374151" : "#d1d5db" })}>{minsToHDecimal(totReg)}</td>
-                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totOt > 0 ? "#b45309" : "#d1d5db", borderRight: "none" })}>{minsToHDecimal(totOt)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totPto > 0 ? "#0369a1" : "#d1d5db" })}>{fmtBreakdown(totPto)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totSick > 0 ? "#e6178d" : "#d1d5db" })}>{fmtBreakdown(totSick)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totReg > 0 ? "#374151" : "#d1d5db" })}>{fmtBreakdown(totReg)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 700, color: totOt > 0 ? "#b45309" : "#d1d5db" })}>{fmtBreakdown(totOt)}</td>
+                      <td style={cell({ textAlign: "center", fontWeight: 800, color: "#111827", borderRight: "none" })}>{fmtTotal(grandTotal)}</td>
                     </>
                   );
                 })()}

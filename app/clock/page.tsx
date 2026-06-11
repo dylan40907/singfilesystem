@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { supabase } from "@/lib/supabaseClient";
 import { formatEmployeeName, getDisplayName, timeToMinutes } from "@/lib/scheduleUtils";
+import { todayLA, laEndOfDayISO, nowLATime, laDayOfWeek } from "@/lib/laTime";
 import { useDialog } from "@/components/ui/useDialog";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -91,16 +92,14 @@ function buildSessions(blocks: BlockRow[]): Session[] {
   return sessions;
 }
 
-/** Today's day-of-week as 1=Mon … 5=Fri */
+/** Today's day-of-week as 1=Mon … 7=Sun, in LA time. */
 function todayDow(): number {
-  const d = new Date().getDay(); // 0=Sun
-  return d === 0 ? 7 : d; // return 7 for Sunday (no schedule)
+  return laDayOfWeek();
 }
 
-/** HH:MM:SS from Date */
+/** Current LA wall-clock time as HH:MM:SS. */
 function nowTime(): string {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  return nowLATime();
 }
 
 function elapsed(sinceISO: string): string {
@@ -248,9 +247,9 @@ export default function ClockPage() {
       return;
     }
 
-    // Get the most recent published schedule covering today (use LOCAL date, not UTC)
-    const _now = new Date();
-    const today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, "0")}-${String(_now.getDate()).padStart(2, "0")}`;
+    // Get the most recent published schedule covering today (anchored to LA, not
+    // the runtime's local timezone — see lib/laTime).
+    const today = todayLA();
     const { data: schedules } = await supabase
       .from("schedules")
       .select("id, week_start")
@@ -309,12 +308,11 @@ export default function ClockPage() {
       .lt("session_date", today);
 
     for (const e of openPrevEntries ?? []) {
-      // Auto clock-out at 11:59:59 PM on the session date (not at current login time)
-      const [sy, sm, sd] = e.session_date.split("-").map(Number);
-      const autoOut = new Date(sy, sm - 1, sd, 23, 59, 59);
+      // Auto clock-out at 11:59:59 PM LA on the session date (not at current login
+      // time, and not in the runtime's local timezone — always LA).
       await supabase
         .from("clock_entries")
-        .update({ clocked_out_at: autoOut.toISOString(), auto_clocked_out: true })
+        .update({ clocked_out_at: laEndOfDayISO(e.session_date), auto_clocked_out: true })
         .eq("id", e.id);
     }
 
@@ -393,8 +391,7 @@ export default function ClockPage() {
     if (!employee || !currentSession) return;
     setClockError("");
     if (!await ensureSession()) return;
-    const _d = new Date();
-    const today = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, "0")}-${String(_d.getDate()).padStart(2, "0")}`;
+    const today = todayLA();
     const { data: { session: authSession } } = await supabase.auth.getSession();
     const { data, error } = await supabase
       .from("clock_entries")
