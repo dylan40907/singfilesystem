@@ -102,16 +102,14 @@ async function uploadToR2(file: File, folder: string): Promise<{ objectKey: stri
   return { objectKey };
 }
 
-async function getPresignedUrl(objectKey: string, expiresIn = 3600): Promise<string> {
-  const auth = await getAuthHeader();
-  const res = await fetch("/api/r2/learning-url", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: auth },
-    body: JSON.stringify({ objectKey, expiresIn }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const { url } = await res.json();
-  return url;
+// Durable, non-expiring URL for an image object (thumbnails/ or slides/). Routes
+// through the public `learning-image` edge function, which re-signs a fresh R2
+// GET on every request — so the stored URL never expires. Use this for images
+// the mobile app loads directly (NOT presigned URLs, which die after 7 days).
+function learningImageUrl(objectKey: string): string {
+  const b64url = btoa(unescape(encodeURIComponent(objectKey)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/learning-image?k=${b64url}`;
 }
 
 async function deleteFromR2(objectKey: string) {
@@ -243,7 +241,7 @@ export default function LessonDetailPage() {
     setError("");
     try {
       const { objectKey } = await uploadToR2(file, "thumbnails");
-      const url = await getPresignedUrl(objectKey, 604800);
+      const url = learningImageUrl(objectKey);
       const keyCol = variant === "simplified" ? "thumbnail_key_simplified" : "thumbnail_key";
       const urlCol = variant === "simplified" ? "thumbnail_url_simplified" : "thumbnail_url";
       const { error: e } = await supabase.from("learning_lessons").update({ [keyCol]: objectKey, [urlCol]: url }).eq("id", id);
@@ -459,7 +457,7 @@ export default function LessonDetailPage() {
     setSlideUploads(p => ({ ...p, [uploadKey]: true }));
     try {
       const { objectKey } = await uploadToR2(file, "slides");
-      const url = await getPresignedUrl(objectKey, 604800);
+      const url = learningImageUrl(objectKey);
       const slide = slides.find(s => s.id === slideId);
       if (variant === "simplified") {
         await supabase.from("learning_slides").update({ image_key_simplified: objectKey, image_url_simplified: url }).eq("id", slideId);
