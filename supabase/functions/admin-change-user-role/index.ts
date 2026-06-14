@@ -55,6 +55,8 @@ Deno.serve(async (req) => {
     const target_user_id = (body?.target_user_id ?? "").toString();
     const new_role = (body?.new_role ?? "").toString();
     const campus_id = body?.campus_id ? (body.campus_id as string).toString() : null;
+    // "App Supervisor" = supervisor + this flag. Only meaningful for supervisors.
+    const grant_learning = body?.can_manage_learning === true && new_role === "supervisor";
 
     if (!target_user_id) return json({ error: "Missing target_user_id" }, 400);
     if (new_role !== "teacher" && new_role !== "supervisor" && new_role !== "campus_admin") {
@@ -72,7 +74,7 @@ Deno.serve(async (req) => {
     // Validate target
     const { data: targetProfile, error: targetErr } = await supabaseAdmin
       .from("user_profiles")
-      .select("id, role")
+      .select("id, role, can_manage_learning")
       .eq("id", target_user_id)
       .single();
 
@@ -88,7 +90,10 @@ Deno.serve(async (req) => {
     ) {
       return json({ error: "Target role not eligible for role changes." }, 400);
     }
-    if (targetProfile.role === new_role) {
+    // Reject only if nothing changes (same role AND same learning flag). This
+    // allows Supervisor <-> App Supervisor, which keep new_role = "supervisor".
+    const flagChanged = (targetProfile.can_manage_learning ?? false) !== grant_learning;
+    if (targetProfile.role === new_role && !flagChanged) {
       return json({ error: `User is already a ${new_role}.` }, 400);
     }
 
@@ -103,8 +108,9 @@ Deno.serve(async (req) => {
       if (!campusRow) return json({ error: "Campus not found." }, 404);
     }
 
-    // If leaving the supervisor role, clear their supervisor-teacher assignments.
-    if (targetProfile.role === "supervisor") {
+    // Only clear supervisor-teacher assignments when actually LEAVING the
+    // supervisor role (Supervisor -> App Supervisor stays supervisor, keeps them).
+    if (targetProfile.role === "supervisor" && new_role !== "supervisor") {
       const { error: asnErr } = await supabaseAdmin
         .from("supervisor_teacher_assignments")
         .delete()
@@ -112,10 +118,12 @@ Deno.serve(async (req) => {
       if (asnErr) return json({ error: "Failed to clear assignments: " + asnErr.message }, 500);
     }
 
-    // Build the patch. campus_id is only meaningful for campus_admin; null it out otherwise.
+    // Build the patch. campus_id is only meaningful for campus_admin; null it out
+    // otherwise. The learning flag is only ever set for supervisors.
     const patch: Record<string, unknown> = {
       role: new_role,
       campus_id: new_role === "campus_admin" ? campus_id : null,
+      can_manage_learning: grant_learning,
       updated_at: new Date().toISOString(),
     };
 

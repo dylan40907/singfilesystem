@@ -21,15 +21,24 @@ type UserRow = {
   is_active: boolean;
   role: Exclude<UserRole, "admin" | "employee" | "hours_manager">;
   campus_id: string | null;
+  can_manage_learning: boolean;
 };
 
 type EligibleRole = "teacher" | "supervisor" | "campus_admin";
+// A supervisor with the learning flag is selected/shown as "App Supervisor".
+type EligibleSelection = "teacher" | "supervisor" | "app_supervisor" | "campus_admin";
 
-const ROLE_LABEL: Record<EligibleRole, string> = {
+const SELECTION_LABEL: Record<EligibleSelection, string> = {
   teacher: "Teacher",
   supervisor: "Supervisor",
+  app_supervisor: "App Supervisor",
   campus_admin: "Campus Admin",
 };
+
+// What the dropdown reflects for an already-saved user.
+function currentSelection(u: UserRow): EligibleSelection {
+  return u.role === "supervisor" && u.can_manage_learning ? "app_supervisor" : u.role;
+}
 
 function labelFor(u: UserRow): string {
   const name = (u.full_name ?? "").trim();
@@ -49,7 +58,7 @@ export default function HrRolesPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
 
   // Per-row staged change: pending role + campus selection (before user clicks Save).
-  const [staged, setStaged] = useState<Record<string, { role: EligibleRole; campusId: string }>>({});
+  const [staged, setStaged] = useState<Record<string, { role: EligibleSelection; campusId: string }>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
@@ -58,7 +67,7 @@ export default function HrRolesPage() {
   const reload = useCallback(async () => {
     const { data, error } = await supabase
       .from("user_profiles")
-      .select("id, email, username, full_name, is_active, role, campus_id")
+      .select("id, email, username, full_name, is_active, role, campus_id, can_manage_learning")
       .in("role", ["teacher", "supervisor", "campus_admin"])
       .order("role", { ascending: true })
       .order("full_name", { ascending: true });
@@ -66,7 +75,10 @@ export default function HrRolesPage() {
       setStatus("Error: " + error.message);
       return;
     }
-    const rows = (data ?? []) as UserRow[];
+    // Drop any nameless rows (defensive — e.g. stray accounts with no identity).
+    const rows = ((data ?? []) as UserRow[]).filter(
+      (r) => (r.full_name ?? "").trim() || (r.username ?? "").trim() || (r.email ?? "").trim()
+    );
     // Sort: active first, then by role, then name
     rows.sort((a, b) => {
       const aa = a.is_active ? 0 : 1;
@@ -92,11 +104,11 @@ export default function HrRolesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reload]);
 
-  function getStagedFor(u: UserRow): { role: EligibleRole; campusId: string } {
-    return staged[u.id] ?? { role: u.role, campusId: u.campus_id ?? "" };
+  function getStagedFor(u: UserRow): { role: EligibleSelection; campusId: string } {
+    return staged[u.id] ?? { role: currentSelection(u), campusId: u.campus_id ?? "" };
   }
 
-  function setStagedFor(u: UserRow, next: { role: EligibleRole; campusId: string }) {
+  function setStagedFor(u: UserRow, next: { role: EligibleSelection; campusId: string }) {
     setStaged((prev) => ({ ...prev, [u.id]: next }));
   }
 
@@ -111,21 +123,24 @@ export default function HrRolesPage() {
   function isDirty(u: UserRow): boolean {
     const s = staged[u.id];
     if (!s) return false;
-    if (s.role !== u.role) return true;
+    if (s.role !== currentSelection(u)) return true;
     if (s.role === "campus_admin" && s.campusId !== (u.campus_id ?? "")) return true;
     return false;
   }
 
   async function saveRow(u: UserRow) {
     const s = getStagedFor(u);
+    // "App Supervisor" is stored as a supervisor + the can_manage_learning flag.
+    const newRole: EligibleRole = s.role === "app_supervisor" ? "supervisor" : s.role;
+    const grantLearning = s.role === "app_supervisor";
 
-    if (s.role === "campus_admin" && !s.campusId) {
+    if (newRole === "campus_admin" && !s.campusId) {
       setStatus("Pick a campus for the campus admin.");
       return;
     }
 
-    // Show warning if leaving supervisor role with assignments
-    if (u.role === "supervisor" && s.role !== "supervisor") {
+    // Warn only when actually LEAVING supervisor (App Supervisor stays supervisor).
+    if (u.role === "supervisor" && newRole !== "supervisor") {
       const { count } = await supabase
         .from("supervisor_teacher_assignments")
         .select("*", { count: "exact", head: true })
@@ -133,14 +148,14 @@ export default function HrRolesPage() {
       const n = count ?? 0;
       if (n > 0) {
         const ok = await confirm(
-          `${labelFor(u)} is currently supervising ${n} teacher${n === 1 ? "" : "s"}.\n\nChanging their role to ${ROLE_LABEL[s.role]} will remove all of those teacher assignments. Continue?`,
+          `${labelFor(u)} is currently supervising ${n} teacher${n === 1 ? "" : "s"}.\n\nChanging their role to ${SELECTION_LABEL[s.role]} will remove all of those teacher assignments. Continue?`,
           { title: "Supervisor has assignments", danger: true, confirmLabel: "Change role and unassign" }
         );
         if (!ok) return;
       }
     } else {
       const ok = await confirm(
-        `Change ${labelFor(u)} from ${ROLE_LABEL[u.role]} to ${ROLE_LABEL[s.role]}?`,
+        `Change ${labelFor(u)} from ${SELECTION_LABEL[currentSelection(u)]} to ${SELECTION_LABEL[s.role]}?`,
         { title: "Change role", confirmLabel: "Change" }
       );
       if (!ok) return;
@@ -150,15 +165,16 @@ export default function HrRolesPage() {
     setStatus("Updating role...");
     const body: Record<string, unknown> = {
       target_user_id: u.id,
-      new_role: s.role,
+      new_role: newRole,
+      can_manage_learning: grantLearning,
     };
-    if (s.role === "campus_admin") body.campus_id = s.campusId;
+    if (newRole === "campus_admin") body.campus_id = s.campusId;
 
     const { error } = await supabase.functions.invoke("admin-change-user-role", { body });
     setBusyId(null);
 
     if (error) { setStatus("Update error: " + error.message); return; }
-    setStatus(`✅ ${labelFor(u)} is now ${ROLE_LABEL[s.role]}.`);
+    setStatus(`✅ ${labelFor(u)} is now ${SELECTION_LABEL[s.role]}.`);
     resetStagedFor(u);
     await reload();
   }
@@ -193,7 +209,7 @@ export default function HrRolesPage() {
         <div className="row-between">
           <div className="stack" style={{ gap: 6 }}>
             <h1 className="h1">Roles</h1>
-            <div className="subtle">Change any user&apos;s role to Teacher, Supervisor, or Campus Admin. True admins are not shown.</div>
+            <div className="subtle">Change any user&apos;s role to Teacher, Supervisor, App Supervisor, or Campus Admin. &ldquo;App Supervisor&rdquo; is a Supervisor who can also manage the App (learning) page. True admins are not shown.</div>
           </div>
           {status ? <span className="badge badge-pink">{status}</span> : null}
         </div>
@@ -242,7 +258,7 @@ export default function HrRolesPage() {
                     <div style={{ minWidth: 220 }}>
                       <div style={{ fontWeight: 800 }}>{labelFor(u)}</div>
                       <div className="subtle" style={{ fontSize: 12 }}>
-                        Current: {ROLE_LABEL[u.role]}
+                        Current: {SELECTION_LABEL[currentSelection(u)]}
                         {u.role === "campus_admin" && currentCampusName ? ` · ${currentCampusName}` : ""}
                         {!u.is_active ? " · inactive" : ""}
                       </div>
@@ -259,11 +275,12 @@ export default function HrRolesPage() {
                         value={s.role}
                         disabled={busy}
                         onChange={(e) =>
-                          setStagedFor(u, { role: e.target.value as EligibleRole, campusId: s.campusId })
+                          setStagedFor(u, { role: e.target.value as EligibleSelection, campusId: s.campusId })
                         }
                       >
                         <option value="teacher">Teacher</option>
                         <option value="supervisor">Supervisor</option>
+                        <option value="app_supervisor">App Supervisor</option>
                         <option value="campus_admin">Campus Admin</option>
                       </select>
                       {s.role === "campus_admin" && (

@@ -45,11 +45,11 @@ export async function POST(req: Request) {
 
     const { data: prof } = await adminClient
       .from("user_profiles")
-      .select("role, is_active")
+      .select("role, is_active, can_manage_learning")
       .eq("id", userData.user.id)
       .single();
 
-    if (!prof?.is_active || prof.role !== "admin") {
+    if (!prof?.is_active || (prof.role !== "admin" && !prof.can_manage_learning)) {
       return NextResponse.json({ error: "Admin access required" }, { status: 403 });
     }
 

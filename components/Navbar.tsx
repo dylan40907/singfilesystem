@@ -71,15 +71,15 @@ export default function Navbar() {
   const isAdminOrSupervisor =
     !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
-  const showMyPlans = !!sessionEmail && isActive;
   const showTeachers = !!sessionEmail && isAdminOrSupervisor;
-  const showReviewQueue = !!sessionEmail && isAdminOrSupervisor;
 
   const isSupervisor = !!profile?.is_active && profile.role === "supervisor";
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
   const showSupervisors = !!sessionEmail && (isAdmin || isCampusAdmin);
   const showSchedules = !!sessionEmail && isSupervisor;
+  // App (learning) page: full admins + "App Supervisors" (the learning flag).
+  const showApp = !!sessionEmail && isActive && (isAdmin || !!profile?.can_manage_learning);
 
   // ✅ HR visible to ALL active users (admin/campus_admin goes to /admin/hr, everyone else to /hr)
   const showHr = !!sessionEmail && isActive;
@@ -180,8 +180,6 @@ export default function Navbar() {
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname.startsWith("/admin/learning")) return "learning";
     if (pathname === "/teachers") return "teachers";
-    if (pathname === "/review-queue") return "review-queue";
-    if (pathname === "/my-plans") return "my-plans";
     if (pathname === "/chat" || pathname.startsWith("/chat/")) return "chat";
     return "home";
   }, [pathname]);
@@ -208,13 +206,11 @@ export default function Navbar() {
             {/* Desktop nav links */}
             <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
               <NavLink href="/" label="Home" active={activeTab === "home"} />
-              {showMyPlans && <NavLink href="/my-plans" label="My Plans" active={activeTab === "my-plans"} />}
               {showTeachers && <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />}
-              {showReviewQueue && <NavLink href="/review-queue" label="Review Queue" active={activeTab === "review-queue"} />}
               {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
-              {isAdmin && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
+              {showApp && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
               {showChat && (
                 <NavLink
                   href="/chat"
@@ -259,13 +255,11 @@ export default function Navbar() {
         {menuOpen && (
           <div className="nav-mobile-panel hide-desktop">
             <Link href="/" className={`nav-mobile-link${activeTab === "home" ? " active" : ""}`}>Home</Link>
-            {showMyPlans && <Link href="/my-plans" className={`nav-mobile-link${activeTab === "my-plans" ? " active" : ""}`}>My Plans</Link>}
             {showTeachers && <Link href="/teachers" className={`nav-mobile-link${activeTab === "teachers" ? " active" : ""}`}>Teachers</Link>}
-            {showReviewQueue && <Link href="/review-queue" className={`nav-mobile-link${activeTab === "review-queue" ? " active" : ""}`}>Review Queue</Link>}
             {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
-            {isAdmin && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
+            {showApp && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
             {showChat && (
               <Link
                 href="/chat"

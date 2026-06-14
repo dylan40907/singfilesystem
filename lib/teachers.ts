@@ -10,6 +10,10 @@ export type TeacherProfile = {
   role: UserRole;
   is_active: boolean;
   campus_id: string | null;
+  // "App Supervisor": a supervisor additionally allowed to manage the App
+  // (learning) area. Optional because some teacher-list queries don't select it;
+  // absent/undefined is treated the same as false by all gates.
+  can_manage_learning?: boolean;
 };
 
 export async function fetchActiveTeachers(): Promise<TeacherProfile[]> {
@@ -25,7 +29,7 @@ export async function fetchMyProfile(): Promise<TeacherProfile | null> {
 
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("id, email, username, full_name, role, is_active, campus_id")
+    .select("id, email, username, full_name, role, is_active, campus_id, can_manage_learning")
     .eq("id", uid)
     .single();
 
