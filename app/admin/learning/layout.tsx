@@ -17,8 +17,11 @@ export default function LearningAdminLayout({ children }: { children: ReactNode 
       if (!data.session) { router.replace("/"); return; }
 
       const profile = await fetchMyProfile();
-      // Admins and "App Supervisors" (supervisors with the learning flag) may enter.
-      if (!profile?.is_active || (profile.role !== "admin" && !profile.can_manage_learning)) {
+      // Admins, campus admins, and "App Supervisors" (the learning flag) may enter.
+      if (
+        !profile?.is_active ||
+        (profile.role !== "admin" && profile.role !== "campus_admin" && !profile.can_manage_learning)
+      ) {
         router.replace("/");
         return;
       }

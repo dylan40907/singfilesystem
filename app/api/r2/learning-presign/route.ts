@@ -56,7 +56,7 @@ export async function POST(req: Request) {
       .eq("id", userData.user.id)
       .single();
 
-    if (!prof?.is_active || (prof.role !== "admin" && !prof.can_manage_learning)) {
+    if (!prof?.is_active || (prof.role !== "admin" && prof.role !== "campus_admin" && !prof.can_manage_learning)) {
       return NextResponse.json({ error: "Admin access required" }, { status: 403 });
     }
 

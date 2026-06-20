@@ -78,8 +78,8 @@ export default function Navbar() {
   const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
   const showSupervisors = !!sessionEmail && (isAdmin || isCampusAdmin);
   const showSchedules = !!sessionEmail && isSupervisor;
-  // App (learning) page: full admins + "App Supervisors" (the learning flag).
-  const showApp = !!sessionEmail && isActive && (isAdmin || !!profile?.can_manage_learning);
+  // App (learning) page: full admins, campus admins, + "App Supervisors" (the flag).
+  const showApp = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || !!profile?.can_manage_learning);
 
   // ✅ HR visible to ALL active users (admin/campus_admin goes to /admin/hr, everyone else to /hr)
   const showHr = !!sessionEmail && isActive;
