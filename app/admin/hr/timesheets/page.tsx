@@ -1564,6 +1564,24 @@ export default function TimesheetsPage() {
     ...style,
   });
 
+  // Sticky table headers: the first row is the week grouping row, and the
+  // second row is the day/date header row. The fixed height keeps the second
+  // sticky row tucked directly under the first one while scrolling.
+  const WEEK_HEADER_HEIGHT = 34;
+  const stickyWeekHeader: React.CSSProperties = {
+    position: "sticky",
+    top: 0,
+    zIndex: 4,
+    height: WEEK_HEADER_HEIGHT,
+    boxSizing: "border-box",
+  };
+  const stickyDayHeader: React.CSSProperties = {
+    position: "sticky",
+    top: WEEK_HEADER_HEIGHT,
+    zIndex: 4,
+  };
+  const stickyLeftShadow = "2px 0 5px -2px rgba(0,0,0,0.12)";
+
   // Mode-aware total/duration formatters. Decimal mode renders e.g. "7.87";
   // hour:minute mode keeps the original compact ("7:58") and breakdown
   // ("15h 58m") styles.
@@ -1623,35 +1641,35 @@ export default function TimesheetsPage() {
       ) : sortedEmployees.length === 0 ? (
         <div style={{ color: "#6b7280", padding: 20 }}>No active employees found.</div>
       ) : (
-        <div style={{ overflowX: "auto", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
-          <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
+        <div style={{ overflow: "auto", maxHeight: "calc(100vh - 140px)", border: "1.5px solid #e5e7eb", borderRadius: 12, position: "relative" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 0, background: "white", minWidth: "max-content" }}>
             <thead>
               {/* Week labels */}
               <tr>
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", minWidth: 160, position: "sticky", left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })} />
-                <th colSpan={5} style={cell({ background: "#f0f9ff", fontWeight: 700, textAlign: "center", color: "#0369a1", fontSize: 12 })}>
+                <th style={cell({ ...stickyWeekHeader, background: "#f9fafb", fontWeight: 800, textAlign: "left", minWidth: 160, left: 0, zIndex: 6, boxShadow: stickyLeftShadow })} />
+                <th colSpan={5} style={cell({ ...stickyWeekHeader, background: "#f0f9ff", fontWeight: 700, textAlign: "center", color: "#0369a1", fontSize: 12 })}>
                   Week 1 · {workingDays[0].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })} – {workingDays[4].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}
                 </th>
-                <th colSpan={5} style={cell({ background: "#f0fdf4", fontWeight: 700, textAlign: "center", color: "#15803d", fontSize: 12 })}>
+                <th colSpan={5} style={cell({ ...stickyWeekHeader, background: "#f0fdf4", fontWeight: 700, textAlign: "center", color: "#15803d", fontSize: 12 })}>
                   Week 2 · {workingDays[5].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })} – {workingDays[9].toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}
                 </th>
-                <th colSpan={4} style={cell({ background: "#fdf4ff", fontWeight: 700, textAlign: "center", color: "#7c3aed", fontSize: 12 })}>Hours Breakdown</th>
-                <th style={cell({ background: "#f9fafb", borderRight: "none" })} />
+                <th colSpan={4} style={cell({ ...stickyWeekHeader, background: "#fdf4ff", fontWeight: 700, textAlign: "center", color: "#7c3aed", fontSize: 12 })}>Hours Breakdown</th>
+                <th style={cell({ ...stickyWeekHeader, background: "#f9fafb", borderRight: "none" })} />
               </tr>
               {/* Day headers */}
               <tr>
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "left", position: "sticky", left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>Employee</th>
+                <th style={cell({ ...stickyDayHeader, background: "#f9fafb", fontWeight: 800, textAlign: "left", left: 0, zIndex: 6, boxShadow: stickyLeftShadow })}>Employee</th>
                 {workingDays.map((d, i) => (
-                  <th key={i} style={cell({ background: i < 5 ? "#f0f9ff" : "#f0fdf4", fontWeight: 700, textAlign: "center", color: i < 5 ? "#0369a1" : "#15803d", minWidth: 72 })}>
+                  <th key={i} style={cell({ ...stickyDayHeader, background: i < 5 ? "#f0f9ff" : "#f0fdf4", fontWeight: 700, textAlign: "center", color: i < 5 ? "#0369a1" : "#15803d", minWidth: 72 })}>
                     <div style={{ fontSize: 11, fontWeight: 600, opacity: 0.75 }}>{DAY_ABBRS[i]}</div>
                     <div style={{ fontSize: 13 }}>{d.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" })}</div>
                   </th>
                 ))}
-                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#0369a1" })}>PTO</th>
-                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#e6178d" })}>Sick</th>
-                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#374151" })}>Regular</th>
-                <th style={cell({ background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#b45309" })}>OT</th>
-                <th style={cell({ background: "#f9fafb", fontWeight: 800, textAlign: "center", minWidth: 80, borderRight: "none" })}>Total</th>
+                <th style={cell({ ...stickyDayHeader, background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#0369a1" })}>PTO</th>
+                <th style={cell({ ...stickyDayHeader, background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#e6178d" })}>Sick</th>
+                <th style={cell({ ...stickyDayHeader, background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#374151" })}>Regular</th>
+                <th style={cell({ ...stickyDayHeader, background: "#fdf4ff", fontWeight: 800, textAlign: "center", minWidth: 68, color: "#b45309" })}>OT</th>
+                <th style={cell({ ...stickyDayHeader, background: "#f9fafb", fontWeight: 800, textAlign: "center", minWidth: 80, borderRight: "none" })}>Total</th>
               </tr>
             </thead>
             <tbody>
@@ -1665,7 +1683,7 @@ export default function TimesheetsPage() {
 
                 return (
                   <tr key={emp.id} style={{ background: rowBg }}>
-                    <td style={cell({ fontWeight: 700, position: "sticky", left: 0, background: rowBg, zIndex: 1, color: "#111827", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>
+                    <td style={cell({ fontWeight: 700, position: "sticky", left: 0, background: rowBg, zIndex: 1, color: "#111827", boxShadow: stickyLeftShadow })}>
                       {getDisplayName(emp)}
                     </td>
                     {dateStrs.map((ds, i) => {
@@ -1795,7 +1813,7 @@ export default function TimesheetsPage() {
 
               {/* Footer totals */}
               <tr style={{ background: "#f9fafb", borderTop: "2px solid #e5e7eb" }}>
-                <td style={cell({ fontWeight: 800, position: "sticky", left: 0, background: "#f9fafb", zIndex: 1, color: "#374151", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" })}>Total</td>
+                <td style={cell({ fontWeight: 800, position: "sticky", left: 0, background: "#f9fafb", zIndex: 1, color: "#374151", boxShadow: stickyLeftShadow })}>Total</td>
                 {dateStrs.map((ds, i) => {
                   const dayTotal = sortedEmployees.reduce((s, emp) => s + (minuteMap.get(emp.id)?.get(ds) ?? 0), 0);
                   return (
