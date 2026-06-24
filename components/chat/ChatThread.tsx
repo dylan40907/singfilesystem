@@ -198,6 +198,9 @@ export default function ChatThread({
         ref={scrollRef}
         style={{
           flex: 1,
+          // min-height:0 lets this flex child actually scroll instead of growing
+          // to fit all messages (which would push the composer out of the card).
+          minHeight: 0,
           overflowY: "auto",
           padding: "16px 18px",
           background: "linear-gradient(180deg, #fdfbff 0%, white 100%)",

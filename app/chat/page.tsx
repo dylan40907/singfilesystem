@@ -106,7 +106,7 @@ export default function ChatPage() {
         myId={myId ?? ""}
       />
 
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, minHeight: 0, height: "100%" }}>
         {loading && !selectedConversation ? (
           <div style={{ padding: 24, color: "#9ca3af", fontSize: 14 }}>Loading…</div>
         ) : error ? (

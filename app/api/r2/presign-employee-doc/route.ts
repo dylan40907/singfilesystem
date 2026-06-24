@@ -39,15 +39,12 @@ export async function POST(req: Request) {
     const { data: userData, error: userErr } = await supabase.auth.getUser();
     if (userErr || !userData?.user) return jsonError("Invalid session", 401);
 
-    // enforce admin/is_active (same predicate as RLS)
-    const { data: prof, error: profErr } = await supabase
-      .from("user_profiles")
-      .select("role,is_active")
-      .eq("id", userData.user.id)
-      .maybeSingle();
-
-    if (profErr) return jsonError(profErr.message, 403);
-    if (!prof || prof.role !== "admin" || prof.is_active !== true) return jsonError("Forbidden", 403);
+    // Full admins, or campus admins scoped to their own campus's employees.
+    const { data: canManage, error: cmErr } = await supabase.rpc("can_manage_employee_docs", {
+      emp_id: employeeId,
+    });
+    if (cmErr) return jsonError(cmErr.message, 403);
+    if (canManage !== true) return jsonError("Forbidden", 403);
 
     const r2 = new S3Client({
       region: "auto",
