@@ -1449,6 +1449,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   includeDrafts={false}
                   readOnly={true}
                   mode="self"
+                  allowAnnual={!isSupervisor}
                 />
               ) : (
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
@@ -1573,6 +1574,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                       readOnly={false}
                       mode="manage"
                       showRoleExportButton={false}
+                      allowAnnual={isAdmin}
                     />
                   ) : (
                     <div className="subtle" style={{ marginTop: 8 }}>
@@ -2204,6 +2206,7 @@ function EmployeePerformanceReviewsTab({
   readOnly = false,
   mode = "manage",
   showRoleExportButton = true,
+  allowAnnual = true,
 }: {
   employeeId: string;
   /** Snapshot source for new annual reviews. We do NOT overwrite existing snapshots. */
@@ -2212,6 +2215,8 @@ function EmployeePerformanceReviewsTab({
   readOnly?: boolean;
   mode?: "manage" | "self";
   showRoleExportButton?: boolean;
+  /** When false (supervisors), annual evaluations are hidden — monthly only. */
+  allowAnnual?: boolean;
 }) {
   const isSelf = mode === "self";
   const now = useMemo(() => new Date(), []);
@@ -3719,9 +3724,11 @@ function EmployeePerformanceReviewsTab({
         <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           {!readOnly ? (
             <>
-              <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
-                + Create Annual Evaluation
-              </button>
+              {allowAnnual ? (
+                <button className="btn btn-primary" type="button" onClick={() => openCreate("annual")}>
+                  + Create Annual Evaluation
+                </button>
+              ) : null}
               <button className="btn btn-primary" type="button" onClick={() => openCreate("monthly")}>
                 + Create Monthly Scorecard
               </button>
@@ -3751,19 +3758,23 @@ function EmployeePerformanceReviewsTab({
 
       <div style={{ height: 12 }} />
 
-      <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 800 }}>
-        <input
-          type="checkbox"
-          checked={showAnnual}
-          onChange={(e) => setShowAnnual(e.target.checked)}
-        />
-        Show annual evaluations (unchecked = monthly)
-      </label>
+      {allowAnnual ? (
+        <>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 800 }}>
+            <input
+              type="checkbox"
+              checked={showAnnual}
+              onChange={(e) => setShowAnnual(e.target.checked)}
+            />
+            Show annual evaluations (unchecked = monthly)
+          </label>
 
-      <div style={{ height: 12 }} />
+          <div style={{ height: 12 }} />
+        </>
+      ) : null}
 
       <div style={{ fontWeight: 800, marginBottom: 8 }}>
-        {showAnnual ? "Annual evaluations" : "Monthly evaluations"} ({filteredReviews.length})
+        {allowAnnual && showAnnual ? "Annual evaluations" : "Monthly evaluations"} ({filteredReviews.length})
       </div>
 
       {filteredReviews.length === 0 ? (

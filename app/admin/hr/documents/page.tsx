@@ -31,6 +31,7 @@ type DocType = {
   visible_in_app: boolean;
   allow_user_upload: boolean;
   expiration_enabled: boolean;
+  expiration_date: string | null;
   template_object_key: string | null;
   template_file_name: string | null;
   template_mime_type: string | null;
@@ -316,8 +317,8 @@ export default function HrDocumentsPage() {
       // governs employee self-uploads). The DB trigger keeps employees pending.
       const now = new Date();
       const expires =
-        type.expiration_enabled && type.renewal_months
-          ? new Date(new Date(now).setMonth(now.getMonth() + type.renewal_months)).toISOString()
+        type.expiration_enabled && type.expiration_date
+          ? new Date(type.expiration_date).toISOString()
           : null;
 
       await upsertRecord({
@@ -349,10 +350,10 @@ export default function HrDocumentsPage() {
     setStatus("Approving…");
     try {
       const now = new Date();
-      const base = rec.uploaded_at ? new Date(rec.uploaded_at) : now;
-      const expires = type.renewal_months
-        ? new Date(new Date(base).setMonth(base.getMonth() + type.renewal_months)).toISOString()
-        : null;
+      const expires =
+        type.expiration_enabled && type.expiration_date
+          ? new Date(type.expiration_date).toISOString()
+          : null;
       await upsertRecord({
         employee_id: emp.id,
         doc_type_id: type.id,
@@ -837,7 +838,7 @@ function DocumentModal({
   const [visibleInApp, setVisibleInApp] = useState(type?.visible_in_app ?? true);
   const [allowUserUpload, setAllowUserUpload] = useState(type?.allow_user_upload ?? true);
   const [expirationEnabled, setExpirationEnabled] = useState(type?.expiration_enabled ?? false);
-  const [renew, setRenew] = useState<string>(type?.renewal_months ? String(type.renewal_months) : "");
+  const [expiryDate, setExpiryDate] = useState<string>(type?.expiration_date ?? "");
 
   // Notification settings
   const ns = (type?.notify_settings ?? {}) as Record<string, any>;
@@ -892,12 +893,13 @@ function DocumentModal({
         code: code.trim() || null,
         description: description.trim() || null,
         pack_id: packId || null,
-        renewal_months: expirationEnabled && renew.trim() ? Number(renew) : null,
+        renewal_months: null,
+        expiration_date: expirationEnabled && expiryDate ? expiryDate : null,
         requires_approval: requiresApproval,
         required_default: requiredDefault,
         visible_in_app: visibleInApp,
         allow_user_upload: allowUserUpload,
-        expiration_enabled: expirationEnabled,
+        expiration_enabled: expirationEnabled && !!expiryDate,
         notify_settings: {
           ...(ns ?? {}),
           notify_user_status: notifyUserStatus,
@@ -1063,10 +1065,16 @@ function DocumentModal({
             <input type="checkbox" checked={expirationEnabled} onChange={(e) => setExpirationEnabled(e.target.checked)} /> Set document expiration
           </label>
           {expirationEnabled && (
-            <div className="row" style={{ gap: 8, alignItems: "center", marginLeft: 26 }}>
-              <span className="subtle" style={{ fontSize: 13 }}>Renews every</span>
-              <input className="input" value={renew} onChange={(e) => setRenew(e.target.value)} inputMode="numeric" style={{ maxWidth: 90 }} placeholder="months" />
-              <span className="subtle" style={{ fontSize: 13 }}>months</span>
+            <div className="row" style={{ gap: 8, alignItems: "center", marginLeft: 26, flexWrap: "wrap" }}>
+              <span className="subtle" style={{ fontSize: 13 }}>Expires on</span>
+              <input
+                className="input"
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                style={{ maxWidth: 180 }}
+              />
+              <span className="subtle" style={{ fontSize: 13 }}>· users reminded 30, 7, 1 days before</span>
             </div>
           )}
 
