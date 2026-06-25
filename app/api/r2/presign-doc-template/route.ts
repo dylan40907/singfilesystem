@@ -5,16 +5,17 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 
 function safeFilename(name: string) {
-  // keep it simple + predictable
-  return (name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 140);
+  return (name || "form").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 140);
 }
-
 function jsonError(msg: string, status = 400) {
   return NextResponse.json({ error: msg }, { status });
 }
 
 export const runtime = "nodejs";
 
+// Presigns an upload for a document TYPE's blank/template form. Full HR admins
+// only (templates are global, not per-employee). Object lives under
+// hr/doc-templates/{docTypeId}/… ("new" before the type exists).
 export async function POST(req: Request) {
   try {
     const auth = req.headers.get("authorization") || "";
@@ -22,12 +23,10 @@ export async function POST(req: Request) {
     if (!token) return jsonError("Missing bearer token", 401);
 
     const body = await req.json();
-    const employeeId = String(body?.employeeId || "");
+    const docTypeId = String(body?.docTypeId || "new");
     const filename = String(body?.filename || "");
     const contentType = String(body?.contentType || "application/octet-stream");
     const sizeBytes = Number(body?.sizeBytes || 0);
-
-    if (!employeeId) return jsonError("Missing employeeId");
     if (!filename) return jsonError("Missing filename");
 
     const supabase = createClient(
@@ -39,18 +38,9 @@ export async function POST(req: Request) {
     const { data: userData, error: userErr } = await supabase.auth.getUser(token);
     if (userErr || !userData?.user) return jsonError("Invalid session", 401);
 
-    // Allowed if: full admin / campus admin for this employee, OR the logged-in
-    // staff member uploading their OWN document (self-service).
-    const { data: canManage, error: cmErr } = await supabase.rpc("can_manage_employee_docs", {
-      emp_id: employeeId,
-    });
-    if (cmErr) return jsonError(cmErr.message, 403);
-    let allowed = canManage === true;
-    if (!allowed) {
-      const { data: mine } = await supabase.rpc("is_my_employee_record", { emp_id: employeeId });
-      allowed = mine === true;
-    }
-    if (!allowed) return jsonError("Forbidden", 403);
+    const { data: isAdmin, error: adminErr } = await supabase.rpc("is_hr_admin");
+    if (adminErr) return jsonError(adminErr.message, 403);
+    if (isAdmin !== true) return jsonError("Forbidden", 403);
 
     const r2 = new S3Client({
       region: "auto",
@@ -61,17 +51,14 @@ export async function POST(req: Request) {
       },
     });
 
-    const key = `hr/employees/${employeeId}/${randomUUID()}-${safeFilename(filename)}`;
-
+    const key = `hr/doc-templates/${docTypeId}/${randomUUID()}-${safeFilename(filename)}`;
     const cmd = new PutObjectCommand({
       Bucket: process.env.R2_BUCKET!,
       Key: key,
       ContentType: contentType,
       ContentLength: Number.isFinite(sizeBytes) ? sizeBytes : undefined,
     });
-
     const uploadUrl = await getSignedUrl(r2, cmd, { expiresIn: 60 });
-
     return NextResponse.json({ uploadUrl, objectKey: key });
   } catch (e: any) {
     return jsonError(e?.message ?? "Presign failed", 500);

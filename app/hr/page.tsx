@@ -17,6 +17,7 @@ import {
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import TeacherScheduleView from "@/components/schedule/TeacherScheduleView";
+import EmployeeDocuments from "@/components/hr/EmployeeDocuments";
 import { useDialog } from "@/components/ui/useDialog";
 
 /**
@@ -261,7 +262,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog";
+  type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
   const [pinRevealed, setPinRevealed] = useState(false);
 
@@ -1340,6 +1341,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
         {/* Mobile horizontal tab strip */}
         <div className="hr-page-mobile-tabs">
           <button className={`hr-mobile-tab${activeTab === "attendance" ? " active" : ""}`} onClick={() => setActiveTab("attendance")}>Attendance</button>
+          {employee && <button className={`hr-mobile-tab${activeTab === "documents" ? " active" : ""}`} onClick={() => setActiveTab("documents")}>Documents</button>}
           <button className={`hr-mobile-tab${activeTab === "reviews" ? " active" : ""}`} onClick={() => setActiveTab("reviews")}>Reviews</button>
           {isSupervisor && <button className={`hr-mobile-tab${activeTab === "meetings" ? " active" : ""}`} onClick={() => setActiveTab("meetings")}>Meetings</button>}
           {canReviewOthers && <button className={`hr-mobile-tab${activeTab === "employeeReviews" ? " active" : ""}`} onClick={() => setActiveTab("employeeReviews")}>Employee Reviews</button>}
@@ -1354,6 +1356,11 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             <TabButton active={activeTab === "attendance"} onClick={() => setActiveTab("attendance")}>
               Attendance
             </TabButton>
+            {employee ? (
+              <TabButton active={activeTab === "documents"} onClick={() => setActiveTab("documents")}>
+                Documents
+              </TabButton>
+            ) : null}
             <TabButton active={activeTab === "reviews"} onClick={() => setActiveTab("reviews")}>
               Performance Reviews
             </TabButton>
@@ -1380,6 +1387,12 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
           {/* Right content */}
           <div style={{ display: "grid", gap: 14 }}>
+            {activeTab === "documents" && employee ? (
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                <EmployeeDocuments employeeId={employee.id} />
+              </div>
+            ) : null}
+
             {activeTab === "attendance" ? (
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                 <div style={{ fontWeight: 950, fontSize: 18 }}>Attendance</div>

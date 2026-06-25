@@ -7,6 +7,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
+import NotificationsBell from "@/components/NotificationsBell";
 
 function NavLink({
   href,
@@ -226,7 +227,8 @@ export default function Navbar() {
           </div>
 
           {/* Desktop right controls */}
-          <div className="row hide-mobile" style={{ gap: 10 }}>
+          <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
+            {showChat && <NotificationsBell />}
             {sessionEmail ? (
               <>
                 <span className="badge badge-pink">{displayName}</span>

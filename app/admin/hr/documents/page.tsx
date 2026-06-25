@@ -16,17 +16,25 @@ type Employee = {
   is_active: boolean;
 };
 
-type Pack = { id: string; name: string; order_index: number };
+type Pack = { id: string; name: string; order_index: number; assign_all: boolean; description: string | null };
 
 type DocType = {
   id: string;
   pack_id: string | null;
   name: string;
   code: string | null;
+  description: string | null;
   order_index: number;
   renewal_months: number | null;
   requires_approval: boolean;
   required_default: boolean;
+  visible_in_app: boolean;
+  allow_user_upload: boolean;
+  expiration_enabled: boolean;
+  template_object_key: string | null;
+  template_file_name: string | null;
+  template_mime_type: string | null;
+  notify_settings: Record<string, any> | null;
   is_active: boolean;
 };
 
@@ -121,8 +129,58 @@ export default function HrDocumentsPage() {
 
   // Cell action modal
   const [cell, setCell] = useState<{ emp: Employee; type: DocType } | null>(null);
-  // Manage-columns modal
-  const [manageOpen, setManageOpen] = useState(false);
+  // Document create/edit modal: { mode, type? }
+  const [docModal, setDocModal] = useState<{ mode: "create" | "edit"; type?: DocType } | null>(null);
+  // Inline "add pack"
+  const [addingPack, setAddingPack] = useState(false);
+  const [newPackName, setNewPackName] = useState("");
+  // Pending-approval review panel
+  const [pendingOpen, setPendingOpen] = useState(false);
+  // Options menu + pack-edit modal
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [packModal, setPackModal] = useState<Pack | null>(null);
+
+  async function notifyMissing() {
+    setOptionsOpen(false);
+    const ids = visibleTypes.map((t) => t.id);
+    if (!ids.length) { setStatus("No documents in view."); return; }
+    setStatus("Notifying…");
+    const { data, error } = await supabase.rpc("notify_missing_docs", { p_doc_type_ids: ids });
+    setStatus(error ? "Error: " + error.message : `✅ Sent ${data ?? 0} notification(s).`);
+  }
+
+  function exportCsv() {
+    setOptionsOpen(false);
+    const header = ["Employee", ...visibleTypes.map((t) => t.name)];
+    const lines = visibleEmployees.map((emp) => [
+      empName(emp),
+      ...visibleTypes.map((t) => computeStatus(records[cellKey(emp.id, t.id)], t).replace("_", " ")),
+    ]);
+    const csv = [header, ...lines]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "documents-status.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function addPack() {
+    const name = newPackName.trim();
+    if (!name) return;
+    setStatus("Adding pack…");
+    const { error } = await supabase.from("hr_document_packs").insert({ name, order_index: packs.length });
+    if (error) { setStatus("Error: " + error.message); return; }
+    setNewPackName("");
+    setAddingPack(false);
+    setStatus("");
+    await reload();
+  }
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadTargetRef = useRef<{ emp: Employee; type: DocType } | null>(null);
@@ -253,11 +311,13 @@ export default function HrDocumentsPage() {
       });
       if (!putRes.ok) throw new Error(`Upload failed (${putRes.status})`);
 
-      const autoApprove = !type.requires_approval;
+      // An admin/campus-admin uploading on this page IS the authority, so the
+      // document is auto-approved regardless of "require review" (which only
+      // governs employee self-uploads). The DB trigger keeps employees pending.
       const now = new Date();
       const expires =
-        autoApprove && type.renewal_months
-          ? new Date(now.getTime()).setMonth(now.getMonth() + type.renewal_months)
+        type.expiration_enabled && type.renewal_months
+          ? new Date(new Date(now).setMonth(now.getMonth() + type.renewal_months)).toISOString()
           : null;
 
       await upsertRecord({
@@ -270,11 +330,12 @@ export default function HrDocumentsPage() {
         size_bytes: file.size,
         uploaded_at: now.toISOString(),
         uploaded_by: me?.id ?? null,
-        approval_status: autoApprove ? "approved" : "pending",
-        reviewed_by: autoApprove ? me?.id ?? null : null,
-        reviewed_at: autoApprove ? now.toISOString() : null,
+        submitted_by_employee: false,
+        approval_status: "approved",
+        reviewed_by: me?.id ?? null,
+        reviewed_at: now.toISOString(),
         review_note: null,
-        expires_at: expires ? new Date(expires).toISOString() : null,
+        expires_at: expires,
       } as any);
 
       setStatus("✅ Uploaded.");
@@ -322,6 +383,12 @@ export default function HrDocumentsPage() {
     } catch (e: any) {
       setStatus("Reject error: " + (e?.message ?? "unknown"));
     }
+  }
+
+  async function remind(emp: Employee, type: DocType) {
+    setStatus("Sending reminder…");
+    const { data, error } = await supabase.rpc("notify_employee_doc", { p_employee_id: emp.id, p_doc_type_id: type.id });
+    setStatus(error ? "Error: " + error.message : data ? "✅ Reminder sent." : "Could not send reminder.");
   }
 
   async function setRequired(emp: Employee, type: DocType, required: boolean) {
@@ -409,21 +476,79 @@ export default function HrDocumentsPage() {
           <div className="subtle">Employee compliance documents. Sensitive files are stored encrypted and access is restricted.</div>
         </div>
         <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          {pendingCount > 0 && <span className="badge badge-pink">{pendingCount} pending approval</span>}
+          {pendingCount > 0 && (
+            <button className="btn badge-pink" style={{ fontWeight: 800 }} onClick={() => setPendingOpen(true)}>
+              {pendingCount} Pending Approval
+            </button>
+          )}
           {status ? <span className="badge">{status}</span> : null}
-          {isAdmin && <button className="btn btn-primary" onClick={() => setManageOpen(true)}>Manage columns</button>}
+          {isAdmin && (
+            <button
+              className="btn btn-primary"
+              onClick={() => setDocModal({ mode: "create" })}
+            >
+              + Add document
+            </button>
+          )}
+          {isAdmin && (
+            <div style={{ position: "relative" }}>
+              <button className="btn" onClick={() => setOptionsOpen((v) => !v)}>Options ▾</button>
+              {optionsOpen && (
+                <>
+                  <div style={{ position: "fixed", inset: 0, zIndex: 90 }} onClick={() => setOptionsOpen(false)} />
+                  <div
+                    className="card"
+                    style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 100, width: 280, padding: 6, borderRadius: 12 }}
+                  >
+                    <button className="btn" style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => void notifyMissing()}>
+                      🔔 Notify users with missing / rejected
+                    </button>
+                    <button className="btn" style={{ width: "100%", justifyContent: "flex-start", marginTop: 4 }} onClick={exportCsv}>
+                      ⬇ Export status report (CSV)
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           <button className="btn" onClick={() => void reload()}>Refresh</button>
         </div>
       </div>
 
-      {/* Pack tabs */}
-      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      {/* Pack tabs + inline add-pack */}
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <span className="subtle" style={{ fontWeight: 800, fontSize: 13 }}>Packs</span>
         <button className={`btn${activePack === "all" ? " btn-primary" : ""}`} onClick={() => setActivePack("all")}>All</button>
         {packs.map((p) => (
           <button key={p.id} className={`btn${activePack === p.id ? " btn-primary" : ""}`} onClick={() => setActivePack(p.id)}>
             {p.name}
           </button>
         ))}
+        {isAdmin && (
+          addingPack ? (
+            <span className="row" style={{ gap: 6 }}>
+              <input
+                className="input"
+                autoFocus
+                placeholder="New pack name"
+                value={newPackName}
+                onChange={(e) => setNewPackName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void addPack(); if (e.key === "Escape") { setAddingPack(false); setNewPackName(""); } }}
+                style={{ maxWidth: 200 }}
+              />
+              <button className="btn btn-primary" onClick={() => void addPack()}>Add</button>
+              <button className="btn" onClick={() => { setAddingPack(false); setNewPackName(""); }}>Cancel</button>
+            </span>
+          ) : (
+            <button className="btn" onClick={() => setAddingPack(true)} title="Add a pack">+ Add pack</button>
+          )
+        )}
+        {isAdmin && activePack !== "all" && (
+          (() => {
+            const p = packs.find((x) => x.id === activePack);
+            return p ? <button className="btn" onClick={() => setPackModal(p)} title="Pack settings">⚙ Edit pack</button> : null;
+          })()
+        )}
       </div>
 
       <input
@@ -440,8 +565,13 @@ export default function HrDocumentsPage() {
         <div className="card">
           <div style={{ fontWeight: 800 }}>No document columns yet</div>
           <div className="subtle" style={{ marginTop: 6 }}>
-            {isAdmin ? 'Click "Manage columns" to add document types.' : "Ask an admin to add document types."}
+            {isAdmin ? 'Click "+ Add document" to create your first document.' : "Ask an admin to add document types."}
           </div>
+          {isAdmin && (
+            <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setDocModal({ mode: "create" })}>
+              + Add document
+            </button>
+          )}
         </div>
       ) : (
         <div style={{ overflowX: "auto", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
@@ -468,15 +598,36 @@ export default function HrDocumentsPage() {
                   const pct = c.required > 0 ? Math.round((c.approved / c.required) * 100) : 0;
                   return (
                     <th key={t.id} style={{ ...cellStyleBase, background: "#f9fafb", fontWeight: 700, minWidth: 120, verticalAlign: "top" }}>
-                      <div style={{ fontSize: 12 }}>{t.name}</div>
-                      {t.code ? <div className="subtle" style={{ fontSize: 10 }}>{t.code}</div> : null}
-                      <div style={{ marginTop: 6, height: 5, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
-                        <div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "#22c55e" : "#60a5fa" }} />
+                      <div
+                        onClick={isAdmin ? () => setDocModal({ mode: "edit", type: t }) : undefined}
+                        style={{ cursor: isAdmin ? "pointer" : "default" }}
+                        title={isAdmin ? "Edit document settings" : undefined}
+                      >
+                        <div style={{ fontSize: 12 }}>
+                          {t.name}
+                          {isAdmin && <span className="subtle" style={{ fontWeight: 400 }}> ✎</span>}
+                          {t.template_object_key ? <span title="Has a blank form"> 📎</span> : null}
+                        </div>
+                        {t.code ? <div className="subtle" style={{ fontSize: 10 }}>{t.code}</div> : null}
+                        <div style={{ marginTop: 6, height: 5, borderRadius: 3, background: "#e5e7eb", overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: pct === 100 ? "#22c55e" : "#60a5fa" }} />
+                        </div>
+                        <div className="subtle" style={{ fontSize: 10, marginTop: 2 }}>{c.approved}/{c.required}</div>
                       </div>
-                      <div className="subtle" style={{ fontSize: 10, marginTop: 2 }}>{c.approved}/{c.required}</div>
                     </th>
                   );
                 })}
+                {isAdmin && (
+                  <th style={{ ...cellStyleBase, background: "#f9fafb", minWidth: 110, verticalAlign: "middle" }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => setDocModal({ mode: "create" })}
+                      style={{ fontSize: 12, whiteSpace: "nowrap" }}
+                    >
+                      + Add document
+                    </button>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -525,6 +676,7 @@ export default function HrDocumentsPage() {
                         </td>
                       );
                     })}
+                    {isAdmin && <td style={{ ...cellStyleBase, background: rowBg }} />}
                   </tr>
                 );
               })}
@@ -538,6 +690,7 @@ export default function HrDocumentsPage() {
           emp={cell.emp}
           type={cell.type}
           rec={records[cellKey(cell.emp.id, cell.type.id)]}
+          myUserId={me?.id ?? null}
           onClose={() => setCell(null)}
           onUpload={() => pickFileFor(cell.emp, cell.type)}
           onView={(r) => viewFile(r)}
@@ -545,14 +698,40 @@ export default function HrDocumentsPage() {
           onReject={() => reject(cell.emp, cell.type)}
           onClear={() => clearFile(cell.emp, cell.type)}
           onSetRequired={(req) => setRequired(cell.emp, cell.type, req)}
+          onRemind={() => remind(cell.emp, cell.type)}
         />
       )}
 
-      {manageOpen && isAdmin && (
-        <ManageColumnsModal
-          packs={packs}
+      {pendingOpen && (
+        <PendingPanel
+          employees={employees}
           types={types}
-          onClose={() => setManageOpen(false)}
+          records={records}
+          myUserId={me?.id ?? null}
+          onClose={() => setPendingOpen(false)}
+          onView={(r) => viewFile(r)}
+          onApprove={(emp, type, rec) => approve(emp, type, rec)}
+          onReject={(emp, type) => reject(emp, type)}
+        />
+      )}
+
+      {docModal && isAdmin && (
+        <DocumentModal
+          mode={docModal.mode}
+          type={docModal.type}
+          packs={packs}
+          typeCount={types.length}
+          defaultPackId={activePack !== "all" ? activePack : ""}
+          onClose={() => setDocModal(null)}
+          onChanged={() => void reload()}
+        />
+      )}
+
+      {packModal && isAdmin && (
+        <PackModal
+          pack={packModal}
+          employees={employees}
+          onClose={() => setPackModal(null)}
           onChanged={() => void reload()}
         />
       )}
@@ -563,11 +742,12 @@ export default function HrDocumentsPage() {
 // ─── Cell action modal ────────────────────────────────────────────────────
 
 function CellActionModal({
-  emp, type, rec, onClose, onUpload, onView, onApprove, onReject, onClear, onSetRequired,
+  emp, type, rec, myUserId, onClose, onUpload, onView, onApprove, onReject, onClear, onSetRequired, onRemind,
 }: {
   emp: Employee;
   type: DocType;
   rec: DocRecord | undefined;
+  myUserId: string | null;
   onClose: () => void;
   onUpload: () => void;
   onView: (r: DocRecord) => void;
@@ -575,12 +755,13 @@ function CellActionModal({
   onReject: () => void;
   onClear: () => void;
   onSetRequired: (required: boolean) => void;
+  onRemind: () => void;
 }) {
   const st = computeStatus(rec, type);
   const required = isRequired(rec, type);
   return (
     <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
-      <div className="card" style={{ width: "min(460px, 96vw)", borderRadius: 16 }}>
+      <div className="card" style={{ width: "min(460px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
         <div className="row-between">
           <div style={{ fontWeight: 900, fontSize: 16 }}>{type.name}</div>
           <button className="btn" onClick={onClose}>Close</button>
@@ -605,6 +786,9 @@ function CellActionModal({
               <button className="btn" onClick={() => onView(rec)}>View file</button>
             )}
             <button className="btn btn-primary" onClick={onUpload}>{rec?.object_key ? "Replace file" : "Upload file"}</button>
+            {(!rec?.object_key || rec.approval_status === "rejected") && (
+              <button className="btn" onClick={onRemind}>🔔 Remind to upload</button>
+            )}
             {rec?.object_key && rec.approval_status === "pending" && (
               <div className="row" style={{ gap: 8 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => onApprove(rec)}>Approve</button>
@@ -618,130 +802,613 @@ function CellActionModal({
             <button className="btn" onClick={() => onSetRequired(false)}>Mark not required for this person</button>
           </div>
         )}
+
+        {rec && (
+          <>
+            <div className="hr" />
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 8 }}>Comments</div>
+            <DocComments recordId={rec.id} myUserId={myUserId} />
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Manage columns modal ───────────────────────────────────────────────────
+// ─── Document create / edit modal (Connecteam-style "Request document upload") ──
 
-function ManageColumnsModal({
-  packs, types, onClose, onChanged,
+function DocumentModal({
+  mode, type, packs, typeCount, defaultPackId, onClose, onChanged,
 }: {
+  mode: "create" | "edit";
+  type?: DocType;
   packs: Pack[];
-  types: DocType[];
+  typeCount: number;
+  defaultPackId: string;
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const [name, setName] = useState(type?.name ?? "");
+  const [code, setCode] = useState(type?.code ?? "");
+  const [description, setDescription] = useState(type?.description ?? "");
+  const [packId, setPackId] = useState<string>(type?.pack_id ?? defaultPackId ?? "");
+  const [requiresApproval, setRequiresApproval] = useState(type?.requires_approval ?? true);
+  const [requiredDefault, setRequiredDefault] = useState(type?.required_default ?? true);
+  const [visibleInApp, setVisibleInApp] = useState(type?.visible_in_app ?? true);
+  const [allowUserUpload, setAllowUserUpload] = useState(type?.allow_user_upload ?? true);
+  const [expirationEnabled, setExpirationEnabled] = useState(type?.expiration_enabled ?? false);
+  const [renew, setRenew] = useState<string>(type?.renewal_months ? String(type.renewal_months) : "");
+
+  // Notification settings
+  const ns = (type?.notify_settings ?? {}) as Record<string, any>;
+  const [notifyUserStatus, setNotifyUserStatus] = useState<boolean>(ns.notify_user_status ?? true);
+  const [notifyAdminAwaiting, setNotifyAdminAwaiting] = useState<boolean>(ns.notify_admin_awaiting ?? true);
+
+  // blank / template form
+  const [hasTemplate, setHasTemplate] = useState<boolean>(!!type?.template_object_key);
+  const [stagedFile, setStagedFile] = useState<File | null>(null);
+  const [removeTemplate, setRemoveTemplate] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
-  const [newPack, setNewPack] = useState("");
-  // new type form
-  const [tName, setTName] = useState("");
-  const [tCode, setTCode] = useState("");
-  const [tPack, setTPack] = useState<string>("");
-  const [tRenew, setTRenew] = useState<string>("");
-  const [tApproval, setTApproval] = useState(true);
-  const [tRequired, setTRequired] = useState(true);
 
-  async function addPack() {
-    if (!newPack.trim()) return;
-    setStatus("Adding pack…");
-    const { error } = await supabase.from("hr_document_packs").insert({ name: newPack.trim(), order_index: packs.length });
-    setStatus(error ? "Error: " + error.message : "");
-    if (!error) { setNewPack(""); onChanged(); }
-  }
-
-  async function addType() {
-    if (!tName.trim()) { setStatus("Enter a name."); return; }
-    setStatus("Adding column…");
-    const { error } = await supabase.from("hr_document_types").insert({
-      name: tName.trim(),
-      code: tCode.trim() || null,
-      pack_id: tPack || null,
-      order_index: types.length,
-      renewal_months: tRenew.trim() ? Number(tRenew) : null,
-      requires_approval: tApproval,
-      required_default: tRequired,
-      is_active: true,
+  async function uploadTemplate(docTypeId: string, file: File): Promise<string> {
+    const token = await getToken();
+    const presRes = await fetch("/api/r2/presign-doc-template", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ docTypeId, filename: file.name, contentType: file.type || "application/octet-stream", sizeBytes: file.size }),
     });
-    setStatus(error ? "Error: " + error.message : "");
-    if (!error) { setTName(""); setTCode(""); setTRenew(""); onChanged(); }
+    const pres = await readJsonSafely(presRes);
+    if (!presRes.ok || pres.__nonJson) throw new Error(pres?.error || "Template presign failed");
+    const put = await fetch(pres.uploadUrl, { method: "PUT", headers: { "Content-Type": file.type || "application/octet-stream" }, body: file });
+    if (!put.ok) throw new Error(`Template upload failed (${put.status})`);
+    return pres.objectKey as string;
   }
 
-  async function deleteType(id: string) {
-    if (!confirm("Delete this document column and all its records? This cannot be undone.")) return;
-    setStatus("Deleting…");
-    const { error } = await supabase.from("hr_document_types").delete().eq("id", id);
-    setStatus(error ? "Error: " + error.message : "");
-    if (!error) onChanged();
+  async function downloadTemplate() {
+    if (!type?.id) return;
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/r2/hr-doc-template", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ docTypeId: type.id, mode: "attachment" }),
+      });
+      const body = await readJsonSafely(res);
+      if (!res.ok || body.__nonJson || !body.url) throw new Error(body?.error || "Download failed");
+      window.open(body.url as string, "_blank");
+    } catch (e: any) { setStatus("Error: " + (e?.message ?? "unknown")); }
   }
 
-  const packName = (id: string | null) => packs.find((p) => p.id === id)?.name ?? "—";
+  async function save() {
+    if (!name.trim()) { setStatus("Enter a document name."); return; }
+    setSaving(true);
+    setStatus("Saving…");
+    try {
+      const baseFields = {
+        name: name.trim(),
+        code: code.trim() || null,
+        description: description.trim() || null,
+        pack_id: packId || null,
+        renewal_months: expirationEnabled && renew.trim() ? Number(renew) : null,
+        requires_approval: requiresApproval,
+        required_default: requiredDefault,
+        visible_in_app: visibleInApp,
+        allow_user_upload: allowUserUpload,
+        expiration_enabled: expirationEnabled,
+        notify_settings: {
+          ...(ns ?? {}),
+          notify_user_status: notifyUserStatus,
+          notify_admin_awaiting: notifyAdminAwaiting,
+        },
+      };
+
+      let typeId = type?.id;
+      if (mode === "create") {
+        const { data, error } = await supabase
+          .from("hr_document_types")
+          .insert({ ...baseFields, order_index: typeCount, is_active: true })
+          .select("id")
+          .single();
+        if (error) throw error;
+        typeId = (data as { id: string }).id;
+      } else {
+        const { error } = await supabase.from("hr_document_types").update(baseFields).eq("id", typeId);
+        if (error) throw error;
+      }
+
+      if (stagedFile && typeId) {
+        const key = await uploadTemplate(typeId, stagedFile);
+        const { error } = await supabase.from("hr_document_types").update({
+          template_object_key: key,
+          template_file_name: stagedFile.name,
+          template_mime_type: stagedFile.type || "application/octet-stream",
+          template_size_bytes: stagedFile.size,
+        }).eq("id", typeId);
+        if (error) throw error;
+      } else if (removeTemplate && typeId) {
+        const { error } = await supabase.from("hr_document_types").update({
+          template_object_key: null, template_file_name: null, template_mime_type: null, template_size_bytes: null,
+        }).eq("id", typeId);
+        if (error) throw error;
+      }
+
+      onChanged();
+      onClose();
+    } catch (e: any) {
+      setStatus("Error: " + (e?.message ?? "unknown"));
+      setSaving(false);
+    }
+  }
+
+  async function deleteDoc() {
+    if (!type?.id) return;
+    if (!confirm("Delete this document and all its records? This cannot be undone.")) return;
+    setSaving(true);
+    const { error } = await supabase.from("hr_document_types").delete().eq("id", type.id);
+    if (error) { setStatus("Error: " + error.message); setSaving(false); return; }
+    onChanged();
+    onClose();
+  }
+
+  async function remindMissing() {
+    if (!type?.id) return;
+    setStatus("Sending reminders…");
+    const { data, error } = await supabase.rpc("notify_missing_docs", { p_doc_type_ids: [type.id] });
+    setStatus(error ? "Error: " + error.message : `✅ Reminded ${data ?? 0} user(s) who haven't submitted.`);
+  }
+
+  async function resetEntries() {
+    if (!type?.id) return;
+    if (!confirm("Clear ALL uploaded files and statuses for this document across every employee? The document itself stays; only the submissions are removed. This cannot be undone.")) return;
+    setSaving(true);
+    setStatus("Resetting…");
+    const { error } = await supabase.from("hr_document_records").delete().eq("doc_type_id", type.id);
+    if (error) { setStatus("Error: " + error.message); setSaving(false); return; }
+    onChanged();
+    onClose();
+  }
+
+  const showCurrentTemplate = hasTemplate && !removeTemplate && !stagedFile;
 
   return (
     <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
-      <div className="card" style={{ width: "min(640px, 96vw)", borderRadius: 16, maxHeight: "90vh", overflowY: "auto" }}>
+      <div className="card" style={{ width: "min(640px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
+        <input
+          ref={fileRef}
+          type="file"
+          style={{ display: "none" }}
+          onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ""; if (f) { setStagedFile(f); setRemoveTemplate(false); } }}
+        />
+
         <div className="row-between">
-          <div style={{ fontWeight: 900, fontSize: 16 }}>Manage document columns</div>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>{mode === "create" ? "New document" : "Edit document"}</div>
           <button className="btn" onClick={onClose}>Close</button>
         </div>
-        {status ? <div className="subtle" style={{ marginTop: 6 }}>{status}</div> : null}
+        <div className="subtle" style={{ marginTop: 4 }}>Create a document that users are required to upload.</div>
         <div className="hr" />
 
-        {/* Packs */}
-        <div style={{ fontWeight: 800, marginBottom: 8 }}>Packs (column groups)</div>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-          {packs.map((p) => <span key={p.id} className="badge">{p.name}</span>)}
-        </div>
-        <div className="row" style={{ gap: 8 }}>
-          <input className="input" placeholder="New pack name" value={newPack} onChange={(e) => setNewPack(e.target.value)} />
-          <button className="btn" onClick={() => void addPack()}>Add pack</button>
-        </div>
+        <div className="stack" style={{ gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Document name</div>
+            <input className="input" placeholder="e.g. LIC 503 - Health Screening" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
 
-        <div className="hr" />
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Description <span className="subtle" style={{ fontWeight: 400 }}>(optional)</span></div>
+            <textarea
+              className="input"
+              placeholder="Instructions or notes for users…"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              style={{ resize: "vertical", minHeight: 70, padding: "8px 12px" }}
+            />
+          </div>
 
-        {/* New type */}
-        <div style={{ fontWeight: 800, marginBottom: 8 }}>Add a document column</div>
-        <div className="stack" style={{ gap: 8 }}>
-          <input className="input" placeholder="Name (e.g. LIC 503 - Health Screening)" value={tName} onChange={(e) => setTName(e.target.value)} />
           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-            <input className="input" placeholder="Code (optional)" value={tCode} onChange={(e) => setTCode(e.target.value)} style={{ maxWidth: 160 }} />
-            <select className="select" value={tPack} onChange={(e) => setTPack(e.target.value)}>
+            <input className="input" placeholder="Code (optional)" value={code} onChange={(e) => setCode(e.target.value)} style={{ maxWidth: 180 }} />
+            <select className="select" value={packId} onChange={(e) => setPackId(e.target.value)}>
               <option value="">No pack</option>
               {packs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
-            <input className="input" placeholder="Renew (months)" value={tRenew} onChange={(e) => setTRenew(e.target.value)} style={{ maxWidth: 130 }} inputMode="numeric" />
           </div>
-          <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
-            <label className="row" style={{ gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={tApproval} onChange={(e) => setTApproval(e.target.checked)} /> Requires approval
-            </label>
-            <label className="row" style={{ gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={tRequired} onChange={(e) => setTRequired(e.target.checked)} /> Required for everyone by default
-            </label>
-          </div>
-          <button className="btn btn-primary" onClick={() => void addType()} style={{ alignSelf: "flex-start" }}>Add column</button>
-        </div>
 
-        <div className="hr" />
+          <div className="hr" />
 
-        {/* Existing types */}
-        <div style={{ fontWeight: 800, marginBottom: 8 }}>Columns ({types.length})</div>
-        <div className="stack" style={{ gap: 6 }}>
-          {types.map((t) => (
-            <div key={t.id} className="row-between" style={{ padding: "8px 4px", borderBottom: "1px solid #f3f4f6" }}>
-              <div>
-                <div style={{ fontWeight: 700 }}>{t.name}</div>
-                <div className="subtle" style={{ fontSize: 12 }}>
-                  {packName(t.pack_id)}
-                  {t.renewal_months ? ` · renews every ${t.renewal_months}mo` : " · no expiry"}
-                  {t.requires_approval ? " · approval" : " · auto-approve"}
-                  {t.required_default ? " · required" : " · optional"}
+          {/* Blank form */}
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13 }}>Blank document</div>
+            <div className="subtle" style={{ fontSize: 12, marginBottom: 8 }}>Users can download this form to fill out and send back.</div>
+            {showCurrentTemplate ? (
+              <div className="row-between" style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "8px 12px" }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>📎 {type?.template_file_name ?? "Blank form"}</div>
+                <div className="row" style={{ gap: 6 }}>
+                  <button className="btn" onClick={() => void downloadTemplate()}>Download</button>
+                  <button className="btn" onClick={() => fileRef.current?.click()}>Replace</button>
+                  <button className="btn" onClick={() => { setRemoveTemplate(true); setHasTemplate(false); }}>Remove</button>
                 </div>
               </div>
-              <button className="btn" onClick={() => void deleteType(t.id)}>Delete</button>
+            ) : stagedFile ? (
+              <div className="row-between" style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "8px 12px" }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>📎 {stagedFile.name} <span className="subtle" style={{ fontWeight: 400 }}>(new)</span></div>
+                <button className="btn" onClick={() => setStagedFile(null)}>Cancel</button>
+              </div>
+            ) : (
+              <button className="btn" onClick={() => fileRef.current?.click()}>Add blank form</button>
+            )}
+          </div>
+
+          <div className="hr" />
+
+          {/* Settings */}
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={visibleInApp} onChange={(e) => setVisibleInApp(e.target.checked)} /> Visible to users in the mobile app
+          </label>
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={allowUserUpload} onChange={(e) => setAllowUserUpload(e.target.checked)} /> Enable users to upload via the app &amp; their portal
+          </label>
+          <label className="row" style={{ gap: 8, alignItems: "center", marginLeft: 26 }}>
+            <input type="checkbox" checked={requiresApproval} onChange={(e) => setRequiresApproval(e.target.checked)} /> Require review for user uploads
+          </label>
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={requiredDefault} onChange={(e) => setRequiredDefault(e.target.checked)} /> Required for everyone by default
+          </label>
+
+          <div className="hr" />
+
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={expirationEnabled} onChange={(e) => setExpirationEnabled(e.target.checked)} /> Set document expiration
+          </label>
+          {expirationEnabled && (
+            <div className="row" style={{ gap: 8, alignItems: "center", marginLeft: 26 }}>
+              <span className="subtle" style={{ fontSize: 13 }}>Renews every</span>
+              <input className="input" value={renew} onChange={(e) => setRenew(e.target.value)} inputMode="numeric" style={{ maxWidth: 90 }} placeholder="months" />
+              <span className="subtle" style={{ fontSize: 13 }}>months</span>
             </div>
-          ))}
+          )}
+
+          <div className="hr" />
+
+          {/* Notifications */}
+          <div style={{ fontWeight: 800, fontSize: 13 }}>Notifications</div>
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={notifyUserStatus} onChange={(e) => setNotifyUserStatus(e.target.checked)} /> Notify the user when their document is approved or rejected
+          </label>
+          <label className="row" style={{ gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={notifyAdminAwaiting} onChange={(e) => setNotifyAdminAwaiting(e.target.checked)} /> Notify admins when a user submits this document
+          </label>
+          <div className="subtle" style={{ fontSize: 12 }}>
+            “Action required” reminders are never automatic — send them with the Remind buttons.
+          </div>
+
+          {status ? <div className="subtle">{status}</div> : null}
+
+          <div className="hr" />
+          <div className="row-between" style={{ flexWrap: "wrap", gap: 8 }}>
+            {mode === "edit" ? (
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <button className="btn btn-primary" onClick={() => void remindMissing()} disabled={saving}>🔔 Remind missing</button>
+                <button className="btn" onClick={() => void resetEntries()} disabled={saving}>Reset entries</button>
+                <button className="btn" onClick={() => void deleteDoc()} disabled={saving} style={{ color: "#b91c1c" }}>Delete</button>
+              </div>
+            ) : <span />}
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
+                {saving ? "Saving…" : mode === "create" ? "Add document" : "Save changes"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Comments thread (shared by the cell modal + the pending panel) ──────────
+
+type DocComment = { id: string; author_id: string | null; body: string; created_at: string };
+
+function DocComments({ recordId, myUserId }: { recordId: string; myUserId: string | null }) {
+  const [comments, setComments] = useState<DocComment[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase
+      .from("hr_document_comments")
+      .select("id, author_id, body, created_at")
+      .eq("record_id", recordId)
+      .order("created_at", { ascending: true });
+    const list = (data ?? []) as DocComment[];
+    setComments(list);
+    const ids = Array.from(new Set(list.map((c) => c.author_id).filter(Boolean))) as string[];
+    if (ids.length) {
+      const { data: profs } = await supabase.from("user_profiles").select("id, full_name, username").in("id", ids);
+      const next: Record<string, string> = {};
+      for (const p of profs ?? []) next[(p as any).id] = ((p as any).full_name || (p as any).username || "Staff") as string;
+      setNames(next);
+    }
+    setLoading(false);
+  }, [recordId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  async function post() {
+    const body = draft.trim();
+    if (!body || !myUserId) return;
+    const { data, error } = await supabase
+      .from("hr_document_comments")
+      .insert({ record_id: recordId, author_id: myUserId, body })
+      .select("id, author_id, body, created_at")
+      .single();
+    if (!error && data) {
+      setComments((c) => [...c, data as DocComment]);
+      setDraft("");
+    }
+  }
+
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="stack" style={{ gap: 6, maxHeight: 200, overflowY: "auto" }}>
+        {loading ? (
+          <div className="subtle" style={{ fontSize: 13 }}>Loading…</div>
+        ) : comments.length === 0 ? (
+          <div className="subtle" style={{ fontSize: 13 }}>No comments yet.</div>
+        ) : (
+          comments.map((c) => (
+            <div key={c.id} style={{ background: "#f9fafb", borderRadius: 10, padding: "8px 12px" }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "#374151" }}>
+                {c.author_id === myUserId ? "You" : names[c.author_id ?? ""] ?? "Staff"}
+                <span className="subtle" style={{ fontWeight: 400, marginLeft: 8 }}>{new Date(c.created_at).toLocaleString()}</span>
+              </div>
+              <div style={{ fontSize: 14, marginTop: 2, whiteSpace: "pre-wrap" }}>{c.body}</div>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          className="input"
+          placeholder="Write a comment…"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void post(); }}
+        />
+        <button className="btn btn-primary" onClick={() => void post()}>Send</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pending Approval review panel ───────────────────────────────────────────
+
+function PendingPanel({
+  employees, types, records, myUserId, onClose, onView, onApprove, onReject,
+}: {
+  employees: Employee[];
+  types: DocType[];
+  records: Record<string, DocRecord>;
+  myUserId: string | null;
+  onClose: () => void;
+  onView: (r: DocRecord) => void;
+  onApprove: (emp: Employee, type: DocType, rec: DocRecord) => void;
+  onReject: (emp: Employee, type: DocType) => void;
+}) {
+  const [openComments, setOpenComments] = useState<string | null>(null);
+  const empById = useMemo(() => new Map(employees.map((e) => [e.id, e])), [employees]);
+  const typeById = useMemo(() => new Map(types.map((t) => [t.id, t])), [types]);
+
+  // Pending submissions grouped by document type.
+  const groups = useMemo(() => {
+    const pending = Object.values(records).filter((r) => r.approval_status === "pending" && r.object_key);
+    const byType = new Map<string, DocRecord[]>();
+    for (const r of pending) {
+      const arr = byType.get(r.doc_type_id) ?? [];
+      arr.push(r);
+      byType.set(r.doc_type_id, arr);
+    }
+    return Array.from(byType.entries())
+      .map(([typeId, recs]) => ({ type: typeById.get(typeId), recs }))
+      .filter((g) => g.type)
+      .sort((a, b) => (a.type!.name).localeCompare(b.type!.name));
+  }, [records, typeById]);
+
+  const total = useMemo(
+    () => Object.values(records).filter((r) => r.approval_status === "pending" && r.object_key).length,
+    [records]
+  );
+
+  return (
+    <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
+      <div className="card" style={{ width: "min(720px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
+        <div className="row-between">
+          <div style={{ fontWeight: 900, fontSize: 16 }}>{total} Document{total === 1 ? "" : "s"} Pending Approval</div>
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+        <div className="hr" />
+
+        {groups.length === 0 ? (
+          <div className="subtle">Nothing waiting for approval. 🎉</div>
+        ) : (
+          <div className="stack" style={{ gap: 16 }}>
+            {groups.map(({ type, recs }) => (
+              <div key={type!.id}>
+                <div style={{ fontWeight: 800, marginBottom: 6 }}>{type!.name} <span className="subtle" style={{ fontWeight: 400 }}>({recs.length})</span></div>
+                <div className="stack" style={{ gap: 8 }}>
+                  {recs.map((rec) => {
+                    const emp = empById.get(rec.employee_id);
+                    if (!emp) return null;
+                    return (
+                      <div key={rec.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: "10px 12px" }}>
+                        <div className="row-between" style={{ flexWrap: "wrap", gap: 8 }}>
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{empName(emp)}</div>
+                            {rec.file_name ? <div className="subtle" style={{ fontSize: 12 }}>{rec.file_name}</div> : null}
+                          </div>
+                          <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                            <button className="btn" onClick={() => onView(rec)}>View</button>
+                            <button className="btn" onClick={() => setOpenComments(openComments === rec.id ? null : rec.id)}>💬</button>
+                            <button className="btn" onClick={() => onReject(emp, type!)}>Reject</button>
+                            <button className="btn btn-primary" onClick={() => onApprove(emp, type!, rec)}>Approve</button>
+                          </div>
+                        </div>
+                        {openComments === rec.id && (
+                          <div style={{ marginTop: 10, borderTop: "1px dashed #e5e7eb", paddingTop: 10 }}>
+                            <DocComments recordId={rec.id} myUserId={myUserId} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Pack settings modal (rename · assign to all/specific users · delete) ────
+
+function PackModal({
+  pack, employees, onClose, onChanged,
+}: {
+  pack: Pack;
+  employees: Employee[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState(pack.name);
+  const [assignAll, setAssignAll] = useState(pack.assign_all ?? true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("hr_document_pack_assignments").select("employee_id").eq("pack_id", pack.id);
+      setSelected(new Set((data ?? []).map((a: any) => a.employee_id)));
+      setLoading(false);
+    })();
+  }, [pack.id]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return employees;
+    return employees.filter((e) => empName(e).toLowerCase().includes(q));
+  }, [employees, search]);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function save() {
+    if (!name.trim()) { setStatus("Enter a pack name."); return; }
+    setSaving(true);
+    setStatus("Saving…");
+    try {
+      const { error: e1 } = await supabase.from("hr_document_packs").update({ name: name.trim(), assign_all: assignAll }).eq("id", pack.id);
+      if (e1) throw e1;
+      // Replace assignment rows (only meaningful when not assign-all).
+      await supabase.from("hr_document_pack_assignments").delete().eq("pack_id", pack.id);
+      if (!assignAll && selected.size) {
+        const rows = [...selected].map((employee_id) => ({ pack_id: pack.id, employee_id }));
+        const { error: e2 } = await supabase.from("hr_document_pack_assignments").insert(rows);
+        if (e2) throw e2;
+      }
+      onChanged();
+      onClose();
+    } catch (e: any) {
+      setStatus("Error: " + (e?.message ?? "unknown"));
+      setSaving(false);
+    }
+  }
+
+  async function deletePack() {
+    if (!confirm("Delete this pack? Its documents are kept (moved to no pack), not deleted.")) return;
+    setSaving(true);
+    try {
+      // Detach documents so they survive, then remove the pack.
+      await supabase.from("hr_document_types").update({ pack_id: null }).eq("pack_id", pack.id);
+      const { error } = await supabase.from("hr_document_packs").delete().eq("id", pack.id);
+      if (error) throw error;
+      onChanged();
+      onClose();
+    } catch (e: any) {
+      setStatus("Error: " + (e?.message ?? "unknown"));
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
+      <div className="card" style={{ width: "min(560px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
+        <div className="row-between">
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Pack settings</div>
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+        <div className="hr" />
+
+        <div className="stack" style={{ gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Pack name</div>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 6 }}>Assign this pack to</div>
+            <label className="row" style={{ gap: 8, alignItems: "center" }}>
+              <input type="radio" checked={assignAll} onChange={() => setAssignAll(true)} /> All users
+            </label>
+            <label className="row" style={{ gap: 8, alignItems: "center", marginTop: 4 }}>
+              <input type="radio" checked={!assignAll} onChange={() => setAssignAll(false)} /> Specific users
+            </label>
+          </div>
+
+          {!assignAll && (
+            <div>
+              <input className="input" placeholder="Search people…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ marginBottom: 8 }} />
+              <div className="stack" style={{ gap: 2, maxHeight: 260, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 10, padding: 6 }}>
+                {loading ? (
+                  <div className="subtle" style={{ fontSize: 13, padding: 8 }}>Loading…</div>
+                ) : filtered.length === 0 ? (
+                  <div className="subtle" style={{ fontSize: 13, padding: 8 }}>No people.</div>
+                ) : (
+                  filtered.map((e) => (
+                    <label key={e.id} className="row" style={{ gap: 8, alignItems: "center", padding: "6px 8px", cursor: "pointer" }}>
+                      <input type="checkbox" checked={selected.has(e.id)} onChange={() => toggle(e.id)} />
+                      {empName(e)}
+                    </label>
+                  ))
+                )}
+              </div>
+              <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>{selected.size} selected</div>
+            </div>
+          )}
+
+          {status ? <div className="subtle">{status}</div> : null}
+
+          <div className="hr" />
+          <div className="row-between">
+            <button className="btn" onClick={() => void deletePack()} disabled={saving} style={{ color: "#b91c1c" }}>Delete pack</button>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save changes"}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

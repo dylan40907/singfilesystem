@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import CampusSelector from "@/components/CampusSelector";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
+import NotificationsBell from "@/components/NotificationsBell";
 
 function NavLink({
   href,
@@ -172,6 +173,7 @@ export default function HrNavbar() {
           {/* Desktop right controls */}
           <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
             {canUseHr && hasAdminAccess && <CampusSelector />}
+            {sessionEmail && isActive && <NotificationsBell />}
             {sessionEmail && isActive && (
               <button
                 className="btn"
