@@ -36,6 +36,22 @@ function NavLink({
   );
 }
 
+// Distinct pill that signals switching to the *other* portal (vs. a normal tab).
+const portalSwitchBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 14px",
+  borderRadius: 999,
+  border: "1.5px solid rgba(230,23,141,0.45)",
+  background: "rgba(230,23,141,0.06)",
+  color: "#e6178d",
+  fontWeight: 800,
+  fontSize: 13.5,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
+
 function hardClearSupabaseAuthStorage() {
   try {
     const killKeys = (storage: Storage) => {
@@ -82,9 +98,9 @@ export default function Navbar() {
   // App (learning) page: full admins, campus admins, + "App Supervisors" (the flag).
   const showApp = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || !!profile?.can_manage_learning);
 
-  // ✅ HR visible to ALL active users (admin/campus_admin goes to /admin/hr, everyone else to /hr)
+  // ✅ HR visible to ALL active users. Admins/campus-admins get a "switch portal"
+  // button (→ /admin/hr); everyone else gets a normal HR tab (→ /hr).
   const showHr = !!sessionEmail && isActive;
-  const hrHref = (isAdmin || isCampusAdmin) ? "/admin/hr" : "/hr";
 
   // Keep latest pathname without re-subscribing
   const pathnameRef = useRef(pathname);
@@ -210,25 +226,29 @@ export default function Navbar() {
               {showTeachers && <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />}
               {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
-              {showHr && <NavLink href={hrHref} label="HR" active={activeTab === "hr"} />}
+              {showHr && !(isAdmin || isCampusAdmin) && <NavLink href="/hr" label="HR" active={activeTab === "hr"} />}
               {showApp && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
-              {showChat && (
-                <NavLink
-                  href="/chat"
-                  label={
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      Chat <ChatNavBadge />
-                    </span>
-                  }
-                  active={activeTab === "chat"}
-                />
-              )}
             </div>
           </div>
 
-          {/* Desktop right controls */}
-          <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
+          {/* Desktop right controls — order matches HR navbar:
+              notifications · chat · switch portal · name · sign out */}
+          <div className="row hide-mobile" style={{ gap: 8, alignItems: "center" }}>
             {showChat && <NotificationsBell />}
+            {showChat && (
+              <button
+                className="btn"
+                onClick={() => router.push("/chat")}
+                style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+              >
+                Chat <ChatNavBadge />
+              </button>
+            )}
+            {showHr && (isAdmin || isCampusAdmin) && (
+              <button onClick={() => router.push("/admin/hr")} title="Switch to the HR Portal" style={portalSwitchBtn}>
+                ⇆ HR Portal
+              </button>
+            )}
             {sessionEmail ? (
               <>
                 <span className="badge badge-pink">{displayName}</span>
@@ -260,7 +280,8 @@ export default function Navbar() {
             {showTeachers && <Link href="/teachers" className={`nav-mobile-link${activeTab === "teachers" ? " active" : ""}`}>Teachers</Link>}
             {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
-            {showHr && <Link href={hrHref} className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
+            {showHr && !(isAdmin || isCampusAdmin) && <Link href="/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
+            {showHr && (isAdmin || isCampusAdmin) && <Link href="/admin/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>⇆ HR Portal</Link>}
             {showApp && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
             {showChat && (
               <Link

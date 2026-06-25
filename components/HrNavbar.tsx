@@ -23,20 +23,38 @@ function NavLink({
     <Link
       href={href}
       style={{
-        padding: "10px 12px",
-        borderRadius: 12,
+        padding: "8px 12px",
+        borderRadius: 10,
         border: active ? "1px solid rgba(230,23,141,0.35)" : "1px solid transparent",
-        background: active ? "rgba(230,23,141,0.06)" : "transparent",
-        color: active ? "#e6178d" : "#111827",
+        background: active ? "rgba(230,23,141,0.08)" : "transparent",
+        color: active ? "#e6178d" : "#374151",
         fontWeight: 700,
-        fontSize: 14,
+        fontSize: 13.5,
         textDecoration: "none",
+        whiteSpace: "nowrap",
+        flexShrink: 0,
       }}
     >
       {label}
     </Link>
   );
 }
+
+// Distinct pill that signals switching to the *other* portal (vs. a normal tab).
+const portalSwitchBtn: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "8px 14px",
+  borderRadius: 999,
+  border: "1.5px solid rgba(230,23,141,0.45)",
+  background: "rgba(230,23,141,0.06)",
+  color: "#e6178d",
+  fontWeight: 800,
+  fontSize: 13.5,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
+};
 
 export default function HrNavbar() {
   const pathname = usePathname();
@@ -45,6 +63,18 @@ export default function HrNavbar() {
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  async function signOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await supabase.auth.signOut({ scope: "global" });
+      router.replace("/");
+    } finally {
+      setSigningOut(false);
+    }
+  }
 
   const isActive = !!profile?.is_active;
   const isAdmin = isActive && profile?.role === "admin";
@@ -147,29 +177,21 @@ export default function HrNavbar() {
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 50, background: "white", borderBottom: "1px solid #e5e7eb" }}>
       <div className="container">
-        <div className="row-between" style={{ padding: "12px 0" }}>
+        {/* Top row: brand + controls */}
+        <div className="row-between" style={{ padding: "12px 0", gap: 12 }}>
           {/* Logo + title */}
-          <div className="row" style={{ gap: 14 }}>
-            <Link href={hrHomeHref} aria-label="Go to HR home" style={{ display: "block", width: 48, height: 34, position: "relative" }}>
-              <Image src="/logo.png" alt="SING Portal logo" fill priority sizes="48px" style={{ objectFit: "contain" }} />
+          <div className="row" style={{ gap: 12, alignItems: "center", minWidth: 0 }}>
+            <Link href={hrHomeHref} aria-label="Go to HR home" style={{ display: "block", width: 46, height: 34, position: "relative", flexShrink: 0 }}>
+              <Image src="/logo.png" alt="SING Portal logo" fill priority sizes="46px" style={{ objectFit: "contain" }} />
             </Link>
-            <div>
+            <div style={{ minWidth: 0, lineHeight: 1.15 }}>
               <div style={{ fontWeight: 800, fontSize: 15 }}>HR Portal</div>
-              <div className="subtle">{subtitle}</div>
+              <div className="subtle" style={{ fontSize: 12 }}>{subtitle}</div>
             </div>
-
-            {/* Desktop tabs */}
-            {canUseHr && (
-              <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
-                {adminLinks.map((l) => (
-                  <NavLink key={l.tab} href={l.href} label={l.label} active={activeTab === l.tab} />
-                ))}
-              </div>
-            )}
           </div>
 
           {/* Desktop right controls */}
-          <div className="row hide-mobile" style={{ gap: 10, alignItems: "center" }}>
+          <div className="row hide-mobile" style={{ gap: 8, alignItems: "center" }}>
             {canUseHr && hasAdminAccess && <CampusSelector />}
             {sessionEmail && isActive && <NotificationsBell />}
             {sessionEmail && isActive && (
@@ -181,9 +203,16 @@ export default function HrNavbar() {
                 Chat <ChatNavBadge />
               </button>
             )}
-            <button className="btn" onClick={() => router.push("/")}>Curriculum</button>
+            <button onClick={() => router.push("/")} title="Switch to the main portal" style={portalSwitchBtn}>
+              ⇆ Curriculum
+            </button>
             {sessionEmail ? (
-              <span className="badge badge-pink">{displayName}</span>
+              <>
+                <span className="badge badge-pink">{displayName}</span>
+                <button className="btn btn-primary" onClick={signOut} disabled={signingOut}>
+                  {signingOut ? "Signing out..." : "Sign out"}
+                </button>
+              </>
             ) : (
               <span className="subtle">Not signed in</span>
             )}
@@ -200,6 +229,18 @@ export default function HrNavbar() {
             <span style={{ opacity: menuOpen ? 0.4 : 1 }} />
           </button>
         </div>
+
+        {/* Tabs row (desktop) — single scrollable line so it never wraps */}
+        {canUseHr && (
+          <div
+            className="hide-mobile"
+            style={{ display: "flex", gap: 4, overflowX: "auto", paddingTop: 8, paddingBottom: 10, borderTop: "1px solid #f3f4f6" }}
+          >
+            {adminLinks.map((l) => (
+              <NavLink key={l.tab} href={l.href} label={l.label} active={activeTab === l.tab} />
+            ))}
+          </div>
+        )}
 
         {/* Mobile dropdown */}
         {menuOpen && (
@@ -224,10 +265,17 @@ export default function HrNavbar() {
               ) : (
                 <span className="subtle">Not signed in</span>
               )}
-              <button className="btn" onClick={() => { setMenuOpen(false); router.push("/"); }} style={{ flexShrink: 0 }}>
-                Curriculum
+              <button className="btn" onClick={() => { setMenuOpen(false); router.push("/"); }} style={{ ...portalSwitchBtn, flexShrink: 0 }}>
+                ⇆ Curriculum
               </button>
             </div>
+            {sessionEmail && (
+              <div style={{ padding: "10px 8px 0" }}>
+                <button className="btn btn-primary" onClick={signOut} disabled={signingOut} style={{ width: "100%" }}>
+                  {signingOut ? "Signing out..." : "Sign out"}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
