@@ -25,7 +25,23 @@ export type ChatMessage = {
   sender_id: string;
   content: string;
   created_at: string;
+  attachment_path?: string | null;
+  attachment_name?: string | null;
+  attachment_type?: string | null;
+  attachment_size?: number | null;
+  attachment_kind?: "image" | "file" | null;
 };
+
+export type ChatAttachment = {
+  attachment_path: string;
+  attachment_name: string;
+  attachment_type: string | null;
+  attachment_size: number | null;
+  attachment_kind: "image" | "file";
+};
+
+const MSG_COLS =
+  "id, conversation_id, sender_id, content, created_at, attachment_path, attachment_name, attachment_type, attachment_size, attachment_kind";
 
 export type ChatUserLite = {
   id: string;
@@ -181,32 +197,60 @@ export async function fetchMyConversations(myId: string): Promise<ChatConversati
 export async function fetchMessages(conversationId: string): Promise<ChatMessage[]> {
   const { data, error } = await supabase
     .from("chat_messages")
-    .select("id, conversation_id, sender_id, content, created_at")
+    .select(MSG_COLS)
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (error) throw error;
   return (data ?? []) as ChatMessage[];
 }
 
-/** Send a message. */
+/** Send a message (text and/or one attachment). */
 export async function sendMessage(
   conversationId: string,
   senderId: string,
-  content: string
+  content: string,
+  attachment?: ChatAttachment | null
 ): Promise<ChatMessage> {
   const trimmed = content.trim();
-  if (!trimmed) throw new Error("Message cannot be empty");
+  if (!trimmed && !attachment) throw new Error("Message cannot be empty");
   const { data, error } = await supabase
     .from("chat_messages")
     .insert({
       conversation_id: conversationId,
       sender_id: senderId,
       content: trimmed,
+      ...(attachment ?? {}),
     })
-    .select("id, conversation_id, sender_id, content, created_at")
+    .select(MSG_COLS)
     .single();
   if (error) throw error;
   return data as ChatMessage;
+}
+
+/** Upload a browser File to the chat-attachments bucket; returns attachment meta. */
+export async function uploadChatAttachment(
+  conversationId: string,
+  file: File
+): Promise<ChatAttachment> {
+  const safeName = (file.name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
+  const path = `${conversationId}/${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName}`;
+  const { error } = await supabase.storage
+    .from("chat-attachments")
+    .upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
+  if (error) throw error;
+  return {
+    attachment_path: path,
+    attachment_name: file.name || safeName,
+    attachment_type: file.type || "application/octet-stream",
+    attachment_size: file.size ?? null,
+    attachment_kind: (file.type || "").startsWith("image/") ? "image" : "file",
+  };
+}
+
+/** Short-lived signed URL for an attachment. */
+export async function getAttachmentUrl(path: string): Promise<string | null> {
+  const { data } = await supabase.storage.from("chat-attachments").createSignedUrl(path, 3600);
+  return data?.signedUrl ?? null;
 }
 
 /** Update my last_read_at to "now" for a conversation. */

@@ -3,9 +3,54 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  ChatConversationView, ChatMessage, fetchMessages, markRead, sendMessage, userDisplayName,
+  ChatConversationView, ChatMessage, fetchMessages, getAttachmentUrl, markRead, sendMessage,
+  uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
 import { useDialog } from "@/components/ui/useDialog";
+
+// Renders a message attachment: images inline, files as a download chip.
+function ChatAttachment({ message, mine }: { message: ChatMessage; mine: boolean }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (message.attachment_path) getAttachmentUrl(message.attachment_path).then((u) => { if (!cancelled) setUrl(u); });
+    return () => { cancelled = true; };
+  }, [message.attachment_path]);
+
+  const hasText = !!message.content?.trim();
+
+  if (message.attachment_kind === "image") {
+    return (
+      <a href={url ?? "#"} target="_blank" rel="noopener noreferrer" style={{ display: "block", marginBottom: hasText ? 6 : 0 }}>
+        {url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={url} alt={message.attachment_name ?? "image"} style={{ maxWidth: 240, maxHeight: 240, borderRadius: 12, display: "block", background: "#e5e7eb" }} />
+        ) : (
+          <div style={{ width: 200, height: 160, borderRadius: 12, background: "#e5e7eb" }} />
+        )}
+      </a>
+    );
+  }
+
+  return (
+    <a
+      href={url ?? "#"}
+      target="_blank"
+      rel="noopener noreferrer"
+      download={message.attachment_name ?? undefined}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 8, marginBottom: hasText ? 6 : 0,
+        padding: "8px 12px", borderRadius: 12, textDecoration: "none", maxWidth: 260,
+        background: mine ? "rgba(255,255,255,0.2)" : "#e5e7eb", color: mine ? "white" : "#111827",
+      }}
+    >
+      <span>📎</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600, fontSize: 13 }}>
+        {message.attachment_name ?? "Attachment"}
+      </span>
+    </a>
+  );
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
@@ -21,6 +66,20 @@ function formatDay(iso: string): string {
   if (isSameDay(d, yesterday)) return "Yesterday";
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
+
+const attachMenuItem: React.CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  padding: "10px 12px",
+  borderRadius: 8,
+  border: "none",
+  background: "transparent",
+  fontSize: 14,
+  fontWeight: 700,
+  color: "#111827",
+  cursor: "pointer",
+};
 
 export default function ChatThread({
   conversation,
@@ -38,8 +97,12 @@ export default function ChatThread({
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const memberMap = useMemo(
     () => new Map(conversation.members.map((m) => [m.id, m] as const)),
@@ -116,6 +179,26 @@ export default function ChatThread({
       setError(e?.message ?? "Failed to send");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleAttachmentChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    setAttachOpen(false);
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const att = await uploadChatAttachment(conversation.id, file);
+      const msg = await sendMessage(conversation.id, myId, draft, att);
+      setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+      setDraft("");
+      onMessageSent();
+    } catch (e2: any) {
+      setError(e2?.message ?? "Failed to upload");
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -269,7 +352,8 @@ export default function ChatThread({
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {m.content}
+                      {m.attachment_path && <ChatAttachment message={m} mine={isMine} />}
+                      {m.content?.trim() ? m.content : null}
                     </div>
                     <div
                       style={{
@@ -303,7 +387,47 @@ export default function ChatThread({
         {error && (
           <div style={{ marginBottom: 8, fontSize: 12, color: "#991b1b", fontWeight: 600 }}>{error}</div>
         )}
+
+        <input ref={imageInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleAttachmentChosen} />
+        <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleAttachmentChosen} />
+
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          {/* Attach (+) menu — image or file, iMessage-style */}
+          <div style={{ position: "relative", flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => setAttachOpen((v) => !v)}
+              disabled={uploading}
+              title="Add attachment"
+              style={{
+                width: 40, height: 40, borderRadius: 12, border: "1.5px solid #e5e7eb",
+                background: "white", color: "#e6178d", fontSize: 22, lineHeight: 1,
+                cursor: uploading ? "default" : "pointer",
+                transform: attachOpen ? "rotate(45deg)" : "none", transition: "transform 0.15s",
+              }}
+            >
+              {uploading ? "…" : "+"}
+            </button>
+            {attachOpen && (
+              <>
+                <div style={{ position: "fixed", inset: 0, zIndex: 40 }} onClick={() => setAttachOpen(false)} />
+                <div
+                  style={{
+                    position: "absolute", bottom: "calc(100% + 8px)", left: 0, zIndex: 50,
+                    background: "white", border: "1px solid #e5e7eb", borderRadius: 12,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.12)", padding: 6, width: 160,
+                  }}
+                >
+                  <button type="button" onClick={() => { setAttachOpen(false); imageInputRef.current?.click(); }} style={attachMenuItem}>
+                    🖼️ Photo
+                  </button>
+                  <button type="button" onClick={() => { setAttachOpen(false); fileInputRef.current?.click(); }} style={attachMenuItem}>
+                    📄 File
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}

@@ -1449,7 +1449,10 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   includeDrafts={false}
                   readOnly={true}
                   mode="self"
-                  allowAnnual={!isSupervisor}
+                  /* Everyone (incl. supervisors) can view their OWN annual + monthly
+                     reviews here. The supervisor restriction only blocks ADMINISTERING
+                     annual reviews for others (the manage view below). */
+                  allowAnnual={true}
                 />
               ) : (
                 <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>

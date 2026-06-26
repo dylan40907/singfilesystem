@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChatUserLite, createConversation, fetchPickableUsers, userDisplayName } from "@/lib/chat";
+import { fetchMyProfile } from "@/lib/teachers";
 
 export default function NewChatModal({
   myId,
@@ -19,12 +20,15 @@ export default function NewChatModal({
   const [groupName, setGroupName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Only supervisors / app-supervisors / admins can create group chats.
+  const [canCreateGroups, setCanCreateGroups] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        const list = await fetchPickableUsers(myId);
+        const [list, profile] = await Promise.all([fetchPickableUsers(myId), fetchMyProfile()]);
         setUsers(list);
+        setCanCreateGroups(!!profile && profile.role !== "teacher");
       } catch (e: any) {
         setError(e?.message ?? "Failed to load users");
       } finally {
@@ -48,7 +52,13 @@ export default function NewChatModal({
   function toggle(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+        return next;
+      }
+      // Standard accounts: single-select (DM only).
+      if (!canCreateGroups) return new Set([id]);
+      next.add(id);
       return next;
     });
   }
@@ -157,7 +167,9 @@ export default function NewChatModal({
 
           <div style={{ fontSize: 12, color: "#6b7280" }}>
             {selected.size === 0
-              ? "Pick one person for a direct message, or 2+ for a group chat."
+              ? canCreateGroups
+                ? "Pick one person for a direct message, or 2+ for a group chat."
+                : "Pick a person to start a direct message."
               : isGroup
                 ? `${selected.size} people selected — group chat`
                 : "1 person selected — direct message"}

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { useDialog } from "@/components/ui/useDialog";
+import { previewModeForFile } from "@/lib/fileUtils";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -428,19 +430,40 @@ export default function HrDocumentsPage() {
     }
   }
 
+  // Short-lived signed URL for a record's file. mode "inline" → preview/iframe;
+  // "attachment" → forces a download (Content-Disposition on the route).
+  async function getSignedUrl(rec: DocRecord, mode: "inline" | "attachment"): Promise<string> {
+    const token = await getToken();
+    const res = await fetch("/api/r2/hr-doc-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ recordId: rec.id, mode }),
+    });
+    const body = await readJsonSafely(res);
+    if (!res.ok || body.__nonJson || !body.url) throw new Error(body?.error || "Could not get file URL");
+    return body.url as string;
+  }
+
+  // Used by the Pending panel (opens in a new tab).
   async function viewFile(rec: DocRecord) {
     try {
-      const token = await getToken();
-      const res = await fetch("/api/r2/hr-doc-download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ recordId: rec.id, mode: "inline" }),
-      });
-      const body = await readJsonSafely(res);
-      if (!res.ok || body.__nonJson || !body.url) throw new Error(body?.error || "Could not open file");
-      window.open(body.url as string, "_blank", "noopener,noreferrer");
+      window.open(await getSignedUrl(rec, "inline"), "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setStatus("Open error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function downloadFile(rec: DocRecord) {
+    try {
+      const url = await getSignedUrl(rec, "attachment");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = rec.file_name || "document";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e: any) {
+      setStatus("Download error: " + (e?.message ?? "unknown"));
     }
   }
 
@@ -694,7 +717,8 @@ export default function HrDocumentsPage() {
           myUserId={me?.id ?? null}
           onClose={() => setCell(null)}
           onUpload={() => pickFileFor(cell.emp, cell.type)}
-          onView={(r) => viewFile(r)}
+          onDownload={(r) => downloadFile(r)}
+          getSignedUrl={getSignedUrl}
           onApprove={(r) => approve(cell.emp, cell.type, r)}
           onReject={() => reject(cell.emp, cell.type)}
           onClear={() => clearFile(cell.emp, cell.type)}
@@ -743,7 +767,7 @@ export default function HrDocumentsPage() {
 // ─── Cell action modal ────────────────────────────────────────────────────
 
 function CellActionModal({
-  emp, type, rec, myUserId, onClose, onUpload, onView, onApprove, onReject, onClear, onSetRequired, onRemind,
+  emp, type, rec, myUserId, onClose, onUpload, onDownload, getSignedUrl, onApprove, onReject, onClear, onSetRequired, onRemind,
 }: {
   emp: Employee;
   type: DocType;
@@ -751,7 +775,8 @@ function CellActionModal({
   myUserId: string | null;
   onClose: () => void;
   onUpload: () => void;
-  onView: (r: DocRecord) => void;
+  onDownload: (r: DocRecord) => void;
+  getSignedUrl: (r: DocRecord, mode: "inline" | "attachment") => Promise<string>;
   onApprove: (r: DocRecord) => void;
   onReject: () => void;
   onClear: () => void;
@@ -760,6 +785,28 @@ function CellActionModal({
 }) {
   const st = computeStatus(rec, type);
   const required = isRequired(rec, type);
+
+  // Inline preview: PDFs render in an iframe (the browser PDF viewer gives page
+  // navigation); images render directly. Other types fall back to download.
+  const previewMode = rec?.file_name ? previewModeForFile(rec.file_name) : "unknown";
+  const canPreview = !!rec?.object_key && (previewMode === "pdf" || previewMode === "image");
+  const [previewUrl, setPreviewUrl] = useState<string>("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewUrl("");
+    if (rec?.object_key && canPreview) {
+      setPreviewLoading(true);
+      getSignedUrl(rec, "inline")
+        .then((u) => { if (!cancelled) setPreviewUrl(u); })
+        .catch(() => {})
+        .finally(() => { if (!cancelled) setPreviewLoading(false); });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec?.id, rec?.object_key, previewMode]);
+
   return (
     <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
       <div className="card" style={{ width: "min(460px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
@@ -776,6 +823,40 @@ function CellActionModal({
           {rec?.expires_at ? <> · expires {new Date(rec.expires_at).toLocaleDateString()}</> : null}
         </div>
 
+        {/* Inline preview */}
+        {rec?.object_key && (
+          <div style={{ marginBottom: 12 }}>
+            {previewMode === "pdf" ? (
+              previewLoading ? (
+                <div style={previewBox}>Loading preview…</div>
+              ) : previewUrl ? (
+                <iframe
+                  src={previewUrl}
+                  title="Document preview"
+                  style={{ width: "100%", height: 340, border: "1px solid #e5e7eb", borderRadius: 8, background: "#fff" }}
+                />
+              ) : (
+                <div style={previewBox}>Preview unavailable — use Download.</div>
+              )
+            ) : previewMode === "image" ? (
+              previewLoading ? (
+                <div style={previewBox}>Loading preview…</div>
+              ) : previewUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={previewUrl}
+                  alt={rec.file_name ?? "Document"}
+                  style={{ width: "100%", maxHeight: 340, objectFit: "contain", border: "1px solid #e5e7eb", borderRadius: 8, background: "#f9fafb" }}
+                />
+              ) : (
+                <div style={previewBox}>Preview unavailable — use Download.</div>
+              )
+            ) : (
+              <div style={previewBox}>No preview for this file type. Use Download to view it.</div>
+            )}
+          </div>
+        )}
+
         {!required ? (
           <div className="stack" style={{ gap: 8 }}>
             <div className="subtle">This document is marked <strong>not required</strong> for this person.</div>
@@ -784,7 +865,7 @@ function CellActionModal({
         ) : (
           <div className="stack" style={{ gap: 8 }}>
             {rec?.object_key && (
-              <button className="btn" onClick={() => onView(rec)}>View file</button>
+              <button className="btn" onClick={() => onDownload(rec)}>⬇ Download</button>
             )}
             <button className="btn btn-primary" onClick={onUpload}>{rec?.object_key ? "Replace file" : "Upload file"}</button>
             {(!rec?.object_key || rec.approval_status === "rejected") && (
@@ -853,6 +934,7 @@ function DocumentModal({
 
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const { confirm, modal: dialog } = useDialog();
 
   async function uploadTemplate(docTypeId: string, file: File): Promise<string> {
     const token = await getToken();
@@ -947,7 +1029,7 @@ function DocumentModal({
 
   async function deleteDoc() {
     if (!type?.id) return;
-    if (!confirm("Delete this document and all its records? This cannot be undone.")) return;
+    if (!(await confirm("Delete this document and all its records? This cannot be undone.", { title: "Delete document", confirmLabel: "Delete", danger: true }))) return;
     setSaving(true);
     const { error } = await supabase.from("hr_document_types").delete().eq("id", type.id);
     if (error) { setStatus("Error: " + error.message); setSaving(false); return; }
@@ -964,7 +1046,7 @@ function DocumentModal({
 
   async function resetEntries() {
     if (!type?.id) return;
-    if (!confirm("Clear ALL uploaded files and statuses for this document across every employee? The document itself stays; only the submissions are removed. This cannot be undone.")) return;
+    if (!(await confirm("Clear ALL uploaded files and statuses for this document across every employee? The document itself stays; only the submissions are removed. This cannot be undone.", { title: "Reset entries", confirmLabel: "Reset", danger: true }))) return;
     setSaving(true);
     setStatus("Resetting…");
     const { error } = await supabase.from("hr_document_records").delete().eq("doc_type_id", type.id);
@@ -984,6 +1066,7 @@ function DocumentModal({
           style={{ display: "none" }}
           onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ""; if (f) { setStagedFile(f); setRemoveTemplate(false); } }}
         />
+        {dialog}
 
         <div className="row-between">
           <div style={{ fontWeight: 900, fontSize: 16 }}>{mode === "create" ? "New document" : "Edit document"}</div>
@@ -1300,6 +1383,7 @@ function PackModal({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const { confirm, modal: dialog } = useDialog();
 
   useEffect(() => {
     (async () => {
@@ -1346,7 +1430,7 @@ function PackModal({
   }
 
   async function deletePack() {
-    if (!confirm("Delete this pack? Its documents are kept (moved to no pack), not deleted.")) return;
+    if (!(await confirm("Delete this pack? Its documents are kept (moved to no pack), not deleted.", { title: "Delete pack", confirmLabel: "Delete", danger: true }))) return;
     setSaving(true);
     try {
       // Detach documents so they survive, then remove the pack.
@@ -1364,6 +1448,7 @@ function PackModal({
   return (
     <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
       <div className="card" style={{ width: "min(560px, 96vw)", borderRadius: 16, maxHeight: "92vh", overflowY: "auto" }}>
+        {dialog}
         <div className="row-between">
           <div style={{ fontWeight: 900, fontSize: 16 }}>Pack settings</div>
           <button className="btn" onClick={onClose}>Close</button>
@@ -1422,6 +1507,20 @@ function PackModal({
     </div>
   );
 }
+
+const previewBox: React.CSSProperties = {
+  height: 120,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px dashed #e5e7eb",
+  borderRadius: 8,
+  background: "#fafafa",
+  color: "#6b7280",
+  fontSize: 13,
+  textAlign: "center",
+  padding: 12,
+};
 
 const modalBackdrop: React.CSSProperties = {
   position: "fixed",

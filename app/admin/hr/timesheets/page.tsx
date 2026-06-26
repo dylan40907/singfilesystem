@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { applyCampusFilterToQuery, hideRegularAdminsForCampusAdmin, useCampusFilter } from "@/lib/CampusContext";
 import { todayLA, isoToLATimeInput, isoToLADisplayTime, isoToLADateStr, laWallTimeToISO } from "@/lib/laTime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1332,7 +1332,7 @@ export default function TimesheetsPage() {
   const workingDays = useMemo(() => getWorkingDays(periodStart), [periodStart]);
   const dateStrs = useMemo(() => workingDays.map(toDateStr), [workingDays]);
 
-  const { filter: campusFilter } = useCampusFilter();
+  const { filter: campusFilter, isCampusAdmin } = useCampusFilter();
 
   useEffect(() => {
     let q = supabase
@@ -1340,9 +1340,12 @@ export default function TimesheetsPage() {
       .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, profile_id")
       .eq("is_active", true);
     q = applyCampusFilterToQuery(q, campusFilter);
-    q.order("legal_first_name")
-      .then(({ data }) => setEmployees((data as Employee[]) ?? []));
-  }, [campusFilter]);
+    q.order("legal_first_name").then(async ({ data }) => {
+      // Campus admins never see regular-admin accounts.
+      const visible = await hideRegularAdminsForCampusAdmin((data ?? []) as any[], isCampusAdmin ? "campus_admin" : null);
+      setEmployees(visible as Employee[]);
+    });
+  }, [campusFilter, isCampusAdmin]);
 
   async function fetchEditRequests() {
     const { data: reqData } = await supabase

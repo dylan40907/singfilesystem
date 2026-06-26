@@ -29,6 +29,12 @@ const META: Record<string, { icon: string; tint: string }> = {
   document_required: { icon: "📄", tint: "#d97706" },
   document_submitted: { icon: "📥", tint: "#2563eb" },
   document_expiring: { icon: "⏰", tint: "#d97706" },
+  timesheet_request: { icon: "⏱️", tint: "#2563eb" },
+  timesheet_approved: { icon: "✅", tint: "#16a34a" },
+  timesheet_rejected: { icon: "⚠️", tint: "#dc2626" },
+  leave_request: { icon: "🌴", tint: "#2563eb" },
+  leave_approved: { icon: "✅", tint: "#16a34a" },
+  leave_rejected: { icon: "⚠️", tint: "#dc2626" },
   chat: { icon: "💬", tint: "#2563eb" },
 };
 
@@ -123,6 +129,10 @@ export default function NotificationsBell() {
     setOpen(false);
     if (n.type === "document_submitted") router.push("/admin/hr/documents");
     else if (n.type.startsWith("document")) router.push("/hr");
+    else if (n.type === "timesheet_request") router.push("/admin/hr/timesheets");
+    else if (n.type.startsWith("timesheet")) router.push("/hr");
+    else if (n.type === "leave_request") router.push("/admin/hr/leave");
+    else if (n.type.startsWith("leave")) router.push("/hr");
     void load();
   }
 

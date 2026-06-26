@@ -163,3 +163,21 @@ export function matchesCampusFilter(employeeCampusId: string | null, filter: Cam
   if (filter === "unassigned") return employeeCampusId === null;
   return employeeCampusId === filter;
 }
+
+/**
+ * Campus admins are a level below regular admins, so they must never see
+ * admin-role accounts in any HR list. Given employee rows that carry a
+ * `profile_id`, this drops anyone whose linked profile has role 'admin' when the
+ * viewer is a campus admin (no-op for everyone else).
+ */
+export async function hideRegularAdminsForCampusAdmin<T extends { profile_id?: string | null }>(
+  rows: T[],
+  viewerRole: string | null | undefined
+): Promise<T[]> {
+  if (viewerRole !== "campus_admin") return rows;
+  const profIds = rows.map((r) => r.profile_id).filter(Boolean) as string[];
+  if (profIds.length === 0) return rows;
+  const { data } = await supabase.from("user_profiles").select("id, role").in("id", profIds);
+  const adminIds = new Set((data ?? []).filter((p: any) => p.role === "admin").map((p: any) => p.id));
+  return rows.filter((r) => !r.profile_id || !adminIds.has(r.profile_id));
+}

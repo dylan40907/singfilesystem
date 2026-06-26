@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
-import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { applyCampusFilterToQuery, hideRegularAdminsForCampusAdmin, useCampusFilter } from "@/lib/CampusContext";
 
 type CampusRow = { id: string; name: string };
 type JobLevelRow = { id: string; name: string };
@@ -302,7 +302,7 @@ export default function EmployeesPage() {
     }
   }
 
-  const { filter: campusFilter } = useCampusFilter();
+  const { filter: campusFilter, isCampusAdmin } = useCampusFilter();
 
   async function loadEmployees() {
     setError("");
@@ -317,6 +317,7 @@ export default function EmployeesPage() {
           is_active,
           updated_at,
           campus_id,
+          profile_id,
           campus:hr_campuses!hr_employees_campus_id_fkey(id,name),
           job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name)
         `
@@ -327,7 +328,9 @@ export default function EmployeesPage() {
         .order("legal_first_name", { ascending: true });
 
       if (error) throw error;
-      setRows((data || []) as any);
+      // Campus admins never see regular-admin accounts.
+      const visible = await hideRegularAdminsForCampusAdmin((data || []) as any[], isCampusAdmin ? "campus_admin" : null);
+      setRows(visible as any);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load employees");
     }

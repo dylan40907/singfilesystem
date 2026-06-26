@@ -416,14 +416,24 @@ export default function LeavePage() {
     (async () => {
       let q = supabase
         .from("hr_employees")
-        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, start_date");
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, start_date, profile_id");
       q = applyCampusFilterToQuery(q, campusFilter);
       const { data, error } = await q
         .order("legal_last_name", { ascending: true })
         .order("legal_first_name", { ascending: true });
       if (cancelled) return;
       if (error) { setError(error.message); return; }
-      const rows = (data ?? []) as EmployeeRow[];
+      let rows = (data ?? []) as EmployeeRow[];
+      // Campus admins are a level below regular admins → never list admin accounts.
+      if (me?.role === "campus_admin") {
+        const profIds = rows.map((r) => (r as any).profile_id).filter(Boolean) as string[];
+        if (profIds.length) {
+          const { data: profs } = await supabase.from("user_profiles").select("id, role").in("id", profIds);
+          const adminIds = new Set((profs ?? []).filter((p: any) => p.role === "admin").map((p: any) => p.id));
+          rows = rows.filter((r) => !adminIds.has((r as any).profile_id));
+        }
+      }
+      if (cancelled) return;
       setEmployees(rows);
       // Reset/auto-pick selection when campus filter changes
       if (rows.length === 0) {
@@ -434,7 +444,7 @@ export default function LeavePage() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campusFilter]);
+  }, [campusFilter, me?.role]);
 
   // ── Load pending requests ─────────────────────────────────────────────────
   useEffect(() => {
