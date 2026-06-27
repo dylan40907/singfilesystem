@@ -253,6 +253,79 @@ export async function getAttachmentUrl(path: string): Promise<string | null> {
   return data?.signedUrl ?? null;
 }
 
+// ─── Attachment previews ─────────────────────────────────────────────────────
+
+/** What kind of in-app preview an attachment supports. 'none' → download only. */
+export type PreviewKind = "image" | "video" | "audio" | "pdf" | "office" | "text" | "none";
+
+const IMAGE_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"];
+const VIDEO_EXT = ["mp4", "mov", "m4v", "webm", "avi", "mkv", "3gp"];
+const AUDIO_EXT = ["mp3", "wav", "m4a", "aac", "ogg", "oga", "flac"];
+const OFFICE_EXT = ["doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+const TEXT_EXT = [
+  "txt", "md", "markdown", "csv", "tsv", "log", "json", "xml", "yml", "yaml",
+  "ts", "tsx", "js", "jsx", "html", "htm", "css", "sql", "sh", "rtf", "ini", "env",
+];
+
+function extOf(name: string | null | undefined): string {
+  const n = (name ?? "").toLowerCase();
+  const dot = n.lastIndexOf(".");
+  return dot >= 0 ? n.slice(dot + 1) : "";
+}
+
+/** Classify an attachment into a preview kind from its mime type + filename. */
+export function previewKindFor(
+  attachmentType: string | null | undefined,
+  attachmentName: string | null | undefined,
+  attachmentKind?: string | null
+): PreviewKind {
+  if (attachmentKind === "image") return "image";
+  if (attachmentKind === "video") return "video";
+
+  const mime = (attachmentType ?? "").toLowerCase();
+  const ext = extOf(attachmentName);
+
+  if (mime.startsWith("image/") || IMAGE_EXT.includes(ext)) return "image";
+  if (mime.startsWith("video/") || VIDEO_EXT.includes(ext)) return "video";
+  if (mime.startsWith("audio/") || AUDIO_EXT.includes(ext)) return "audio";
+  if (mime === "application/pdf" || ext === "pdf") return "pdf";
+  if (
+    OFFICE_EXT.includes(ext) ||
+    mime.includes("officedocument") ||
+    mime.includes("msword") ||
+    mime.includes("ms-excel") ||
+    mime.includes("ms-powerpoint")
+  )
+    return "office";
+  if (mime.startsWith("text/") || mime === "application/json" || TEXT_EXT.includes(ext))
+    return "text";
+  return "none";
+}
+
+/** Emoji icon for a file chip, by preview kind. */
+export function fileTypeIcon(kind: PreviewKind, name: string | null | undefined): string {
+  const ext = extOf(name);
+  switch (kind) {
+    case "pdf":
+      return "📕";
+    case "office":
+      if (["xls", "xlsx"].includes(ext)) return "📊";
+      if (["ppt", "pptx"].includes(ext)) return "📈";
+      return "📘";
+    case "audio":
+      return "🎵";
+    case "text":
+      return "📃";
+    default:
+      return "📎";
+  }
+}
+
+/** Microsoft Office Online embed URL for a publicly-reachable file URL. */
+export function officeViewerUrl(fileUrl: string): string {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(fileUrl)}`;
+}
+
 /** Update my last_read_at to "now" for a conversation. */
 export async function markRead(conversationId: string, myId: string): Promise<void> {
   const { error } = await supabase

@@ -3,13 +3,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  ChatConversationView, ChatMessage, fetchMessages, getAttachmentUrl, markRead, sendMessage,
-  uploadChatAttachment, userDisplayName,
+  ChatConversationView, ChatMessage, PreviewKind, fetchMessages, fileTypeIcon, getAttachmentUrl,
+  markRead, officeViewerUrl, previewKindFor, sendMessage, uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
 import { useDialog } from "@/components/ui/useDialog";
 
-// Renders a message attachment: images inline, files as a download chip.
-function ChatAttachment({ message, mine }: { message: ChatMessage; mine: boolean }) {
+type PreviewTarget = { url: string; kind: PreviewKind; name: string; type: string | null };
+
+// Renders a message attachment inline; clicking opens the full-screen lightbox.
+function ChatAttachment({
+  message,
+  mine,
+  onOpen,
+}: {
+  message: ChatMessage;
+  mine: boolean;
+  onOpen: (t: PreviewTarget) => void;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -18,37 +28,143 @@ function ChatAttachment({ message, mine }: { message: ChatMessage; mine: boolean
   }, [message.attachment_path]);
 
   const hasText = !!message.content?.trim();
+  const kind = previewKindFor(message.attachment_type, message.attachment_name, message.attachment_kind);
+  const name = message.attachment_name ?? "Attachment";
+  const open = () => { if (url) onOpen({ url, kind, name, type: message.attachment_type ?? null }); };
 
-  if (message.attachment_kind === "image") {
+  if (kind === "image") {
     return (
-      <a href={url ?? "#"} target="_blank" rel="noopener noreferrer" style={{ display: "block", marginBottom: hasText ? 6 : 0 }}>
+      <button onClick={open} style={{ display: "block", border: "none", padding: 0, background: "none", cursor: url ? "pointer" : "default", marginBottom: hasText ? 6 : 0 }}>
         {url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={url} alt={message.attachment_name ?? "image"} style={{ maxWidth: 240, maxHeight: 240, borderRadius: 12, display: "block", background: "#e5e7eb" }} />
+          <img src={url} alt={name} style={{ maxWidth: 240, maxHeight: 240, borderRadius: 12, display: "block", background: "#e5e7eb" }} />
         ) : (
           <div style={{ width: 200, height: 160, borderRadius: 12, background: "#e5e7eb" }} />
         )}
-      </a>
+      </button>
+    );
+  }
+
+  if (kind === "video") {
+    return (
+      <button onClick={open} style={{ display: "block", border: "none", padding: 0, background: "none", cursor: url ? "pointer" : "default", marginBottom: hasText ? 6 : 0 }}>
+        <div style={{ width: 220, height: 130, borderRadius: 12, background: "#1f2937", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 }}>
+          <span style={{ fontSize: 34, color: "white" }}>▶</span>
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
+        </div>
+      </button>
     );
   }
 
   return (
-    <a
-      href={url ?? "#"}
-      target="_blank"
-      rel="noopener noreferrer"
-      download={message.attachment_name ?? undefined}
+    <button
+      onClick={open}
       style={{
-        display: "inline-flex", alignItems: "center", gap: 8, marginBottom: hasText ? 6 : 0,
-        padding: "8px 12px", borderRadius: 12, textDecoration: "none", maxWidth: 260,
+        display: "inline-flex", alignItems: "center", gap: 10, marginBottom: hasText ? 6 : 0,
+        padding: "10px 12px", borderRadius: 12, border: "none", textAlign: "left", maxWidth: 280,
+        cursor: url ? "pointer" : "default",
         background: mine ? "rgba(255,255,255,0.2)" : "#e5e7eb", color: mine ? "white" : "#111827",
       }}
     >
-      <span>📎</span>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600, fontSize: 13 }}>
-        {message.attachment_name ?? "Attachment"}
+      <span style={{ fontSize: 22 }}>{fileTypeIcon(kind, message.attachment_name)}</span>
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600, fontSize: 13 }}>{name}</span>
+        <span style={{ display: "block", fontSize: 11, opacity: 0.7 }}>{kind === "none" ? "Click to download" : "Click to preview"}</span>
       </span>
-    </a>
+    </button>
+  );
+}
+
+// ─── Full-screen lightbox ─────────────────────────────────────────────────────
+
+function TextLightbox({ url }: { url: string }) {
+  const [body, setBody] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(url)
+      .then((r) => r.text())
+      .then((t) => { if (!cancelled) setBody(t.length > 200000 ? t.slice(0, 200000) + "\n\n…(truncated)" : t); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [url]);
+
+  if (failed) return <div style={{ color: "white", fontSize: 15 }}>Couldn’t load this file’s contents.</div>;
+  if (body === null) return <div style={{ color: "white", fontSize: 15 }}>Loading…</div>;
+  return (
+    <pre style={{
+      maxWidth: 900, width: "92vw", maxHeight: "82vh", overflow: "auto", margin: 0,
+      background: "#1e1e1e", color: "#e5e7eb", padding: 20, borderRadius: 12,
+      fontSize: 13, lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
+    }}>{body}</pre>
+  );
+}
+
+function PreviewLightbox({ target, onClose }: { target: PreviewTarget; onClose: () => void }) {
+  const { url, kind, name } = target;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  let body: React.ReactNode;
+  if (kind === "image") {
+    // eslint-disable-next-line @next/next/no-img-element
+    body = <img src={url} alt={name} style={{ maxWidth: "92vw", maxHeight: "86vh", borderRadius: 8, display: "block" }} />;
+  } else if (kind === "video") {
+    body = <video src={url} controls autoPlay style={{ maxWidth: "92vw", maxHeight: "86vh", borderRadius: 8, background: "#000" }} />;
+  } else if (kind === "audio") {
+    body = (
+      <div style={{ textAlign: "center" }}>
+        <div style={{ color: "white", fontSize: 16, fontWeight: 700, marginBottom: 18 }}>🎵 {name}</div>
+        <audio src={url} controls autoPlay style={{ width: "min(80vw, 480px)" }} />
+      </div>
+    );
+  } else if (kind === "pdf") {
+    body = <iframe src={url} title={name} style={{ width: "92vw", height: "86vh", border: "none", borderRadius: 8, background: "white" }} />;
+  } else if (kind === "office") {
+    body = <iframe src={officeViewerUrl(url)} title={name} style={{ width: "92vw", height: "86vh", border: "none", borderRadius: 8, background: "white" }} />;
+  } else if (kind === "text") {
+    body = <TextLightbox url={url} />;
+  } else {
+    body = (
+      <div style={{ textAlign: "center", maxWidth: 360 }}>
+        <div style={{ fontSize: 64, marginBottom: 12 }}>{fileTypeIcon(kind, name)}</div>
+        <div style={{ color: "white", fontSize: 17, fontWeight: 700, marginBottom: 6, wordBreak: "break-word" }}>{name}</div>
+        <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, marginBottom: 22 }}>No preview available for this file type.</div>
+        <a href={url} download={name} target="_blank" rel="noopener noreferrer"
+          style={{ display: "inline-block", padding: "12px 30px", borderRadius: 24, background: "#e6178d", color: "white", fontWeight: 800, fontSize: 15, textDecoration: "none" }}>
+          Download
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.92)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}
+    >
+      <div style={{ position: "absolute", top: 16, right: 16, display: "flex", gap: 10, zIndex: 1 }}>
+        <a href={url} download={name} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+          title="Download"
+          style={{ width: 40, height: 40, borderRadius: 20, background: "rgba(255,255,255,0.15)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, textDecoration: "none" }}>
+          ⤓
+        </a>
+        <button onClick={onClose} title="Close"
+          style={{ width: 40, height: 40, borderRadius: 20, background: "rgba(255,255,255,0.15)", color: "white", border: "none", cursor: "pointer", fontSize: 18, fontWeight: 700 }}>
+          ✕
+        </button>
+      </div>
+      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {body}
+      </div>
+    </div>
   );
 }
 
@@ -93,6 +209,7 @@ export default function ChatThread({
   onDelete: () => void;
 }) {
   const { confirm, modal: dialogModal } = useDialog();
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState("");
@@ -212,6 +329,7 @@ export default function ChatThread({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "white" }}>
       {dialogModal}
+      {preview && <PreviewLightbox target={preview} onClose={() => setPreview(null)} />}
       {/* Header */}
       <div
         style={{
@@ -352,7 +470,7 @@ export default function ChatThread({
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {m.attachment_path && <ChatAttachment message={m} mine={isMine} />}
+                      {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
                       {m.content?.trim() ? m.content : null}
                     </div>
                     <div
