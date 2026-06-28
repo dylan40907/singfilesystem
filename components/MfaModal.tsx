@@ -7,6 +7,16 @@ type Tokens = { access_token: string; refresh_token: string };
 
 const PINK = "#e6178d";
 
+// US-only: user types 10 digits; we prepend +1 ourselves.
+function formatUsPhone(d: string): string {
+  const digits = d.replace(/\D/g, "").slice(0, 10);
+  const a = digits.slice(0, 3), b = digits.slice(3, 6), c = digits.slice(6, 10);
+  if (digits.length > 6) return `(${a}) ${b}-${c}`;
+  if (digits.length > 3) return `(${a}) ${b}`;
+  if (digits.length > 0) return `(${a}`;
+  return "";
+}
+
 /**
  * Two-phase SMS verification shown after a password is accepted but before the
  * session is released. Phase "phone" only appears for first-time enrollment;
@@ -70,12 +80,11 @@ export default function MfaModal({
   }, [setupRequired, sendCode]);
 
   async function handleSendPhone() {
-    const p = phone.trim();
-    if (!/^\+[1-9]\d{6,14}$/.test(p)) {
-      setError("Enter your number in international format, e.g. +15551234567");
+    if (phone.length !== 10) {
+      setError("Enter your 10-digit US mobile number.");
       return;
     }
-    await sendCode(p);
+    await sendCode(`+1${phone}`);
   }
 
   async function handleVerify() {
@@ -132,17 +141,20 @@ export default function MfaModal({
             <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 6 }}>
               Mobile number
             </label>
-            <input
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="+15551234567"
-              inputMode="tel"
-              autoFocus
-              style={inputStyle}
-              onKeyDown={(e) => { if (e.key === "Enter") handleSendPhone(); }}
-            />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 16, fontWeight: 700, color: "#111827" }}>+1</span>
+              <input
+                value={formatUsPhone(phone)}
+                onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                placeholder="(555) 123-4567"
+                inputMode="numeric"
+                autoFocus
+                style={{ ...inputStyle, flex: 1 }}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSendPhone(); }}
+              />
+            </div>
             <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 6 }}>
-              Include your country code (e.g. +1 for the US).
+              We&apos;ll text a verification code to your US mobile number.
             </div>
           </>
         ) : (
@@ -161,7 +173,7 @@ export default function MfaModal({
             />
             <button
               type="button"
-              onClick={() => sendCode(setupRequired ? phone.trim() : undefined)}
+              onClick={() => sendCode(setupRequired ? `+1${phone}` : undefined)}
               disabled={busy}
               style={{ marginTop: 8, background: "none", border: "none", color: PINK, fontWeight: 700, fontSize: 13, cursor: busy ? "default" : "pointer", padding: 0 }}
             >
