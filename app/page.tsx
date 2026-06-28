@@ -18,6 +18,7 @@ import {
   parseCsv,
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
+import MfaModal from "@/components/MfaModal";
 
 async function readJsonSafely(res: Response) {
   const ct = res.headers.get("content-type") || "";
@@ -261,6 +262,11 @@ export default function Home() {
 
   // Login UI (QOL)
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+
+  // MFA challenge — set when auth-username-login withholds the session pending SMS
+  const [mfaChallenge, setMfaChallenge] = useState<
+    { ticket: string; setupRequired: boolean; maskedPhone: string | null } | null
+  >(null);
 
   // Profile
   const [myProfile, setMyProfile] = useState<TeacherProfile | null>(null);
@@ -724,6 +730,18 @@ export default function Home() {
         return;
       }
 
+      // MFA gate: password was accepted but the session is withheld until the
+      // SMS code is verified. Hand off to the MFA modal.
+      if (data?.mfa) {
+        setStatus("");
+        setMfaChallenge({
+          ticket: data.ticket,
+          setupRequired: !!data.setup_required,
+          maskedPhone: data.masked_phone ?? null,
+        });
+        return;
+      }
+
       const access_token = data?.access_token;
       const refresh_token = data?.refresh_token;
 
@@ -853,6 +871,18 @@ export default function Home() {
 
       if (loginErr) {
         setStatus("Password set, but sign-in failed: " + (loginErr.message ?? "unknown"));
+        return;
+      }
+
+      // MFA gate: route a freshly-set-up account through phone verification too.
+      if ((data as any)?.mfa) {
+        closeSetupModal();
+        setStatus("");
+        setMfaChallenge({
+          ticket: (data as any).ticket,
+          setupRequired: !!(data as any).setup_required,
+          maskedPhone: (data as any).masked_phone ?? null,
+        });
         return;
       }
 
@@ -1798,6 +1828,28 @@ export default function Home() {
         </div>
         {status ? <span className="badge badge-pink">{status}</span> : null}
       </div>
+
+      {mfaChallenge && (
+        <MfaModal
+          ticket={mfaChallenge.ticket}
+          setupRequired={mfaChallenge.setupRequired}
+          maskedPhone={mfaChallenge.maskedPhone}
+          onCancel={() => {
+            setMfaChallenge(null);
+            setStatus("Sign-in cancelled.");
+          }}
+          onVerified={async ({ access_token, refresh_token }) => {
+            const { error: setErr } = await supabase.auth.setSession({ access_token, refresh_token });
+            if (setErr) {
+              setStatus("Sign-in error: " + setErr.message);
+              return;
+            }
+            setMfaChallenge(null);
+            setPassword("");
+            await refreshAll();
+          }}
+        />
+      )}
 
       {!sessionEmail ? (
         <div className="card" style={{ maxWidth: 420 }}>

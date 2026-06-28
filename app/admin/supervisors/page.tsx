@@ -60,9 +60,10 @@ export default function AdminSupervisorsPage() {
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   // Admin-only: reset/deactivate state
-  const [adminActionLoading, setAdminActionLoading] = useState<{ reset: boolean; active: boolean }>({
+  const [adminActionLoading, setAdminActionLoading] = useState<{ reset: boolean; active: boolean; phone: boolean }>({
     reset: false,
     active: false,
+    phone: false,
   });
 
   async function refreshLists(preferSelectId?: string, profileArg?: TeacherProfile | null) {
@@ -250,6 +251,35 @@ export default function AdminSupervisorsPage() {
       setStatus("Reset password error: " + (e?.message ?? "unknown"));
     } finally {
       setAdminActionLoading((s) => ({ ...s, reset: false }));
+    }
+  }
+
+  async function resetSelectedSupervisorPhone() {
+    if (!isAdmin) return;
+    if (!selectedSupervisorId) return;
+
+    const selected = supervisors.find((s) => s.id === selectedSupervisorId) ?? null;
+    const label = selected ? labelForUser(selected) : selectedSupervisorId;
+
+    const ok = await confirm(
+      `Reset two-step phone for this supervisor?\n\n${label}\n\nThey'll be asked to set up a new phone number the next time they sign in.`,
+      { title: "Reset phone", confirmLabel: "Reset" }
+    );
+    if (!ok) return;
+
+    setAdminActionLoading((s) => ({ ...s, phone: true }));
+    setStatus("Resetting phone...");
+    try {
+      const { error } = await supabase.rpc("admin_reset_user_phone", { target_user_id: selectedSupervisorId });
+      if (error) {
+        setStatus("Reset phone error: " + (error.message ?? "unknown"));
+        return;
+      }
+      setStatus("✅ Phone reset — they'll re-enroll at next sign-in.");
+    } catch (e: any) {
+      setStatus("Reset phone error: " + (e?.message ?? "unknown"));
+    } finally {
+      setAdminActionLoading((s) => ({ ...s, phone: false }));
     }
   }
 
@@ -448,6 +478,15 @@ export default function AdminSupervisorsPage() {
               title="Reset password for selected supervisor"
             >
               {adminActionLoading.reset ? "Resetting..." : "Reset password"}
+            </button>
+
+            <button
+              className="btn"
+              onClick={() => void resetSelectedSupervisorPhone()}
+              disabled={!selectedSupervisorId || adminActionLoading.phone}
+              title="Reset two-step phone (forces re-enrollment) for selected supervisor"
+            >
+              {adminActionLoading.phone ? "Resetting..." : "Reset phone"}
             </button>
 
             <button

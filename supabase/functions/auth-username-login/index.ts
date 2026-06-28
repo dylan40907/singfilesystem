@@ -109,6 +109,51 @@ serve(async (req: Request) => {
       return json(origin, 401, { error: "Invalid credentials" });
     }
 
+    // ── MFA gate (server-enforced) ──────────────────────────────────────────
+    // When enabled, we DON'T hand the session to the client. We park it in
+    // mfa_pending and return an opaque ticket; the session is only released by
+    // mfa-check after the SMS code is confirmed. Flag-off = unchanged behavior.
+    if ((Deno.env.get("MFA_ENABLED") ?? "").toLowerCase() === "true") {
+      const userId = data.user?.id;
+      if (!userId) return json(origin, 401, { error: "Invalid credentials" });
+
+      const { data: prof } = await admin
+        .from("user_profiles")
+        .select("phone_e164, phone_verified")
+        .eq("id", userId)
+        .maybeSingle();
+
+      const verified = !!prof?.phone_verified && !!prof?.phone_e164;
+      const setup = !verified;
+
+      const { data: ticketRow, error: pendErr } = await admin
+        .from("mfa_pending")
+        .insert({
+          user_id: userId,
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token,
+          phone_e164: verified ? prof!.phone_e164 : null,
+          setup,
+        })
+        .select("ticket")
+        .single();
+
+      if (pendErr || !ticketRow?.ticket) {
+        return json(origin, 500, { error: "Could not start verification" });
+      }
+
+      const maskedPhone = verified
+        ? "••••••" + String(prof!.phone_e164).replace(/\D/g, "").slice(-4)
+        : null;
+
+      return json(origin, 200, {
+        mfa: true,
+        setup_required: setup,
+        masked_phone: maskedPhone,
+        ticket: ticketRow.ticket,
+      });
+    }
+
     return json(origin, 200, {
       access_token: data.session.access_token,
       refresh_token: data.session.refresh_token,

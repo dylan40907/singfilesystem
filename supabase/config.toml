@@ -6,3 +6,9 @@ verify_jwt = false
 
 [functions.teacher-setup-set-password]
 verify_jwt = false
+
+[functions.mfa-start]
+verify_jwt = false
+
+[functions.mfa-check]
+verify_jwt = false
