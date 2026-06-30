@@ -21,6 +21,7 @@ export type Course = {
   segment_id: string | null;
   status: CourseStatus;
   settings: Record<string, any>;
+  position: number;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -130,9 +131,23 @@ export async function deleteSegment(id: string): Promise<void> {
 
 // ─── Courses ─────────────────────────────────────────────────────────────────
 
-/** Courses (optionally filtered by status) with segment + assignment counts. */
+/** Next position (bottom) for a new course within a segment. */
+async function nextCoursePosition(segmentId: string | null): Promise<number> {
+  let q = supabase.from("courses").select("position").order("position", { ascending: false }).limit(1);
+  q = segmentId ? q.eq("segment_id", segmentId) : q.is("segment_id", null);
+  const { data } = await q;
+  return ((data?.[0]?.position as number | undefined) ?? 0) + 1;
+}
+
+/** Courses (optionally filtered by status) with segment + assignment counts.
+ *  Ordered by manual position (then created_at), so within a segment they follow
+ *  the admin's chosen order and new courses land at the bottom. */
 export async function fetchCourses(status?: CourseStatus): Promise<CourseWithMeta[]> {
-  let q = supabase.from("courses").select("*").order("created_at", { ascending: false });
+  let q = supabase
+    .from("courses")
+    .select("*")
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
   if (status) q = q.eq("status", status);
   const { data: courses } = await q;
   const list = (courses ?? []) as Course[];
@@ -159,21 +174,31 @@ export async function fetchCourses(status?: CourseStatus): Promise<CourseWithMet
 
 export async function createCourse(title: string, segmentId: string | null): Promise<Course> {
   const { data: auth } = await supabase.auth.getUser();
+  const position = await nextCoursePosition(segmentId);
   const { data, error } = await supabase
     .from("courses")
-    .insert({ title: title.trim(), segment_id: segmentId, created_by: auth.user?.id ?? null })
+    .insert({ title: title.trim(), segment_id: segmentId, position, created_by: auth.user?.id ?? null })
     .select("*")
     .single();
   if (error) throw error;
   return data as Course;
 }
 
-export async function updateCourse(id: string, patch: Partial<Pick<Course, "title" | "segment_id" | "settings">>): Promise<void> {
+export async function updateCourse(
+  id: string,
+  patch: Partial<Pick<Course, "title" | "segment_id" | "settings" | "position">>
+): Promise<void> {
   const { error } = await supabase
     .from("courses")
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq("id", id);
   if (error) throw error;
+}
+
+/** Move a course into a segment, placing it at the bottom of that segment. */
+export async function moveCourseToSegment(id: string, segmentId: string | null): Promise<void> {
+  const position = await nextCoursePosition(segmentId);
+  await updateCourse(id, { segment_id: segmentId, position });
 }
 
 export async function setCourseStatus(id: string, status: CourseStatus): Promise<void> {

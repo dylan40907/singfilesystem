@@ -8,7 +8,8 @@ import { useDialog } from "@/components/ui/useDialog";
 import {
   Course, CourseSegment, CourseStatus, CourseWithMeta,
   archiveCourses, assignToCourses, createCourse, createSegment, deleteCourse, deleteSegment,
-  fetchCourses, fetchSegments, remindIncomplete, setCourseStatus, updateCourse, updateSegment,
+  fetchCourses, fetchSegments, moveCourseToSegment, remindIncomplete, setCourseStatus,
+  updateCourse, updateSegment,
 } from "@/lib/courses";
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
@@ -244,12 +245,27 @@ export default function AdminCoursesPage() {
   async function confirmMoveCourse() {
     if (!moveCourse) return;
     try {
-      await updateCourse(moveCourse.course.id, { segment_id: moveCourse.segmentId || null });
+      await moveCourseToSegment(moveCourse.course.id, moveCourse.segmentId || null);
       setMoveCourse(null);
       await reload();
       setStatus("Moved.");
     } catch (e: any) {
       setStatus("Move error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function reorderCourse(items: CourseWithMeta[], idx: number, dir: -1 | 1) {
+    const a = items[idx];
+    const b = items[idx + dir];
+    if (!a || !b) return;
+    try {
+      await Promise.all([
+        updateCourse(a.id, { position: b.position }),
+        updateCourse(b.id, { position: a.position }),
+      ]);
+      await reload();
+    } catch (e: any) {
+      setStatus("Reorder error: " + (e?.message ?? "unknown"));
     }
   }
 
@@ -333,6 +349,8 @@ export default function AdminCoursesPage() {
                   const sIdx = sortedSegments.findIndex((s) => s.id === g.segment!.id);
                   return (
                     <div className="row" style={{ gap: 6 }}>
+                      <button className="btn" style={{ ...miniBtn, color: "#e6178d", fontWeight: 800 }}
+                        onClick={() => { setNewTitle(""); setNewSegmentId(g.segment!.id); setCreateOpen(true); }}>+ Course</button>
                       <button className="btn" style={miniBtn} onClick={() => moveSegment(g.segment!, -1)} disabled={sIdx === 0}>↑</button>
                       <button className="btn" style={miniBtn} onClick={() => moveSegment(g.segment!, 1)} disabled={sIdx === sortedSegments.length - 1}>↓</button>
                       <button className="btn" style={miniBtn} onClick={() => setSegEdit({ id: g.segment!.id, name: g.segment!.name, color: g.segment!.color })}>Edit</button>
@@ -363,7 +381,7 @@ export default function AdminCoursesPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {g.items.map((c) => (
+                    {g.items.map((c, ci) => (
                       <tr key={c.id} style={{ borderTop: "1px solid #f1f5f9", background: selected.has(c.id) ? "#fdf2f8" : undefined }}>
                         <td style={{ ...td, width: 36 }}>
                           <input type="checkbox" checked={selected.has(c.id)} onChange={(e) => toggleSelect(c.id, e.target.checked)} />
@@ -378,6 +396,8 @@ export default function AdminCoursesPage() {
                         <td style={td}>{c.assignedCount}</td>
                         <td style={td}>{new Date(c.created_at).toLocaleDateString()}</td>
                         <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button className="btn" onClick={() => reorderCourse(g.items, ci, -1)} disabled={ci === 0} style={miniBtn}>↑</button>
+                          <button className="btn" onClick={() => reorderCourse(g.items, ci, 1)} disabled={ci === g.items.length - 1} style={miniBtn}>↓</button>
                           <button className="btn" onClick={() => router.push(`/admin/courses/${c.id}`)} style={miniBtn}>Edit</button>
                           <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
                           {c.status !== "published" && c.status !== "archived" && (
