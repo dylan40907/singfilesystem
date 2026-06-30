@@ -18,6 +18,7 @@ import {
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import TeacherScheduleView from "@/components/schedule/TeacherScheduleView";
 import EmployeeDocuments from "@/components/hr/EmployeeDocuments";
+import EmployeeCourses from "@/components/courses/EmployeeCourses";
 import { useDialog } from "@/components/ui/useDialog";
 
 /**
@@ -262,7 +263,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog";
+  type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog" | "courses";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
   const [pinRevealed, setPinRevealed] = useState(false);
 
@@ -1348,6 +1349,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           <button className={`hr-mobile-tab${activeTab === "schedule" ? " active" : ""}`} onClick={() => setActiveTab("schedule")}>Schedule</button>
           <button className={`hr-mobile-tab${activeTab === "leave" ? " active" : ""}`} onClick={() => setActiveTab("leave")}>Leave</button>
           <button className={`hr-mobile-tab${activeTab === "timesheetLog" ? " active" : ""}`} onClick={() => setActiveTab("timesheetLog")}>Timesheet Log</button>
+          <button className={`hr-mobile-tab${activeTab === "courses" ? " active" : ""}`} onClick={() => setActiveTab("courses")}>Courses</button>
         </div>
 
         <div className="hr-page-grid" style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>
@@ -1383,10 +1385,15 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             <TabButton active={activeTab === "timesheetLog"} onClick={() => setActiveTab("timesheetLog")}>
               Timesheet Log
             </TabButton>
+            <TabButton active={activeTab === "courses"} onClick={() => setActiveTab("courses")}>
+              Courses
+            </TabButton>
           </div>
 
           {/* Right content */}
           <div style={{ display: "grid", gap: 14 }}>
+            {activeTab === "courses" ? <EmployeeCourses /> : null}
+
             {activeTab === "documents" && employee ? (
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
                 <EmployeeDocuments employeeId={employee.id} />

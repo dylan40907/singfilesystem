@@ -1,0 +1,382 @@
+import { supabase } from "./supabaseClient";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+export type CourseStatus = "draft" | "published" | "archived";
+export type AssignmentStatus = "not_started" | "in_progress" | "completed";
+export type ObjectType =
+  | "text" | "image" | "video" | "pdf" | "youtube" | "file" | "link" | "audio" | "quiz";
+
+export type CourseSegment = {
+  id: string;
+  name: string;
+  color: string;
+  position: number;
+  created_at: string;
+};
+
+export type Course = {
+  id: string;
+  title: string;
+  segment_id: string | null;
+  status: CourseStatus;
+  settings: Record<string, any>;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CourseSection = {
+  id: string;
+  course_id: string;
+  title: string;
+  position: number;
+  created_at: string;
+};
+
+export type CourseObject = {
+  id: string;
+  course_id: string;
+  section_id: string;
+  type: ObjectType;
+  title: string;
+  content: Record<string, any>;
+  settings: Record<string, any>;
+  position: number;
+  created_at: string;
+};
+
+export type CourseAssignment = {
+  id: string;
+  course_id: string;
+  user_id: string;
+  status: AssignmentStatus;
+  progress: CourseProgress;
+  assigned_by: string | null;
+  assigned_at: string;
+  last_viewed_at: string | null;
+  completed_at: string | null;
+};
+
+export type CourseProgress = {
+  completedObjectIds?: string[];
+  quizResults?: Record<string, { score: number; passed: boolean; answers?: Record<string, string[]> }>;
+  lastObjectId?: string | null;
+};
+
+// Quiz payload shapes (stored in course_objects.content / .settings for type 'quiz')
+export type QuizAnswer = { id: string; text: string; correct: boolean };
+export type QuizQuestion = { id: string; prompt: string; attachmentUrl?: string | null; answers: QuizAnswer[] };
+export type QuizSettings = {
+  passScore?: number;        // 0–100
+  showScore?: boolean;       // show final score to user
+  feedbackPerQuestion?: boolean; // tell right/wrong after each
+  showCorrect?: boolean;     // reveal correct answer when wrong
+  randomize?: boolean;       // randomize question order
+};
+
+// Text object settings
+export type TextSettings = {
+  requireScroll?: boolean;   // must scroll to bottom to complete
+  confirmLabel?: string | null; // confirmation button label (e.g. "I understand"); null = none
+  allowCopy?: boolean;
+};
+
+export type CourseWithMeta = Course & {
+  segment: CourseSegment | null;
+  assignedCount: number;
+};
+
+// ─── Segments ────────────────────────────────────────────────────────────────
+
+export async function fetchSegments(): Promise<CourseSegment[]> {
+  const { data } = await supabase
+    .from("course_segments")
+    .select("*")
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+  return (data ?? []) as CourseSegment[];
+}
+
+export async function createSegment(name: string, color: string): Promise<CourseSegment> {
+  const { data, error } = await supabase
+    .from("course_segments")
+    .insert({ name: name.trim(), color })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as CourseSegment;
+}
+
+export async function renameSegment(id: string, name: string): Promise<void> {
+  const { error } = await supabase.from("course_segments").update({ name: name.trim() }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteSegment(id: string): Promise<void> {
+  const { error } = await supabase.from("course_segments").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ─── Courses ─────────────────────────────────────────────────────────────────
+
+/** Courses (optionally filtered by status) with segment + assignment counts. */
+export async function fetchCourses(status?: CourseStatus): Promise<CourseWithMeta[]> {
+  let q = supabase.from("courses").select("*").order("created_at", { ascending: false });
+  if (status) q = q.eq("status", status);
+  const { data: courses } = await q;
+  const list = (courses ?? []) as Course[];
+  if (list.length === 0) return [];
+
+  const segments = await fetchSegments();
+  const segById = new Map(segments.map((s) => [s.id, s]));
+
+  const { data: assigns } = await supabase
+    .from("course_assignments")
+    .select("course_id")
+    .in("course_id", list.map((c) => c.id));
+  const countByCourse = new Map<string, number>();
+  (assigns ?? []).forEach((a: any) => {
+    countByCourse.set(a.course_id, (countByCourse.get(a.course_id) ?? 0) + 1);
+  });
+
+  return list.map((c) => ({
+    ...c,
+    segment: c.segment_id ? segById.get(c.segment_id) ?? null : null,
+    assignedCount: countByCourse.get(c.id) ?? 0,
+  }));
+}
+
+export async function createCourse(title: string, segmentId: string | null): Promise<Course> {
+  const { data: auth } = await supabase.auth.getUser();
+  const { data, error } = await supabase
+    .from("courses")
+    .insert({ title: title.trim(), segment_id: segmentId, created_by: auth.user?.id ?? null })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Course;
+}
+
+export async function updateCourse(id: string, patch: Partial<Pick<Course, "title" | "segment_id" | "settings">>): Promise<void> {
+  const { error } = await supabase
+    .from("courses")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function setCourseStatus(id: string, status: CourseStatus): Promise<void> {
+  const { error } = await supabase
+    .from("courses")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteCourse(id: string): Promise<void> {
+  const { error } = await supabase.from("courses").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ─── Full course (sections + objects), for the builder + taker ───────────────
+
+export type FullCourse = {
+  course: Course;
+  sections: CourseSection[];
+  objects: CourseObject[];
+};
+
+export async function fetchCourseFull(courseId: string): Promise<FullCourse | null> {
+  const { data: course } = await supabase.from("courses").select("*").eq("id", courseId).maybeSingle();
+  if (!course) return null;
+  const [{ data: sections }, { data: objects }] = await Promise.all([
+    supabase.from("course_sections").select("*").eq("course_id", courseId).order("position", { ascending: true }),
+    supabase.from("course_objects").select("*").eq("course_id", courseId).order("position", { ascending: true }),
+  ]);
+  return {
+    course: course as Course,
+    sections: (sections ?? []) as CourseSection[],
+    objects: (objects ?? []) as CourseObject[],
+  };
+}
+
+// ─── Sections ────────────────────────────────────────────────────────────────
+
+export async function createSection(courseId: string, title: string, position: number): Promise<CourseSection> {
+  const { data, error } = await supabase
+    .from("course_sections")
+    .insert({ course_id: courseId, title, position })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as CourseSection;
+}
+
+export async function updateSection(id: string, patch: Partial<Pick<CourseSection, "title" | "position">>): Promise<void> {
+  const { error } = await supabase.from("course_sections").update(patch).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteSection(id: string): Promise<void> {
+  const { error } = await supabase.from("course_sections").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ─── Objects ─────────────────────────────────────────────────────────────────
+
+export async function createObject(o: {
+  courseId: string;
+  sectionId: string;
+  type: ObjectType;
+  title: string;
+  content?: Record<string, any>;
+  settings?: Record<string, any>;
+  position: number;
+}): Promise<CourseObject> {
+  const { data, error } = await supabase
+    .from("course_objects")
+    .insert({
+      course_id: o.courseId,
+      section_id: o.sectionId,
+      type: o.type,
+      title: o.title,
+      content: o.content ?? {},
+      settings: o.settings ?? {},
+      position: o.position,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as CourseObject;
+}
+
+export async function updateObject(
+  id: string,
+  patch: Partial<Pick<CourseObject, "title" | "content" | "settings" | "position" | "section_id">>
+): Promise<void> {
+  const { error } = await supabase.from("course_objects").update(patch).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteObject(id: string): Promise<void> {
+  const { error } = await supabase.from("course_objects").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ─── Assignments (admin) ─────────────────────────────────────────────────────
+
+export type AssignmentWithUser = CourseAssignment & {
+  full_name: string | null;
+  username: string | null;
+  email: string | null;
+};
+
+export async function fetchAssignments(courseId: string): Promise<AssignmentWithUser[]> {
+  const { data: rows } = await supabase
+    .from("course_assignments")
+    .select("*")
+    .eq("course_id", courseId);
+  const list = (rows ?? []) as CourseAssignment[];
+  if (list.length === 0) return [];
+  const { data: profs } = await supabase
+    .from("user_profiles")
+    .select("id, full_name, username, email")
+    .in("id", list.map((a) => a.user_id));
+  const byId = new Map((profs ?? []).map((p: any) => [p.id, p]));
+  return list.map((a) => {
+    const p = byId.get(a.user_id);
+    return { ...a, full_name: p?.full_name ?? null, username: p?.username ?? null, email: p?.email ?? null };
+  });
+}
+
+/** Assign a course to a set of users (idempotent — skips existing). */
+export async function assignUsers(courseId: string, userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  const { data: auth } = await supabase.auth.getUser();
+  const { data: existing } = await supabase
+    .from("course_assignments")
+    .select("user_id")
+    .eq("course_id", courseId)
+    .in("user_id", userIds);
+  const have = new Set((existing ?? []).map((r: any) => r.user_id));
+  const toAdd = userIds.filter((id) => !have.has(id));
+  if (toAdd.length === 0) return;
+  const { error } = await supabase.from("course_assignments").insert(
+    toAdd.map((uid) => ({ course_id: courseId, user_id: uid, assigned_by: auth.user?.id ?? null }))
+  );
+  if (error) throw error;
+}
+
+export async function unassignUser(courseId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from("course_assignments")
+    .delete()
+    .eq("course_id", courseId)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+export async function sendReminder(courseId: string, userIds: string[]): Promise<number> {
+  const { data, error } = await supabase.rpc("course_send_reminder", { p_course: courseId, p_user_ids: userIds });
+  if (error) throw error;
+  return (data as number) ?? 0;
+}
+
+// ─── Employee side (take a course) ───────────────────────────────────────────
+
+export type MyCourse = {
+  assignment: CourseAssignment;
+  course: Course;
+  segment: CourseSegment | null;
+};
+
+export async function fetchMyCourses(myId: string): Promise<MyCourse[]> {
+  const { data: assigns } = await supabase
+    .from("course_assignments")
+    .select("*")
+    .eq("user_id", myId)
+    .order("assigned_at", { ascending: false });
+  const list = (assigns ?? []) as CourseAssignment[];
+  if (list.length === 0) return [];
+  const { data: courses } = await supabase
+    .from("courses")
+    .select("*")
+    .in("id", list.map((a) => a.course_id))
+    .eq("status", "published");
+  const courseById = new Map((courses ?? []).map((c: any) => [c.id, c as Course]));
+  const segments = await fetchSegments();
+  const segById = new Map(segments.map((s) => [s.id, s]));
+  return list
+    .filter((a) => courseById.has(a.course_id)) // only published courses
+    .map((a) => {
+      const course = courseById.get(a.course_id)!;
+      return { assignment: a, course, segment: course.segment_id ? segById.get(course.segment_id) ?? null : null };
+    });
+}
+
+/** Persist progress for my assignment; flips status to in_progress/completed. */
+export async function saveProgress(
+  assignmentId: string,
+  progress: CourseProgress,
+  status: AssignmentStatus
+): Promise<void> {
+  const patch: any = { progress, status, last_viewed_at: new Date().toISOString() };
+  if (status === "completed") patch.completed_at = new Date().toISOString();
+  const { error } = await supabase.from("course_assignments").update(patch).eq("id", assignmentId);
+  if (error) throw error;
+}
+
+// ─── Media upload (images / files used inside courses) ───────────────────────
+
+export async function uploadCourseMedia(file: File): Promise<{ url: string; name: string }> {
+  const safe = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
+  const path = `${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
+  const { error } = await supabase.storage.from("course-media").upload(path, file, {
+    contentType: file.type || "application/octet-stream",
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from("course-media").getPublicUrl(path);
+  return { url: data.publicUrl, name: file.name };
+}

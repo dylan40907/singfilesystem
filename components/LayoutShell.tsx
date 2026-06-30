@@ -17,7 +17,9 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  const isHr = pathname === "/admin/hr" || pathname.startsWith("/admin/hr/");
+  const isHr =
+    pathname === "/admin/hr" || pathname.startsWith("/admin/hr/") ||
+    pathname === "/admin/courses" || pathname.startsWith("/admin/courses/");
   const isLearning = pathname === "/admin/learning" || pathname.startsWith("/admin/learning/");
   const isSchedules = pathname === "/schedules" || pathname.startsWith("/schedules/");
 
