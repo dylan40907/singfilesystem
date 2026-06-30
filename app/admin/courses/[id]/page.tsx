@@ -43,6 +43,8 @@ export default function CourseBuilderPage() {
   const [editor, setEditor] = useState<{ draft: ObjectDraft; sectionId: string; objectId?: string } | null>(null);
   // type picker popover (sectionId currently adding to)
   const [pickerSection, setPickerSection] = useState<string | null>(null);
+  // section create/rename modal (no browser prompts)
+  const [sectionModal, setSectionModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
 
   useEffect(() => { (async () => { const p = await fetchMyProfile(); setAuthzd(!!p?.is_active && p.role === "admin"); })(); }, []);
 
@@ -71,15 +73,26 @@ export default function CourseBuilderPage() {
     await reload();
   }
 
-  async function addSection() {
-    const pos = full?.sections.length ?? 0;
-    await createSection(courseId, "New section", pos);
+  function addSection() { setSectionModal({ mode: "create", value: "" }); }
+  function renameSection(s: CourseSection) { setSectionModal({ mode: "rename", id: s.id, value: s.title }); }
+  async function confirmSection() {
+    if (!sectionModal) return;
+    const name = sectionModal.value.trim();
+    if (!name) return;
+    if (sectionModal.mode === "create") {
+      await createSection(courseId, name, full?.sections.length ?? 0);
+    } else if (sectionModal.id) {
+      await updateSection(sectionModal.id, { title: name });
+    }
+    setSectionModal(null);
     await reload();
   }
-  async function renameSectionPrompt(s: CourseSection) {
-    const name = prompt("Section title", s.title);
-    if (name == null) return;
-    await updateSection(s.id, { title: name });
+  async function moveSection(s: CourseSection, dir: -1 | 1) {
+    const sorted = [...(full?.sections ?? [])].sort((a, b) => a.position - b.position);
+    const idx = sorted.findIndex((x) => x.id === s.id);
+    const swap = sorted[idx + dir];
+    if (!swap) return;
+    await Promise.all([updateSection(s.id, { position: swap.position }), updateSection(swap.id, { position: s.position })]);
     await reload();
   }
   async function removeSection(s: CourseSection) {
@@ -172,7 +185,7 @@ export default function CourseBuilderPage() {
         <div className="card">
           {sections.length === 0 && <div className="subtle" style={{ padding: 12 }}>No sections yet. Add one to start building.</div>}
 
-          {sections.sort((a, b) => a.position - b.position).map((s) => {
+          {sections.sort((a, b) => a.position - b.position).map((s, si, arr) => {
             const objs = objectsBySection.get(s.id) ?? [];
             return (
               <div key={s.id} style={{ marginBottom: 18, border: "1px solid #e5e7eb", borderRadius: 12, padding: 14 }}>
@@ -182,7 +195,9 @@ export default function CourseBuilderPage() {
                     <span style={{ fontWeight: 800, fontSize: 15 }}>{s.title || "Untitled section"}</span>
                   </div>
                   <div className="row" style={{ gap: 6 }}>
-                    <button className="btn" onClick={() => renameSectionPrompt(s)} style={mini}>Rename</button>
+                    <button className="btn" onClick={() => moveSection(s, -1)} disabled={si === 0} style={icoBtn}>↑</button>
+                    <button className="btn" onClick={() => moveSection(s, 1)} disabled={si === arr.length - 1} style={icoBtn}>↓</button>
+                    <button className="btn" onClick={() => renameSection(s)} style={mini}>Rename</button>
                     <button className="btn" onClick={() => removeSection(s)} style={{ ...mini, color: "#991b1b" }}>Delete</button>
                   </div>
                 </div>
@@ -230,6 +245,25 @@ export default function CourseBuilderPage() {
       )}
 
       {editor && <ObjectEditorModal draft={editor.draft} onCancel={() => setEditor(null)} onSave={saveObject} />}
+
+      {sectionModal && (
+        <div onMouseDown={(e) => { if (e.currentTarget === e.target) setSectionModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div className="card" style={{ width: "100%", maxWidth: 420 }}>
+            <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 10 }}>{sectionModal.mode === "create" ? "New section" : "Rename section"}</div>
+            <input className="input" autoFocus value={sectionModal.value}
+              onChange={(e) => setSectionModal((m) => (m ? { ...m, value: e.target.value } : m))}
+              onKeyDown={(e) => { if (e.key === "Enter") confirmSection(); }}
+              placeholder="Section title" />
+            <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+              <button className="btn" onClick={() => setSectionModal(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={confirmSection} disabled={!sectionModal.value.trim()}>
+                {sectionModal.mode === "create" ? "Create" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

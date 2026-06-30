@@ -78,16 +78,21 @@ export default function AdminCoursesPage() {
     [courses, tab]
   );
 
-  // Group active courses by segment (matches Connecteam's segmented layout)
+  // Group courses by segment. In the Active tab we seed ALL segments first so
+  // empty ones still render (confirming they exist).
   const grouped = useMemo(() => {
     const map = new Map<string, { segment: CourseSegment | null; items: CourseWithMeta[] }>();
+    if (tab === "active") {
+      for (const s of segments) map.set(s.id, { segment: s, items: [] });
+    }
     for (const c of visible) {
       const key = c.segment?.id ?? "__none__";
-      if (!map.has(key)) map.set(key, { segment: c.segment, items: [] });
+      if (!map.has(key)) map.set(key, { segment: c.segment ?? null, items: [] });
       map.get(key)!.items.push(c);
     }
-    return Array.from(map.values());
-  }, [visible]);
+    // Keep groups that have courses, plus (active tab) empty named segments.
+    return Array.from(map.values()).filter((g) => g.items.length > 0 || (tab === "active" && !!g.segment));
+  }, [visible, segments, tab]);
 
   async function handleCreate() {
     if (!newTitle.trim()) { setStatus("Enter a course name."); return; }
@@ -169,9 +174,9 @@ export default function AdminCoursesPage() {
 
         {loading ? (
           <div className="subtle">Loading…</div>
-        ) : visible.length === 0 ? (
+        ) : grouped.length === 0 ? (
           <div className="subtle" style={{ padding: 20, textAlign: "center" }}>
-            {tab === "archived" ? "No archived courses." : "No courses yet. Click “Add course” to build one."}
+            {tab === "archived" ? "No archived courses." : "No courses or segments yet. Add a segment or a course to start."}
           </div>
         ) : (
           grouped.map((g, i) => (
@@ -180,6 +185,11 @@ export default function AdminCoursesPage() {
                 <span style={{ width: 12, height: 12, borderRadius: 999, background: g.segment?.color ?? "#9ca3af", display: "inline-block" }} />
                 <span style={{ fontWeight: 800, color: g.segment?.color ?? "#6b7280" }}>{g.segment?.name ?? "Uncategorized"}</span>
               </div>
+              {g.items.length === 0 ? (
+                <div className="subtle" style={{ fontSize: 13, padding: "10px 14px", border: "1px dashed #e5e7eb", borderRadius: 12 }}>
+                  No courses in this segment yet.
+                </div>
+              ) : (
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                   <thead>
@@ -223,6 +233,7 @@ export default function AdminCoursesPage() {
                   </tbody>
                 </table>
               </div>
+              )}
             </div>
           ))
         )}

@@ -10,7 +10,10 @@ import { uploadCourseMedia } from "@/lib/courses";
  */
 export default function RichTextEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  const savedRange = useRef<Range | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
 
   // Seed once; afterwards the DOM is the source of truth (avoids cursor jumps).
   useEffect(() => {
@@ -45,9 +48,24 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     }
   }
 
-  function addLink() {
-    const url = prompt("Link URL");
-    if (url) exec("createLink", url);
+  function openLink() {
+    const sel = window.getSelection();
+    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    setLinkUrl("");
+    setLinkOpen(true);
+  }
+  function confirmLink() {
+    const url = linkUrl.trim();
+    setLinkOpen(false);
+    if (!url) return;
+    ref.current?.focus();
+    if (savedRange.current) {
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(savedRange.current);
+    }
+    document.execCommand("createLink", false, url);
+    emit();
   }
 
   return (
@@ -60,7 +78,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         <ToolBtn onClick={() => exec("underline")} title="Underline"><u>U</u></ToolBtn>
         <ToolBtn onClick={() => exec("insertUnorderedList")} title="Bullet list">•≡</ToolBtn>
         <ToolBtn onClick={() => exec("insertOrderedList")} title="Numbered list">1≡</ToolBtn>
-        <ToolBtn onClick={addLink} title="Link">🔗</ToolBtn>
+        <ToolBtn onClick={openLink} title="Link">🔗</ToolBtn>
         <label style={{ ...btnStyle, cursor: uploading ? "default" : "pointer" }} title="Insert image">
           {uploading ? "…" : "🖼"}
           <input type="file" accept="image/*" style={{ display: "none" }} onChange={onPickImage} />
@@ -74,6 +92,21 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         onBlur={emit}
         style={{ minHeight: 160, maxHeight: 360, overflowY: "auto", padding: "12px 14px", fontSize: 14, lineHeight: 1.5, outline: "none" }}
       />
+
+      {linkOpen && (
+        <div onMouseDown={(e) => { if (e.currentTarget === e.target) setLinkOpen(false); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+          <div className="card" style={{ width: "100%", maxWidth: 400 }}>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>Add link</div>
+            <input className="input" autoFocus value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") confirmLink(); }} placeholder="https://…" />
+            <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+              <button className="btn" onClick={() => setLinkOpen(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={confirmLink}>Add link</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
