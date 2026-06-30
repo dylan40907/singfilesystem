@@ -7,9 +7,11 @@ import { fetchMyProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import {
   Course, CourseSegment, CourseStatus, CourseWithMeta,
-  createCourse, createSegment, deleteCourse, deleteSegment, fetchCourses, fetchSegments,
-  renameSegment, setCourseStatus,
+  archiveCourses, assignToCourses, createCourse, createSegment, deleteCourse, deleteSegment,
+  fetchCourses, fetchSegments, remindIncomplete, renameSegment, setCourseStatus,
 } from "@/lib/courses";
+import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
+import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
 
 const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
 
@@ -32,7 +34,12 @@ export default function AdminCoursesPage() {
   const { confirm, modal: dialogModal } = useDialog();
 
   const [authzd, setAuthzd] = useState<boolean | null>(null);
+  const [view, setView] = useState<"courses" | "groups">("courses");
   const [tab, setTab] = useState<"active" | "archived">("active");
+  // multi-select + bulk
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [courses, setCourses] = useState<CourseWithMeta[]>([]);
   const [segments, setSegments] = useState<CourseSegment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -160,6 +167,60 @@ export default function AdminCoursesPage() {
     }
   }
 
+  function toggleSelect(id: string, on: boolean) {
+    setSelected((s) => { const n = new Set(s); on ? n.add(id) : n.delete(id); return n; });
+  }
+  function clearSelection() { setSelected(new Set()); }
+
+  async function bulkAssign(userIds: string[]) {
+    setBulkBusy(true);
+    try {
+      await assignToCourses(Array.from(selected), userIds);
+      setBulkAssignOpen(false);
+      clearSelection();
+      setStatus(`✅ Assigned ${selected.size} course(s) to ${userIds.length} ${userIds.length === 1 ? "person" : "people"}.`);
+      await reload();
+    } catch (e: any) {
+      setStatus("Assign error: " + (e?.message ?? "unknown"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkRemind() {
+    setBulkBusy(true);
+    try {
+      let total = 0;
+      for (const id of selected) total += await remindIncomplete(id);
+      setStatus(`🔔 Reminded ${total} ${total === 1 ? "person" : "people"} across ${selected.size} course(s).`);
+    } catch (e: any) {
+      setStatus("Reminder error: " + (e?.message ?? "unknown"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkSetStatus(next: CourseStatus) {
+    const ids = Array.from(selected);
+    const ok = await confirm(
+      `${next === "archived" ? "Archive" : "Restore"} ${ids.length} course(s)?`,
+      { title: next === "archived" ? "Archive courses" : "Restore courses", confirmLabel: next === "archived" ? "Archive" : "Restore" }
+    );
+    if (!ok) return;
+    setBulkBusy(true);
+    try {
+      if (next === "archived") await archiveCourses(ids);
+      else for (const id of ids) await setCourseStatus(id, "draft");
+      clearSelection();
+      await reload();
+      setStatus(next === "archived" ? "Archived." : "Restored to draft.");
+    } catch (e: any) {
+      setStatus("Error: " + (e?.message ?? "unknown"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function handleDelete(c: Course) {
     const ok = await confirm(
       `Delete "${c.title}"?\n\nThis permanently removes the course, its content, and all assignment records.`,
@@ -186,11 +247,19 @@ export default function AdminCoursesPage() {
         {status ? <span className="badge badge-pink">{status}</span> : null}
       </div>
 
+      <div className="row" style={{ gap: 6 }}>
+        <button className={`btn${view === "courses" ? " btn-primary" : ""}`} onClick={() => setView("courses")}>Courses</button>
+        <button className={`btn${view === "groups" ? " btn-primary" : ""}`} onClick={() => setView("groups")}>Groups</button>
+      </div>
+
+      {view === "groups" ? (
+        <div className="card"><CourseGroupsPanel /></div>
+      ) : (
       <div className="card">
         <div className="row-between" style={{ marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div className="row" style={{ gap: 6 }}>
-            <button className={`btn${tab === "active" ? " btn-primary" : ""}`} onClick={() => setTab("active")}>Active</button>
-            <button className={`btn${tab === "archived" ? " btn-primary" : ""}`} onClick={() => setTab("archived")}>
+            <button className={`btn${tab === "active" ? " btn-primary" : ""}`} onClick={() => { setTab("active"); clearSelection(); }}>Active</button>
+            <button className={`btn${tab === "archived" ? " btn-primary" : ""}`} onClick={() => { setTab("archived"); clearSelection(); }}>
               Archived ({courses.filter((c) => c.status === "archived").length})
             </button>
           </div>
@@ -199,6 +268,20 @@ export default function AdminCoursesPage() {
             <button className="btn btn-primary" onClick={() => setCreateOpen(true)}>+ Add course</button>
           </div>
         </div>
+
+        {selected.size > 0 && (
+          <div className="row-between" style={{ marginBottom: 14, padding: "10px 14px", background: "#fdf2f8", border: "1px solid #fbcfe8", borderRadius: 12, flexWrap: "wrap", gap: 10 }}>
+            <span style={{ fontWeight: 800, color: "#9d174d" }}>{selected.size} selected</span>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button className="btn" disabled={bulkBusy} onClick={() => setBulkAssignOpen(true)}>Assign…</button>
+              <button className="btn" disabled={bulkBusy} onClick={bulkRemind}>🔔 Remind not-completed</button>
+              {tab === "archived"
+                ? <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("draft")}>Restore</button>
+                : <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("archived")}>Archive</button>}
+              <button className="btn" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="subtle">Loading…</div>
@@ -230,6 +313,11 @@ export default function AdminCoursesPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                   <thead>
                     <tr style={{ background: "#f9fafb", textAlign: "left", color: "#6b7280" }}>
+                      <th style={{ ...th, width: 36 }}>
+                        <input type="checkbox"
+                          checked={g.items.every((c) => selected.has(c.id))}
+                          onChange={(e) => setSelected((s) => { const n = new Set(s); g.items.forEach((c) => (e.target.checked ? n.add(c.id) : n.delete(c.id))); return n; })} />
+                      </th>
                       <th style={th}>Name</th>
                       <th style={th}>Status</th>
                       <th style={th}>Assigned</th>
@@ -239,7 +327,10 @@ export default function AdminCoursesPage() {
                   </thead>
                   <tbody>
                     {g.items.map((c) => (
-                      <tr key={c.id} style={{ borderTop: "1px solid #f1f5f9" }}>
+                      <tr key={c.id} style={{ borderTop: "1px solid #f1f5f9", background: selected.has(c.id) ? "#fdf2f8" : undefined }}>
+                        <td style={{ ...td, width: 36 }}>
+                          <input type="checkbox" checked={selected.has(c.id)} onChange={(e) => toggleSelect(c.id, e.target.checked)} />
+                        </td>
                         <td style={td}>
                           <button onClick={() => router.push(`/admin/courses/${c.id}`)}
                             style={{ background: "none", border: "none", cursor: "pointer", color: "#111827", fontWeight: 700, padding: 0, textAlign: "left" }}>
@@ -274,6 +365,16 @@ export default function AdminCoursesPage() {
           ))
         )}
       </div>
+      )}
+
+      {bulkAssignOpen && (
+        <AssignPeopleModal
+          title={`Assign ${selected.size} course(s)`}
+          busy={bulkBusy}
+          onClose={() => setBulkAssignOpen(false)}
+          onAssign={bulkAssign}
+        />
+      )}
 
       {/* Create course modal */}
       {createOpen && (

@@ -1,12 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
 import {
   AssignmentWithUser, assignUsers, fetchAssignments, sendReminder, unassignUser,
 } from "@/lib/courses";
-
-type PickUser = { id: string; full_name: string | null; username: string | null; email: string | null; role: string | null };
+import AssignPeopleModal from "./AssignPeopleModal";
 
 function nameOf(u: { full_name: string | null; username: string | null; email: string | null }) {
   return (u.full_name ?? "").trim() || (u.username ?? "").trim() || u.email || "Unknown";
@@ -14,9 +12,7 @@ function nameOf(u: { full_name: string | null; username: string | null; email: s
 
 export default function CoursePeoplePanel({ courseId }: { courseId: string }) {
   const [assignments, setAssignments] = useState<AssignmentWithUser[]>([]);
-  const [allUsers, setAllUsers] = useState<PickUser[]>([]);
   const [loading, setLoading] = useState(true);
-  const [picker, setPicker] = useState<Set<string>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,12 +20,7 @@ export default function CoursePeoplePanel({ courseId }: { courseId: string }) {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [a, { data: users }] = await Promise.all([
-        fetchAssignments(courseId),
-        supabase.from("user_profiles").select("id, full_name, username, email, role").eq("is_active", true).order("full_name"),
-      ]);
-      setAssignments(a);
-      setAllUsers((users ?? []) as PickUser[]);
+      setAssignments(await fetchAssignments(courseId));
     } finally {
       setLoading(false);
     }
@@ -48,13 +39,11 @@ export default function CoursePeoplePanel({ courseId }: { courseId: string }) {
     return { completed, inProgress, notStarted, total: assignments.length };
   }, [assignments]);
 
-  async function doAssign() {
-    const ids = Array.from(picker).filter((id) => !assignedIds.has(id));
+  async function doAssign(ids: string[]) {
     if (ids.length === 0) { setPickerOpen(false); return; }
     setBusy(true);
     try {
       await assignUsers(courseId, ids);
-      setPicker(new Set());
       setPickerOpen(false);
       setStatus(`✅ Assigned ${ids.length} ${ids.length === 1 ? "person" : "people"}.`);
       await reload();
@@ -140,30 +129,13 @@ export default function CoursePeoplePanel({ courseId }: { courseId: string }) {
       )}
 
       {pickerOpen && (
-        <div onMouseDown={(e) => { if (e.currentTarget === e.target) setPickerOpen(false); }}
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div className="card" style={{ width: "100%", maxWidth: 460, maxHeight: "82vh", display: "flex", flexDirection: "column" }}>
-            <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 10 }}>Assign people</div>
-            <div style={{ overflowY: "auto", flex: 1 }}>
-              {allUsers.map((u) => {
-                const already = assignedIds.has(u.id);
-                const checked = picker.has(u.id) || already;
-                return (
-                  <label key={u.id} className="row" style={{ gap: 10, padding: "8px 4px", alignItems: "center", opacity: already ? 0.5 : 1, cursor: already ? "default" : "pointer" }}>
-                    <input type="checkbox" disabled={already} checked={checked}
-                      onChange={(e) => setPicker((s) => { const n = new Set(s); e.target.checked ? n.add(u.id) : n.delete(u.id); return n; })} />
-                    <span style={{ flex: 1 }}>{nameOf(u)} {already && <span className="subtle" style={{ fontSize: 12 }}>(assigned)</span>}</span>
-                    <span className="subtle" style={{ fontSize: 12 }}>{u.role}</span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
-              <button className="btn" onClick={() => setPickerOpen(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={doAssign} disabled={busy}>Assign</button>
-            </div>
-          </div>
-        </div>
+        <AssignPeopleModal
+          title="Assign people"
+          alreadyAssigned={assignedIds}
+          busy={busy}
+          onClose={() => setPickerOpen(false)}
+          onAssign={doAssign}
+        />
       )}
     </div>
   );

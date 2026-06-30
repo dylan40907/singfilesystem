@@ -265,6 +265,8 @@ export default function HrPage() {
 
   type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog" | "courses";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
+  // When taking a course, hide all page chrome except the top navbar.
+  const [courseTaking, setCourseTaking] = useState(false);
   const [pinRevealed, setPinRevealed] = useState(false);
 
 
@@ -1305,6 +1307,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
   return (
     <main style={{ padding: 24 }}>
       <div style={{ display: "grid", gap: 14 }}>
+        {!courseTaking && (
         <div className="row-between" style={{ gap: 12, alignItems: "center" }}>
           <div>
             <div style={{ fontWeight: 950, fontSize: 22 }}>{headerName}</div>
@@ -1338,8 +1341,10 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             </button>
           </div>
         </div>
+        )}
 
         {/* Mobile horizontal tab strip */}
+        {!courseTaking && (
         <div className="hr-page-mobile-tabs">
           <button className={`hr-mobile-tab${activeTab === "attendance" ? " active" : ""}`} onClick={() => setActiveTab("attendance")}>Attendance</button>
           {employee && <button className={`hr-mobile-tab${activeTab === "documents" ? " active" : ""}`} onClick={() => setActiveTab("documents")}>Documents</button>}
@@ -1351,9 +1356,11 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           <button className={`hr-mobile-tab${activeTab === "timesheetLog" ? " active" : ""}`} onClick={() => setActiveTab("timesheetLog")}>Timesheet Log</button>
           <button className={`hr-mobile-tab${activeTab === "courses" ? " active" : ""}`} onClick={() => setActiveTab("courses")}>Courses</button>
         </div>
+        )}
 
-        <div className="hr-page-grid" style={{ display: "grid", gridTemplateColumns: "240px 1fr", gap: 14, alignItems: "start" }}>
+        <div className="hr-page-grid" style={{ display: "grid", gridTemplateColumns: courseTaking ? "1fr" : "240px 1fr", gap: 14, alignItems: "start" }}>
           {/* Left nav — desktop only */}
+          {!courseTaking && (
           <div className="hide-mobile" style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, display: "grid", gap: 10 }}>
             <TabButton active={activeTab === "attendance"} onClick={() => setActiveTab("attendance")}>
               Attendance
@@ -1389,10 +1396,11 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
               Courses
             </TabButton>
           </div>
+          )}
 
           {/* Right content */}
           <div style={{ display: "grid", gap: 14 }}>
-            {activeTab === "courses" ? <EmployeeCourses /> : null}
+            {activeTab === "courses" ? <EmployeeCourses onTakingChange={setCourseTaking} /> : null}
 
             {activeTab === "documents" && employee ? (
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>

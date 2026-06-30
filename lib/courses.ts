@@ -323,6 +323,102 @@ export async function sendReminder(courseId: string, userIds: string[]): Promise
   return (data as number) ?? 0;
 }
 
+// ─── People groups (admin-only, for bulk assignment) ─────────────────────────
+
+export type CourseGroup = { id: string; name: string; created_at: string; memberCount: number };
+
+export async function fetchGroups(): Promise<CourseGroup[]> {
+  const { data: groups } = await supabase
+    .from("course_groups")
+    .select("id, name, created_at")
+    .order("name", { ascending: true });
+  const list = (groups ?? []) as Omit<CourseGroup, "memberCount">[];
+  if (list.length === 0) return [];
+  const { data: members } = await supabase
+    .from("course_group_members")
+    .select("group_id")
+    .in("group_id", list.map((g) => g.id));
+  const counts = new Map<string, number>();
+  (members ?? []).forEach((m: any) => counts.set(m.group_id, (counts.get(m.group_id) ?? 0) + 1));
+  return list.map((g) => ({ ...g, memberCount: counts.get(g.id) ?? 0 }));
+}
+
+export async function createGroup(name: string): Promise<CourseGroup> {
+  const { data: auth } = await supabase.auth.getUser();
+  const { data, error } = await supabase
+    .from("course_groups")
+    .insert({ name: name.trim(), created_by: auth.user?.id ?? null })
+    .select("id, name, created_at")
+    .single();
+  if (error) throw error;
+  return { ...(data as any), memberCount: 0 };
+}
+
+export async function renameGroup(id: string, name: string): Promise<void> {
+  const { error } = await supabase.from("course_groups").update({ name: name.trim() }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  const { error } = await supabase.from("course_groups").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function fetchGroupMembers(groupId: string): Promise<string[]> {
+  const { data } = await supabase.from("course_group_members").select("user_id").eq("group_id", groupId);
+  return (data ?? []).map((r: any) => r.user_id);
+}
+
+/** Map of groupId → member user ids (one round-trip for several groups). */
+export async function fetchGroupMembersMap(groupIds: string[]): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (groupIds.length === 0) return map;
+  const { data } = await supabase.from("course_group_members").select("group_id, user_id").in("group_id", groupIds);
+  (data ?? []).forEach((r: any) => {
+    const arr = map.get(r.group_id) ?? [];
+    arr.push(r.user_id);
+    map.set(r.group_id, arr);
+  });
+  return map;
+}
+
+/** Replace a group's membership with exactly `userIds`. */
+export async function setGroupMembers(groupId: string, userIds: string[]): Promise<void> {
+  await supabase.from("course_group_members").delete().eq("group_id", groupId);
+  if (userIds.length > 0) {
+    const { error } = await supabase.from("course_group_members").insert(userIds.map((uid) => ({ group_id: groupId, user_id: uid })));
+    if (error) throw error;
+  }
+}
+
+// ─── Bulk course actions ─────────────────────────────────────────────────────
+
+export async function archiveCourses(courseIds: string[]): Promise<void> {
+  if (courseIds.length === 0) return;
+  const { error } = await supabase
+    .from("courses")
+    .update({ status: "archived", updated_at: new Date().toISOString() })
+    .in("id", courseIds);
+  if (error) throw error;
+}
+
+/** Assign every course in `courseIds` to every user in `userIds`. */
+export async function assignToCourses(courseIds: string[], userIds: string[]): Promise<void> {
+  for (const cid of courseIds) await assignUsers(cid, userIds);
+}
+
+/** Remind everyone who hasn't completed the given course. Returns count reminded. */
+export async function remindIncomplete(courseId: string): Promise<number> {
+  const { data } = await supabase
+    .from("course_assignments")
+    .select("user_id, status")
+    .eq("course_id", courseId)
+    .neq("status", "completed");
+  const ids = (data ?? []).map((r: any) => r.user_id);
+  if (ids.length === 0) return 0;
+  return sendReminder(courseId, ids);
+}
+
 // ─── Employee side (take a course) ───────────────────────────────────────────
 
 export type MyCourse = {

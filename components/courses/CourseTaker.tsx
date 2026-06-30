@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CourseObject, CourseProgress, FullCourse, QuizQuestion, saveProgress,
+  CourseObject, CourseProgress, CourseSection, FullCourse, QuizQuestion, saveProgress,
 } from "@/lib/courses";
 
-/** Renders an assigned course for an employee and tracks completion/progress. */
+/** Full-page course player: one section at a time, advance only once complete. */
 export default function CourseTaker({
   assignmentId,
   full,
@@ -19,71 +19,111 @@ export default function CourseTaker({
   onClose: () => void;
   onCompletedChange?: () => void;
 }) {
-  const orderedObjects = useMemo(() => {
-    const secOrder = [...full.sections].sort((a, b) => a.position - b.position);
-    const out: CourseObject[] = [];
-    for (const s of secOrder) {
-      out.push(...full.objects.filter((o) => o.section_id === s.id).sort((a, b) => a.position - b.position));
-    }
-    return out;
+  // Sections that actually have objects, in order.
+  const sections = useMemo(() => {
+    return [...full.sections]
+      .sort((a, b) => a.position - b.position)
+      .filter((s) => full.objects.some((o) => o.section_id === s.id));
   }, [full]);
 
+  const objectsOf = (s: CourseSection) =>
+    full.objects.filter((o) => o.section_id === s.id).sort((a, b) => a.position - b.position);
+
+  const [secIdx, setSecIdx] = useState(0);
   const [done, setDone] = useState<Set<string>>(new Set(initialProgress.completedObjectIds ?? []));
   const [quizResults, setQuizResults] = useState<CourseProgress["quizResults"]>(initialProgress.quizResults ?? {});
   const persisted = useRef(false);
+  const topRef = useRef<HTMLDivElement | null>(null);
 
-  const allComplete = orderedObjects.length > 0 && orderedObjects.every((o) => done.has(o.id));
+  const allObjects = useMemo(() => sections.flatMap(objectsOf), [sections]);
+  const courseComplete = allObjects.length > 0 && allObjects.every((o) => done.has(o.id));
 
-  // Persist whenever progress changes (status derived from completion).
   useEffect(() => {
-    const status = allComplete ? "completed" : done.size > 0 ? "in_progress" : "in_progress";
     const progress: CourseProgress = { completedObjectIds: Array.from(done), quizResults, lastObjectId: null };
-    saveProgress(assignmentId, progress, allComplete ? "completed" : "in_progress").catch(() => {});
-    if (allComplete && !persisted.current) { persisted.current = true; onCompletedChange?.(); }
+    saveProgress(assignmentId, progress, courseComplete ? "completed" : "in_progress").catch(() => {});
+    if (courseComplete && !persisted.current) { persisted.current = true; onCompletedChange?.(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [done, quizResults]);
 
   function markDone(id: string) { setDone((s) => new Set(s).add(id)); }
 
-  const completedCount = orderedObjects.filter((o) => done.has(o.id)).length;
+  if (sections.length === 0) {
+    return (
+      <div style={wrap}>
+        <Header title={full.course.title} onClose={onClose} />
+        <div className="subtle" style={{ padding: 40, textAlign: "center" }}>This course has no content yet.</div>
+      </div>
+    );
+  }
+
+  const section = sections[secIdx];
+  const objs = objectsOf(section);
+  const sectionComplete = objs.every((o) => done.has(o.id));
+  const isLast = secIdx === sections.length - 1;
+  const completedSections = sections.filter((s) => objectsOf(s).every((o) => done.has(o.id))).length;
+
+  function next() {
+    if (isLast) { onClose(); return; }
+    setSecIdx((i) => Math.min(i + 1, sections.length - 1));
+    topRef.current?.scrollIntoView({ block: "start" });
+    window.scrollTo({ top: 0 });
+  }
+  function back() {
+    setSecIdx((i) => Math.max(i - 1, 0));
+    window.scrollTo({ top: 0 });
+  }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "flex-start", justifyContent: "center", overflowY: "auto", padding: "24px 12px" }}>
-      <div className="card" style={{ width: "100%", maxWidth: 760, margin: "0 auto" }}>
-        <div className="row-between" style={{ marginBottom: 8 }}>
-          <div style={{ fontWeight: 900, fontSize: 20 }}>{full.course.title}</div>
-          <button className="btn" onClick={onClose}>Close</button>
-        </div>
+    <div style={wrap} ref={topRef}>
+      <Header title={full.course.title} onClose={onClose} />
 
-        {/* Progress bar */}
-        <div style={{ height: 8, background: "#f1f5f9", borderRadius: 999, overflow: "hidden", marginBottom: 4 }}>
-          <div style={{ width: `${Math.round((completedCount / Math.max(1, orderedObjects.length)) * 100)}%`, height: "100%", background: "#16a34a", transition: "width .2s" }} />
+      {/* progress */}
+      <div style={{ marginBottom: 6 }}>
+        <div style={{ height: 8, background: "#f1f5f9", borderRadius: 999, overflow: "hidden" }}>
+          <div style={{ width: `${Math.round((completedSections / sections.length) * 100)}%`, height: "100%", background: "#16a34a", transition: "width .2s" }} />
         </div>
-        <div className="subtle" style={{ fontSize: 12, marginBottom: 16 }}>{completedCount} / {orderedObjects.length} complete{allComplete ? " — 🎉 course completed!" : ""}</div>
+        <div className="subtle" style={{ fontSize: 12, marginTop: 6 }}>
+          Section {secIdx + 1} of {sections.length}{courseComplete ? " · 🎉 completed!" : ""}
+        </div>
+      </div>
 
-        {[...full.sections].sort((a, b) => a.position - b.position).map((s) => {
-          const objs = full.objects.filter((o) => o.section_id === s.id).sort((a, b) => a.position - b.position);
-          if (objs.length === 0) return null;
-          return (
-            <div key={s.id} style={{ marginBottom: 18 }}>
-              {s.title && <div style={{ fontWeight: 800, fontSize: 15, margin: "6px 0 10px" }}>📖 {s.title}</div>}
-              {objs.map((o) => (
-                <ObjectView key={o.id} o={o} done={done.has(o.id)}
-                  result={quizResults?.[o.id]}
-                  onDone={() => markDone(o.id)}
-                  onQuiz={(score, passed, answers) => {
-                    setQuizResults((qr) => ({ ...(qr ?? {}), [o.id]: { score, passed, answers } }));
-                    if (passed) markDone(o.id);
-                  }}
-                />
-              ))}
-            </div>
-          );
-        })}
+      <h2 style={{ fontWeight: 900, fontSize: 20, margin: "10px 0 14px" }}>📖 {section.title || "Section"}</h2>
+
+      {objs.map((o) => (
+        <ObjectView key={o.id} o={o} done={done.has(o.id)} result={quizResults?.[o.id]}
+          onDone={() => markDone(o.id)}
+          onQuiz={(score, passed, answers) => {
+            setQuizResults((qr) => ({ ...(qr ?? {}), [o.id]: { score, passed, answers } }));
+            if (passed) markDone(o.id);
+          }}
+        />
+      ))}
+
+      {/* footer */}
+      <div className="row-between" style={{ marginTop: 18, borderTop: "1px solid #eef2f7", paddingTop: 16 }}>
+        <button className="btn" onClick={back} disabled={secIdx === 0}>← Back</button>
+        {!sectionComplete ? (
+          <span className="subtle" style={{ fontSize: 13 }}>Complete this section to continue</span>
+        ) : (
+          <button className="btn btn-primary" onClick={next}>{isLast ? "Finish ✓" : "Next →"}</button>
+        )}
       </div>
     </div>
   );
 }
+
+function Header({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <div className="row-between" style={{ marginBottom: 16, paddingBottom: 14, borderBottom: "1px solid #eef2f7" }}>
+      <div style={{ fontWeight: 900, fontSize: 22 }}>{title}</div>
+      <button className="btn" onClick={onClose}>✕ Close</button>
+    </div>
+  );
+}
+
+const wrap: React.CSSProperties = { maxWidth: 820, margin: "0 auto", width: "100%" };
+
+// ─── Object renderers (unchanged behaviour) ──────────────────────────────────
 
 function ObjectView({ o, done, result, onDone, onQuiz }: {
   o: CourseObject;
@@ -93,7 +133,7 @@ function ObjectView({ o, done, result, onDone, onQuiz }: {
   onQuiz: (score: number, passed: boolean, answers: Record<string, string[]>) => void;
 }) {
   return (
-    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, marginBottom: 10, background: done ? "#f0fdf4" : "white" }}>
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, marginBottom: 12, background: done ? "#f0fdf4" : "white" }}>
       <div className="row-between" style={{ marginBottom: 8 }}>
         <div style={{ fontWeight: 700 }}>{o.title}</div>
         {done && <span style={{ color: "#16a34a", fontWeight: 800, fontSize: 13 }}>✓ Done</span>}

@@ -7,11 +7,13 @@ import {
 } from "@/lib/courses";
 import CourseTaker from "./CourseTaker";
 
-export default function EmployeeCourses() {
+export default function EmployeeCourses({ onTakingChange }: { onTakingChange?: (taking: boolean) => void }) {
   const [myId, setMyId] = useState<string | null>(null);
   const [courses, setCourses] = useState<MyCourse[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState<{ mc: MyCourse; full: FullCourse } | null>(null);
+
+  useEffect(() => { onTakingChange?.(!!open); }, [open, onTakingChange]);
 
   const reload = useCallback(async (uid: string) => {
     setLoading(true);
@@ -35,6 +37,19 @@ export default function EmployeeCourses() {
   async function openCourse(mc: MyCourse) {
     const full = await fetchCourseFull(mc.course.id);
     if (full) setOpen({ mc, full });
+  }
+
+  // Taking a course → full-width player only (the page hides its chrome).
+  if (open) {
+    return (
+      <CourseTaker
+        assignmentId={open.mc.assignment.id}
+        full={open.full}
+        initialProgress={open.mc.assignment.progress ?? {}}
+        onClose={() => { setOpen(null); if (myId) reload(myId); }}
+        onCompletedChange={() => { if (myId) reload(myId); }}
+      />
+    );
   }
 
   if (loading) return <div className="subtle">Loading your courses…</div>;
@@ -64,16 +79,6 @@ export default function EmployeeCourses() {
           );
         })}
       </div>
-
-      {open && (
-        <CourseTaker
-          assignmentId={open.mc.assignment.id}
-          full={open.full}
-          initialProgress={open.mc.assignment.progress ?? {}}
-          onClose={() => { setOpen(null); if (myId) reload(myId); }}
-          onCompletedChange={() => { if (myId) reload(myId); }}
-        />
-      )}
     </div>
   );
 }
