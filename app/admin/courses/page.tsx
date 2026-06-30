@@ -224,6 +224,21 @@ export default function AdminCoursesPage() {
     }
   }
 
+  async function bulkPublish() {
+    const ids = Array.from(selected);
+    setBulkBusy(true);
+    try {
+      for (const id of ids) await setCourseStatus(id, "published");
+      clearSelection();
+      await reload();
+      setStatus(`✅ Published ${ids.length} course(s).`);
+    } catch (e: any) {
+      setStatus("Publish error: " + (e?.message ?? "unknown"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function bulkSetStatus(next: CourseStatus) {
     const ids = Array.from(selected);
     const ok = await confirm(
@@ -337,6 +352,9 @@ export default function AdminCoursesPage() {
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <button className="btn" disabled={bulkBusy} onClick={() => setBulkAssignOpen(true)}>Assign…</button>
               <button className="btn" disabled={bulkBusy} onClick={bulkRemind}>🔔 Remind not-completed</button>
+              {tab !== "archived" && (
+                <button className="btn" disabled={bulkBusy} onClick={bulkPublish}>Publish</button>
+              )}
               {tab === "archived"
                 ? <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("draft")}>Restore</button>
                 : <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("archived")}>Archive</button>}
