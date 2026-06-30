@@ -8,7 +8,7 @@ import { useDialog } from "@/components/ui/useDialog";
 import {
   Course, CourseSegment, CourseStatus, CourseWithMeta,
   archiveCourses, assignToCourses, createCourse, createSegment, deleteCourse, deleteSegment,
-  fetchCourses, fetchSegments, remindIncomplete, renameSegment, setCourseStatus,
+  fetchCourses, fetchSegments, remindIncomplete, setCourseStatus, updateCourse, updateSegment,
 } from "@/lib/courses";
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
@@ -55,8 +55,10 @@ export default function AdminCoursesPage() {
   const [segOpen, setSegOpen] = useState(false);
   const [segName, setSegName] = useState("");
   const [segColor, setSegColor] = useState(SEGMENT_COLORS[0]);
-  // Rename-segment modal
-  const [segEdit, setSegEdit] = useState<{ id: string; value: string } | null>(null);
+  // Edit-segment modal (name + color)
+  const [segEdit, setSegEdit] = useState<{ id: string; name: string; color: string } | null>(null);
+  // Move-course-to-segment modal
+  const [moveCourse, setMoveCourse] = useState<{ course: Course; segmentId: string } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -103,6 +105,8 @@ export default function AdminCoursesPage() {
     return Array.from(map.values()).filter((g) => g.items.length > 0 || (tab === "active" && !!g.segment));
   }, [visible, segments, tab]);
 
+  const sortedSegments = useMemo(() => [...segments].sort((a, b) => a.position - b.position), [segments]);
+
   async function handleCreate() {
     if (!newTitle.trim()) { setStatus("Enter a course name."); return; }
     setCreating(true);
@@ -131,14 +135,30 @@ export default function AdminCoursesPage() {
     }
   }
 
-  async function confirmSegRename() {
-    if (!segEdit || !segEdit.value.trim()) return;
+  async function confirmSegEdit() {
+    if (!segEdit || !segEdit.name.trim()) return;
     try {
-      await renameSegment(segEdit.id, segEdit.value.trim());
+      await updateSegment(segEdit.id, { name: segEdit.name.trim(), color: segEdit.color });
       setSegEdit(null);
       await reload();
     } catch (e: any) {
-      setStatus("Rename error: " + (e?.message ?? "unknown"));
+      setStatus("Edit error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function moveSegment(seg: CourseSegment, dir: -1 | 1) {
+    const sorted = [...segments].sort((a, b) => a.position - b.position);
+    const idx = sorted.findIndex((s) => s.id === seg.id);
+    const swap = sorted[idx + dir];
+    if (!swap) return;
+    try {
+      await Promise.all([
+        updateSegment(seg.id, { position: swap.position }),
+        updateSegment(swap.id, { position: seg.position }),
+      ]);
+      await reload();
+    } catch (e: any) {
+      setStatus("Reorder error: " + (e?.message ?? "unknown"));
     }
   }
 
@@ -221,6 +241,18 @@ export default function AdminCoursesPage() {
     }
   }
 
+  async function confirmMoveCourse() {
+    if (!moveCourse) return;
+    try {
+      await updateCourse(moveCourse.course.id, { segment_id: moveCourse.segmentId || null });
+      setMoveCourse(null);
+      await reload();
+      setStatus("Moved.");
+    } catch (e: any) {
+      setStatus("Move error: " + (e?.message ?? "unknown"));
+    }
+  }
+
   async function handleDelete(c: Course) {
     const ok = await confirm(
       `Delete "${c.title}"?\n\nThis permanently removes the course, its content, and all assignment records.`,
@@ -297,12 +329,17 @@ export default function AdminCoursesPage() {
                   <span style={{ width: 12, height: 12, borderRadius: 999, background: g.segment?.color ?? "#9ca3af", display: "inline-block" }} />
                   <span style={{ fontWeight: 800, color: g.segment?.color ?? "#6b7280" }}>{g.segment?.name ?? "Uncategorized"}</span>
                 </div>
-                {g.segment && (
-                  <div className="row" style={{ gap: 6 }}>
-                    <button className="btn" style={miniBtn} onClick={() => setSegEdit({ id: g.segment!.id, value: g.segment!.name })}>Rename</button>
-                    <button className="btn" style={{ ...miniBtn, color: "#991b1b" }} onClick={() => handleDeleteSegment(g.segment!)}>Delete</button>
-                  </div>
-                )}
+                {g.segment && (() => {
+                  const sIdx = sortedSegments.findIndex((s) => s.id === g.segment!.id);
+                  return (
+                    <div className="row" style={{ gap: 6 }}>
+                      <button className="btn" style={miniBtn} onClick={() => moveSegment(g.segment!, -1)} disabled={sIdx === 0}>↑</button>
+                      <button className="btn" style={miniBtn} onClick={() => moveSegment(g.segment!, 1)} disabled={sIdx === sortedSegments.length - 1}>↓</button>
+                      <button className="btn" style={miniBtn} onClick={() => setSegEdit({ id: g.segment!.id, name: g.segment!.name, color: g.segment!.color })}>Edit</button>
+                      <button className="btn" style={{ ...miniBtn, color: "#991b1b" }} onClick={() => handleDeleteSegment(g.segment!)}>Delete</button>
+                    </div>
+                  );
+                })()}
               </div>
               {g.items.length === 0 ? (
                 <div className="subtle" style={{ fontSize: 13, padding: "10px 14px", border: "1px dashed #e5e7eb", borderRadius: 12 }}>
@@ -342,6 +379,7 @@ export default function AdminCoursesPage() {
                         <td style={td}>{new Date(c.created_at).toLocaleDateString()}</td>
                         <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                           <button className="btn" onClick={() => router.push(`/admin/courses/${c.id}`)} style={miniBtn}>Edit</button>
+                          <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
                           {c.status !== "published" && c.status !== "archived" && (
                             <button className="btn" onClick={() => changeStatus(c, "published")} style={miniBtn}>Publish</button>
                           )}
@@ -393,16 +431,48 @@ export default function AdminCoursesPage() {
         </Modal>
       )}
 
-      {/* Rename segment modal */}
+      {/* Move course to segment modal */}
+      {moveCourse && (
+        <Modal title={`Move "${moveCourse.course.title}"`} onClose={() => setMoveCourse(null)}>
+          <label style={lbl}>Segment</label>
+          <select className="select" value={moveCourse.segmentId}
+            onChange={(e) => setMoveCourse((m) => (m ? { ...m, segmentId: e.target.value } : m))}>
+            <option value="">— Uncategorized —</option>
+            {sortedSegments.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="btn" onClick={() => setMoveCourse(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={confirmMoveCourse}>Move</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit segment modal (name + color) */}
       {segEdit && (
-        <Modal title="Rename segment" onClose={() => setSegEdit(null)}>
+        <Modal title="Edit segment" onClose={() => setSegEdit(null)}>
           <label style={lbl}>Segment name</label>
-          <input className="input" autoFocus value={segEdit.value}
-            onChange={(e) => setSegEdit((s) => (s ? { ...s, value: e.target.value } : s))}
-            onKeyDown={(e) => { if (e.key === "Enter") confirmSegRename(); }} />
+          <input className="input" autoFocus value={segEdit.name}
+            onChange={(e) => setSegEdit((s) => (s ? { ...s, name: e.target.value } : s))}
+            onKeyDown={(e) => { if (e.key === "Enter") confirmSegEdit(); }} />
+          <label style={lbl}>Color</label>
+          <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {SEGMENT_COLORS.map((c) => (
+              <button key={c} onClick={() => setSegEdit((s) => (s ? { ...s, color: c } : s))} aria-label={c}
+                style={{ width: 28, height: 28, borderRadius: 999, background: c, border: segEdit.color.toLowerCase() === c.toLowerCase() ? "3px solid #111827" : "2px solid #e5e7eb", cursor: "pointer" }} />
+            ))}
+            <label title="Custom color" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer", marginLeft: 4 }}>
+              <input type="color" value={segEdit.color} onChange={(e) => setSegEdit((s) => (s ? { ...s, color: e.target.value } : s))}
+                style={{ width: 32, height: 32, padding: 0, border: "1px solid #e5e7eb", borderRadius: 8, background: "none", cursor: "pointer" }} />
+              <span className="subtle" style={{ fontSize: 12 }}>Custom</span>
+            </label>
+          </div>
+          <div className="row" style={{ gap: 8, alignItems: "center", marginTop: 12 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 999, background: segEdit.color, display: "inline-block" }} />
+            <span style={{ fontWeight: 800, color: segEdit.color }}>{segEdit.name || "Preview"}</span>
+          </div>
           <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
             <button className="btn" onClick={() => setSegEdit(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={confirmSegRename} disabled={!segEdit.value.trim()}>Save</button>
+            <button className="btn btn-primary" onClick={confirmSegEdit} disabled={!segEdit.name.trim()}>Save</button>
           </div>
         </Modal>
       )}

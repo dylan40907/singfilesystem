@@ -113,6 +113,16 @@ export async function renameSegment(id: string, name: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function updateSegment(
+  id: string,
+  patch: { name?: string; color?: string; position?: number }
+): Promise<void> {
+  const clean: Record<string, any> = { ...patch };
+  if (typeof clean.name === "string") clean.name = clean.name.trim();
+  const { error } = await supabase.from("course_segments").update(clean).eq("id", id);
+  if (error) throw error;
+}
+
 export async function deleteSegment(id: string): Promise<void> {
   const { error } = await supabase.from("course_segments").delete().eq("id", id);
   if (error) throw error;
