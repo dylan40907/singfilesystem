@@ -852,6 +852,11 @@ export default function Home() {
       if (/[0-9]/.test(p)) c++;
       if (/[^A-Za-z0-9]/.test(p)) c++;
       if (c < 3) return "mix at least 3 of: lowercase, uppercase, number, symbol";
+      if (/(.)\1\1\1/.test(p)) return "not repeat the same character 4+ times in a row";
+      const lower = p.toLowerCase();
+      if (["password", "12345678", "qwerty", "letmein", "singinchinese", "admin123", "iloveyou"].some((w) => lower.includes(w))) {
+        return "not contain a common, guessable word";
+      }
       return null;
     })();
     if (pwErr) {

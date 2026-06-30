@@ -41,17 +41,29 @@ export default function AccessReview({ onClose }: { onClose: () => void }) {
   }, []);
 
   function exportCsv() {
+    // Quote every cell and double internal quotes so commas / quotes / newlines
+    // in names or emails can't shift columns or break rows (matches the
+    // documents-page exporter). A leading =/+/-/@ is prefixed with ' to defuse
+    // spreadsheet formula injection.
+    const cell = (v: unknown) => {
+      let s = String(v ?? "");
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return `"${s.replace(/"/g, '""')}"`;
+    };
     const head = ["Name", "Username", "Email", "Role", "Active", "Last sign-in", "Created"];
     const lines = rows.map((r) => [
-      (r.full_name ?? "").replace(/,/g, " "), r.username ?? "", r.email ?? "",
+      r.full_name ?? "", r.username ?? "", r.email ?? "",
       ROLE_LABEL[r.role] ?? r.role, r.is_active ? "yes" : "no",
       r.last_sign_in_at ?? "never", r.created_at ?? "",
-    ].join(","));
-    const blob = new Blob([[head.join(","), ...lines].join("\n")], { type: "text/csv" });
+    ].map(cell).join(","));
+    const csv = [head.map(cell).join(","), ...lines].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
+    a.href = url;
     a.download = `access-review-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 
   return (
