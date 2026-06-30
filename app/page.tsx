@@ -843,8 +843,19 @@ export default function Home() {
       return;
     }
 
-    if (setupPass1.length < 8) {
-      setStatus("Setup error: Password must be at least 8 characters.");
+    const pwErr = (() => {
+      const p = setupPass1;
+      if (p.length < 10) return "be at least 10 characters";
+      let c = 0;
+      if (/[a-z]/.test(p)) c++;
+      if (/[A-Z]/.test(p)) c++;
+      if (/[0-9]/.test(p)) c++;
+      if (/[^A-Za-z0-9]/.test(p)) c++;
+      if (c < 3) return "mix at least 3 of: lowercase, uppercase, number, symbol";
+      return null;
+    })();
+    if (pwErr) {
+      setStatus(`Setup error: Password must ${pwErr}.`);
       return;
     }
     if (setupPass1 !== setupPass2) {

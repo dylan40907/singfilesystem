@@ -34,12 +34,26 @@ export async function POST(req: Request) {
 
     const { data: rec, error: recErr } = await supabase
       .from("hr_document_records")
-      .select("id, object_key, file_name, mime_type")
+      .select("id, object_key, file_name, mime_type, employee_id, doc_type_id")
       .eq("id", recordId)
       .maybeSingle();
 
     if (recErr) return jsonError(recErr.message, 403);
     if (!rec || !rec.object_key) return jsonError("Not found", 404);
+
+    // Append-only audit trail (who downloaded which employee's sensitive doc).
+    try {
+      const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || null;
+      const ua = req.headers.get("user-agent") || null;
+      await supabase.rpc("log_document_audit", {
+        p_action: "download",
+        p_record_id: rec.id,
+        p_employee_id: (rec as any).employee_id,
+        p_doc_type_id: (rec as any).doc_type_id,
+        p_file_name: rec.file_name,
+        p_detail: { ip, user_agent: ua, mode },
+      });
+    } catch { /* logging must never block a legitimate download */ }
 
     const r2 = new S3Client({
       region: "auto",

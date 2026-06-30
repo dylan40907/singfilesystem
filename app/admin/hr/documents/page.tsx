@@ -6,6 +6,7 @@ import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import { useDialog } from "@/components/ui/useDialog";
 import { previewModeForFile } from "@/lib/fileUtils";
+import DocumentAuditLog from "@/components/hr/DocumentAuditLog";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ export default function HrDocumentsPage() {
   // Options menu + pack-edit modal
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [packModal, setPackModal] = useState<Pack | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
 
   async function notifyMissing() {
     setOptionsOpen(false);
@@ -487,6 +489,7 @@ export default function HrDocumentsPage() {
 
   return (
     <main className="stack">
+      {auditOpen && <DocumentAuditLog onClose={() => setAuditOpen(false)} />}
       <input
         ref={fileInputRef}
         type="file"
@@ -529,6 +532,9 @@ export default function HrDocumentsPage() {
                     </button>
                     <button className="btn" style={{ width: "100%", justifyContent: "flex-start", marginTop: 4 }} onClick={exportCsv}>
                       ⬇ Export status report (CSV)
+                    </button>
+                    <button className="btn" style={{ width: "100%", justifyContent: "flex-start", marginTop: 4 }} onClick={() => { setOptionsOpen(false); setAuditOpen(true); }}>
+                      🔎 Document audit log
                     </button>
                   </div>
                 </>

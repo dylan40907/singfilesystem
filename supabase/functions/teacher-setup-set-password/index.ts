@@ -38,6 +38,24 @@ function isAllowedRole(role: unknown) {
   return role === "teacher" || role === "supervisor" || role === "campus_admin";
 }
 
+// Server-side password policy (the admin API bypasses GoTrue's own policy, so we
+// enforce strength here for accounts that handle sensitive HR data).
+function validatePassword(p: string): string | null {
+  if (p.length < 10) return "Password must be at least 10 characters.";
+  let classes = 0;
+  if (/[a-z]/.test(p)) classes++;
+  if (/[A-Z]/.test(p)) classes++;
+  if (/[0-9]/.test(p)) classes++;
+  if (/[^A-Za-z0-9]/.test(p)) classes++;
+  if (classes < 3) return "Use at least 3 of: lowercase, uppercase, number, and symbol.";
+  if (/(.)\1\1\1/.test(p)) return "Don't repeat the same character 4+ times in a row.";
+  const lower = p.toLowerCase();
+  if (["password", "12345678", "qwerty", "letmein", "singinchinese", "admin123", "iloveyou"].some((w) => lower.includes(w))) {
+    return "That password is too common — please choose a less guessable one.";
+  }
+  return null;
+}
+
 serve(async (req) => {
   const origin = req.headers.get("origin");
 
@@ -58,8 +76,9 @@ serve(async (req) => {
     if (!rawIdent) {
       return json(origin, 400, { error: "Missing identifier" });
     }
-    if (p.length < 8) {
-      return json(origin, 400, { error: "Password must be at least 8 characters" });
+    const pwErr = validatePassword(p);
+    if (pwErr) {
+      return json(origin, 400, { error: pwErr });
     }
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");

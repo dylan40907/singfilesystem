@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile, UserRole } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import { useCampusFilter } from "@/lib/CampusContext";
+import AccessReview from "@/components/hr/AccessReview";
 
 /**
  * Roles — true admins only. Lets a true admin change any non-admin user's role
@@ -61,6 +62,7 @@ export default function HrRolesPage() {
   const [staged, setStaged] = useState<Record<string, { role: EligibleSelection; campusId: string }>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [accessReviewOpen, setAccessReviewOpen] = useState(false);
 
   const isTrueAdmin = !!me?.is_active && me.role === "admin";
 
@@ -211,8 +213,13 @@ export default function HrRolesPage() {
             <h1 className="h1">Roles</h1>
             <div className="subtle">Change any user&apos;s role to Teacher, Supervisor, App Supervisor, or Campus Admin. &ldquo;App Supervisor&rdquo; is a Supervisor who can also manage the App (learning) page. True admins are not shown.</div>
           </div>
-          {status ? <span className="badge badge-pink">{status}</span> : null}
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <button className="btn" onClick={() => setAccessReviewOpen(true)}>🔐 Access review</button>
+            {status ? <span className="badge badge-pink">{status}</span> : null}
+          </div>
         </div>
+
+        {accessReviewOpen && <AccessReview onClose={() => setAccessReviewOpen(false)} />}
 
         <div className="card">
           <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>

@@ -40,11 +40,22 @@ export async function POST(req: Request) {
 
     const { data: doc, error: docErr } = await supabase
       .from("hr_employee_documents")
-      .select("id,name,object_key,mime_type")
+      .select("id,name,object_key,mime_type,employee_id")
       .eq("id", documentId)
       .single();
 
     if (docErr) return jsonError(docErr.message, 404);
+
+    try {
+      const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || null;
+      const ua = req.headers.get("user-agent") || null;
+      await supabase.rpc("log_document_audit", {
+        p_action: "download",
+        p_employee_id: (doc as any).employee_id,
+        p_file_name: doc.name,
+        p_detail: { ip, user_agent: ua, mode, source: "hr_employee_documents" },
+      });
+    } catch { /* never block a download on logging */ }
 
     const r2 = new S3Client({
       region: "auto",
