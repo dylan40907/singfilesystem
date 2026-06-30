@@ -45,7 +45,6 @@ export default function ObjectEditorModal({
   }
 
   function validate(): string | null {
-    if (draft.type === "text" && !title.trim()) return "Add a title.";
     if (["image", "video", "pdf", "file", "audio"].includes(draft.type) && !content.url) return "Upload a file first.";
     if (["youtube", "link"].includes(draft.type) && !content.url) return "Enter a URL.";
     if (draft.type === "quiz") {
@@ -63,7 +62,9 @@ export default function ObjectEditorModal({
   function save() {
     const v = validate();
     if (v) { setError(v); return; }
-    const finalTitle = title.trim() || defaultTitle(draft.type);
+    // Text titles are optional (the section header is often enough); other
+    // object types fall back to their type label so the list stays readable.
+    const finalTitle = draft.type === "text" ? title.trim() : (title.trim() || defaultTitle(draft.type));
     onSave({ type: draft.type, title: finalTitle, content, settings });
   }
 
@@ -75,8 +76,8 @@ export default function ObjectEditorModal({
 
         {draft.type !== "image" && (
           <>
-            <label style={lbl}>{draft.type === "quiz" ? "Quiz name" : draft.type === "link" ? "Label" : "Title"}</label>
-            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Type a title" autoFocus />
+            <label style={lbl}>{draft.type === "quiz" ? "Quiz name" : draft.type === "link" ? "Label" : draft.type === "text" ? "Title (optional)" : "Title"}</label>
+            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={draft.type === "text" ? "Leave blank to use the section header" : "Type a title"} autoFocus />
           </>
         )}
 

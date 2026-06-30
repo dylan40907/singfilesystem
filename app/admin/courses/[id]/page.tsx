@@ -223,7 +223,9 @@ export default function CourseBuilderPage() {
                     <div className="row" style={{ gap: 10, minWidth: 0 }}>
                       <span style={{ color: "#6b7280", width: 18 }}>{i + 1}</span>
                       <span style={{ fontSize: 18 }}>{objIcon(o.type)}</span>
-                      <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.title}</span>
+                      <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: o.title?.trim() ? undefined : "#9ca3af", fontStyle: o.title?.trim() ? undefined : "italic" }}>
+                        {o.title?.trim() || "Untitled text"}
+                      </span>
                     </div>
                     <div className="row" style={{ gap: 4 }}>
                       <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>

@@ -134,10 +134,12 @@ function ObjectView({ o, done, result, onDone, onQuiz }: {
 }) {
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 16, marginBottom: 12, background: done ? "#f0fdf4" : "white" }}>
-      <div className="row-between" style={{ marginBottom: 8 }}>
-        <div style={{ fontWeight: 700 }}>{o.title}</div>
-        {done && <span style={{ color: "#16a34a", fontWeight: 800, fontSize: 13 }}>✓ Done</span>}
-      </div>
+      {(o.title?.trim() || done) && (
+        <div className="row-between" style={{ marginBottom: 8 }}>
+          <div style={{ fontWeight: 700 }}>{o.title}</div>
+          {done && <span style={{ color: "#16a34a", fontWeight: 800, fontSize: 13 }}>✓ Done</span>}
+        </div>
+      )}
       {o.type === "text" && <TextView o={o} done={done} onDone={onDone} />}
       {o.type === "image" && <MediaView><img src={o.content.url} alt={o.content.caption ?? ""} style={{ maxWidth: "100%", borderRadius: 8 }} />{o.content.caption && <div className="subtle" style={{ fontSize: 12 }}>{o.content.caption}</div>}<DoneBtn done={done} onDone={onDone} /></MediaView>}
       {o.type === "video" && <MediaView><video src={o.content.url} controls style={{ width: "100%", borderRadius: 8 }} /><DoneBtn done={done} onDone={onDone} /></MediaView>}
