@@ -100,9 +100,12 @@ export async function fetchSegments(): Promise<CourseSegment[]> {
 }
 
 export async function createSegment(name: string, color: string): Promise<CourseSegment> {
+  const { data: last } = await supabase
+    .from("course_segments").select("position").order("position", { ascending: false }).limit(1);
+  const position = ((last?.[0]?.position as number | undefined) ?? 0) + 1;
   const { data, error } = await supabase
     .from("course_segments")
-    .insert({ name: name.trim(), color })
+    .insert({ name: name.trim(), color, position })
     .select("*")
     .single();
   if (error) throw error;

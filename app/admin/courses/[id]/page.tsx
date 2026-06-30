@@ -87,13 +87,22 @@ export default function CourseBuilderPage() {
     setSectionModal(null);
     await reload();
   }
-  async function moveSection(s: CourseSection, dir: -1 | 1) {
+  // Reorders update local state immediately (no reload) and persist a clean
+  // 0..n sequence in the background. The render sorts by position, so updating
+  // the position fields is enough to reflect the new order instantly.
+  function moveSection(s: CourseSection, dir: -1 | 1) {
     const sorted = [...(full?.sections ?? [])].sort((a, b) => a.position - b.position);
     const idx = sorted.findIndex((x) => x.id === s.id);
-    const swap = sorted[idx + dir];
-    if (!swap) return;
-    await Promise.all([updateSection(s.id, { position: swap.position }), updateSection(swap.id, { position: s.position })]);
-    await reload();
+    const swapIdx = idx + dir;
+    if (idx === -1 || swapIdx < 0 || swapIdx >= sorted.length) return;
+    [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
+    const posById = new Map(sorted.map((x, i) => [x.id, i]));
+    setFull((f) => (f ? { ...f, sections: f.sections.map((x) => ({ ...x, position: posById.get(x.id) ?? x.position })) } : f));
+    Promise.all(
+      (full?.sections ?? [])
+        .filter((x) => posById.get(x.id) !== x.position)
+        .map((x) => updateSection(x.id, { position: posById.get(x.id)! }))
+    ).catch(() => setStatus("Reorder failed to save."));
   }
   async function removeSection(s: CourseSection) {
     const ok = await confirm(`Delete section "${s.title}" and all its objects?`, { title: "Delete section", confirmLabel: "Delete", danger: true });
@@ -126,13 +135,20 @@ export default function CourseBuilderPage() {
     await deleteObject(o.id);
     await reload();
   }
-  async function moveObject(o: CourseObject, dir: -1 | 1) {
+  function moveObject(o: CourseObject, dir: -1 | 1) {
     const list = objectsBySection.get(o.section_id) ?? [];
     const idx = list.findIndex((x) => x.id === o.id);
-    const swap = list[idx + dir];
-    if (!swap) return;
-    await Promise.all([updateObject(o.id, { position: swap.position }), updateObject(swap.id, { position: o.position })]);
-    await reload();
+    const swapIdx = idx + dir;
+    if (idx === -1 || swapIdx < 0 || swapIdx >= list.length) return;
+    const arr = [...list];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    const posById = new Map(arr.map((x, i) => [x.id, i]));
+    setFull((f) => (f ? { ...f, objects: f.objects.map((x) => (posById.has(x.id) ? { ...x, position: posById.get(x.id)! } : x)) } : f));
+    Promise.all(
+      list
+        .filter((x) => posById.get(x.id) !== x.position)
+        .map((x) => updateObject(x.id, { position: posById.get(x.id)! }))
+    ).catch(() => setStatus("Reorder failed to save."));
   }
 
   async function changeStatus(next: CourseStatus) {

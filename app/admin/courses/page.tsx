@@ -147,20 +147,22 @@ export default function AdminCoursesPage() {
     }
   }
 
+  // Reorder updates local state immediately (no reload) and persists a clean
+  // 0..n sequence in the background — robust even when positions had ties (all 0).
   async function moveSegment(seg: CourseSegment, dir: -1 | 1) {
     const sorted = [...segments].sort((a, b) => a.position - b.position);
     const idx = sorted.findIndex((s) => s.id === seg.id);
-    const swap = sorted[idx + dir];
-    if (!swap) return;
-    try {
-      await Promise.all([
-        updateSegment(seg.id, { position: swap.position }),
-        updateSegment(swap.id, { position: seg.position }),
-      ]);
-      await reload();
-    } catch (e: any) {
-      setStatus("Reorder error: " + (e?.message ?? "unknown"));
-    }
+    const swapIdx = idx + dir;
+    if (idx === -1 || swapIdx < 0 || swapIdx >= sorted.length) return;
+    [sorted[idx], sorted[swapIdx]] = [sorted[swapIdx], sorted[idx]];
+    const reindexed = sorted.map((s, i) => ({ ...s, position: i }));
+    const prev = segments;
+    setSegments(reindexed);
+    Promise.all(
+      reindexed
+        .filter((s) => prev.find((x) => x.id === s.id)?.position !== s.position)
+        .map((s) => updateSegment(s.id, { position: s.position }))
+    ).catch(() => setStatus("Reorder failed to save."));
   }
 
   async function handleDeleteSegment(seg: CourseSegment) {
@@ -254,19 +256,27 @@ export default function AdminCoursesPage() {
     }
   }
 
-  async function reorderCourse(items: CourseWithMeta[], idx: number, dir: -1 | 1) {
-    const a = items[idx];
-    const b = items[idx + dir];
-    if (!a || !b) return;
-    try {
-      await Promise.all([
-        updateCourse(a.id, { position: b.position }),
-        updateCourse(b.id, { position: a.position }),
-      ]);
-      await reload();
-    } catch (e: any) {
-      setStatus("Reorder error: " + (e?.message ?? "unknown"));
-    }
+  function reorderCourse(items: CourseWithMeta[], idx: number, dir: -1 | 1) {
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= items.length) return;
+    const arr = [...items];
+    [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+    const reindexed = arr.map((c, i) => ({ ...c, position: i }));
+    const prevPos = new Map(items.map((c) => [c.id, c.position]));
+    const itemIds = new Set(items.map((c) => c.id));
+    // Place the reordered group back into the exact slots it occupied.
+    setCourses((prev) => {
+      const slots: number[] = [];
+      prev.forEach((c, i) => { if (itemIds.has(c.id)) slots.push(i); });
+      const result = [...prev];
+      reindexed.forEach((c, k) => { if (slots[k] !== undefined) result[slots[k]] = c; });
+      return result;
+    });
+    Promise.all(
+      reindexed
+        .filter((c) => prevPos.get(c.id) !== c.position)
+        .map((c) => updateCourse(c.id, { position: c.position }))
+    ).catch(() => setStatus("Reorder failed to save."));
   }
 
   async function handleDelete(c: Course) {
