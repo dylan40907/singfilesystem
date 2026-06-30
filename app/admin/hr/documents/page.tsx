@@ -598,7 +598,7 @@ export default function HrDocumentsPage() {
           )}
         </div>
       ) : (
-        <div style={{ overflowX: "auto", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
+        <div style={{ overflow: "auto", maxHeight: "75vh", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
           <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
             <thead>
               <tr>
@@ -610,7 +610,8 @@ export default function HrDocumentsPage() {
                     fontWeight: 800,
                     position: "sticky",
                     left: 0,
-                    zIndex: 2,
+                    top: 0,
+                    zIndex: 3,
                     minWidth: 200,
                     boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)",
                   }}
@@ -621,7 +622,7 @@ export default function HrDocumentsPage() {
                   const c = completion[t.id] ?? { approved: 0, required: 0 };
                   const pct = c.required > 0 ? Math.round((c.approved / c.required) * 100) : 0;
                   return (
-                    <th key={t.id} style={{ ...cellStyleBase, background: "#f9fafb", fontWeight: 700, minWidth: 120, verticalAlign: "top" }}>
+                    <th key={t.id} style={{ ...cellStyleBase, background: "#f9fafb", fontWeight: 700, minWidth: 120, verticalAlign: "top", position: "sticky", top: 0, zIndex: 1 }}>
                       <div
                         onClick={isAdmin ? () => setDocModal({ mode: "edit", type: t }) : undefined}
                         style={{ cursor: isAdmin ? "pointer" : "default" }}
@@ -642,7 +643,7 @@ export default function HrDocumentsPage() {
                   );
                 })}
                 {isAdmin && (
-                  <th style={{ ...cellStyleBase, background: "#f9fafb", minWidth: 110, verticalAlign: "middle" }}>
+                  <th style={{ ...cellStyleBase, background: "#f9fafb", minWidth: 110, verticalAlign: "middle", position: "sticky", top: 0, zIndex: 1 }}>
                     <button
                       className="btn btn-primary"
                       onClick={() => setDocModal({ mode: "create" })}

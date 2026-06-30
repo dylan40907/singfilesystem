@@ -134,7 +134,10 @@ export default function ScheduleGrid({
   const TIME_COL_WIDTH = 72;
 
   return (
-    <div style={{ display: "flex", overflowX: "auto", alignItems: "stretch" }}>
+    // No overflow here on purpose: the parent (data-grid-scroll) owns both axes.
+    // Setting overflow-x:auto would compute overflow-y:auto and become the sticky
+    // container, which breaks the sticky room-name headers on vertical scroll.
+    <div style={{ display: "flex", alignItems: "stretch", minWidth: "min-content" }}>
       {/* Time column */}
       <div
         style={{
