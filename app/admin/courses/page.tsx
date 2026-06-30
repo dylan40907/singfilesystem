@@ -239,6 +239,22 @@ export default function AdminCoursesPage() {
     }
   }
 
+  async function bulkUnpublish() {
+    const ids = courses.filter((c) => selected.has(c.id) && c.status === "published").map((c) => c.id);
+    if (ids.length === 0) return; // nothing published selected → no-op
+    setBulkBusy(true);
+    try {
+      for (const id of ids) await setCourseStatus(id, "draft");
+      clearSelection();
+      await reload();
+      setStatus(`Unpublished ${ids.length} course(s).`);
+    } catch (e: any) {
+      setStatus("Unpublish error: " + (e?.message ?? "unknown"));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function bulkSetStatus(next: CourseStatus) {
     const ids = Array.from(selected);
     const ok = await confirm(
@@ -354,6 +370,9 @@ export default function AdminCoursesPage() {
               <button className="btn" disabled={bulkBusy} onClick={bulkRemind}>🔔 Remind not-completed</button>
               {tab !== "archived" && (
                 <button className="btn" disabled={bulkBusy} onClick={bulkPublish}>Publish</button>
+              )}
+              {tab !== "archived" && (
+                <button className="btn" disabled={bulkBusy} onClick={bulkUnpublish}>Unpublish</button>
               )}
               {tab === "archived"
                 ? <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("draft")}>Restore</button>
