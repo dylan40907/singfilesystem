@@ -7,8 +7,8 @@ import { fetchMyProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import {
   Course, CourseSegment, CourseStatus, CourseWithMeta,
-  createCourse, createSegment, deleteCourse, fetchCourses, fetchSegments,
-  setCourseStatus,
+  createCourse, createSegment, deleteCourse, deleteSegment, fetchCourses, fetchSegments,
+  renameSegment, setCourseStatus,
 } from "@/lib/courses";
 
 const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
@@ -48,6 +48,8 @@ export default function AdminCoursesPage() {
   const [segOpen, setSegOpen] = useState(false);
   const [segName, setSegName] = useState("");
   const [segColor, setSegColor] = useState(SEGMENT_COLORS[0]);
+  // Rename-segment modal
+  const [segEdit, setSegEdit] = useState<{ id: string; value: string } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -122,6 +124,32 @@ export default function AdminCoursesPage() {
     }
   }
 
+  async function confirmSegRename() {
+    if (!segEdit || !segEdit.value.trim()) return;
+    try {
+      await renameSegment(segEdit.id, segEdit.value.trim());
+      setSegEdit(null);
+      await reload();
+    } catch (e: any) {
+      setStatus("Rename error: " + (e?.message ?? "unknown"));
+    }
+  }
+
+  async function handleDeleteSegment(seg: CourseSegment) {
+    const ok = await confirm(
+      `Delete segment "${seg.name}"?\n\nAny courses in it aren’t deleted — they just become uncategorized.`,
+      { title: "Delete segment", confirmLabel: "Delete", danger: true }
+    );
+    if (!ok) return;
+    try {
+      await deleteSegment(seg.id);
+      await reload();
+      setStatus("Segment deleted.");
+    } catch (e: any) {
+      setStatus("Delete error: " + (e?.message ?? "unknown"));
+    }
+  }
+
   async function changeStatus(c: Course, next: CourseStatus) {
     try {
       await setCourseStatus(c.id, next);
@@ -181,9 +209,17 @@ export default function AdminCoursesPage() {
         ) : (
           grouped.map((g, i) => (
             <div key={g.segment?.id ?? i} style={{ marginBottom: 22 }}>
-              <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 999, background: g.segment?.color ?? "#9ca3af", display: "inline-block" }} />
-                <span style={{ fontWeight: 800, color: g.segment?.color ?? "#6b7280" }}>{g.segment?.name ?? "Uncategorized"}</span>
+              <div className="row-between" style={{ marginBottom: 8 }}>
+                <div className="row" style={{ gap: 8 }}>
+                  <span style={{ width: 12, height: 12, borderRadius: 999, background: g.segment?.color ?? "#9ca3af", display: "inline-block" }} />
+                  <span style={{ fontWeight: 800, color: g.segment?.color ?? "#6b7280" }}>{g.segment?.name ?? "Uncategorized"}</span>
+                </div>
+                {g.segment && (
+                  <div className="row" style={{ gap: 6 }}>
+                    <button className="btn" style={miniBtn} onClick={() => setSegEdit({ id: g.segment!.id, value: g.segment!.name })}>Rename</button>
+                    <button className="btn" style={{ ...miniBtn, color: "#991b1b" }} onClick={() => handleDeleteSegment(g.segment!)}>Delete</button>
+                  </div>
+                )}
               </div>
               {g.items.length === 0 ? (
                 <div className="subtle" style={{ fontSize: 13, padding: "10px 14px", border: "1px dashed #e5e7eb", borderRadius: 12 }}>
@@ -252,6 +288,20 @@ export default function AdminCoursesPage() {
           <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
             <button className="btn" onClick={() => setCreateOpen(false)}>Cancel</button>
             <button className="btn btn-primary" onClick={handleCreate} disabled={creating}>{creating ? "Creating…" : "Create"}</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Rename segment modal */}
+      {segEdit && (
+        <Modal title="Rename segment" onClose={() => setSegEdit(null)}>
+          <label style={lbl}>Segment name</label>
+          <input className="input" autoFocus value={segEdit.value}
+            onChange={(e) => setSegEdit((s) => (s ? { ...s, value: e.target.value } : s))}
+            onKeyDown={(e) => { if (e.key === "Enter") confirmSegRename(); }} />
+          <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+            <button className="btn" onClick={() => setSegEdit(null)}>Cancel</button>
+            <button className="btn btn-primary" onClick={confirmSegRename} disabled={!segEdit.value.trim()}>Save</button>
           </div>
         </Modal>
       )}
