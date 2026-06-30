@@ -13,6 +13,7 @@ import {
 } from "@/lib/courses";
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
+import CourseProgressPanel from "@/components/courses/CourseProgressPanel";
 
 const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
 
@@ -35,7 +36,7 @@ export default function AdminCoursesPage() {
   const { confirm, modal: dialogModal } = useDialog();
 
   const [authzd, setAuthzd] = useState<boolean | null>(null);
-  const [view, setView] = useState<"courses" | "groups">("courses");
+  const [view, setView] = useState<"courses" | "groups" | "progress">("courses");
   const [tab, setTab] = useState<"active" | "archived">("active");
   // multi-select + bulk
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -308,10 +309,13 @@ export default function AdminCoursesPage() {
       <div className="row" style={{ gap: 6 }}>
         <button className={`btn${view === "courses" ? " btn-primary" : ""}`} onClick={() => setView("courses")}>Courses</button>
         <button className={`btn${view === "groups" ? " btn-primary" : ""}`} onClick={() => setView("groups")}>Groups</button>
+        <button className={`btn${view === "progress" ? " btn-primary" : ""}`} onClick={() => setView("progress")}>Progress</button>
       </div>
 
       {view === "groups" ? (
         <div className="card"><CourseGroupsPanel /></div>
+      ) : view === "progress" ? (
+        <div className="card"><CourseProgressPanel /></div>
       ) : (
       <div className="card">
         <div className="row-between" style={{ marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
