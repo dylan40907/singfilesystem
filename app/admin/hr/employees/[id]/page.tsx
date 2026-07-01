@@ -958,8 +958,10 @@ function EmployeePerformanceReviewsTab({
 
   const [status, setStatus] = useState<string>("");
   const [roleNotesOpen, setRoleNotesOpen] = useState(false);
-  // Role-specific note to show at the bottom of this employee's reviews.
+  // Job-level note to show at the bottom of this employee's reviews (list view).
   const [roleNote, setRoleNote] = useState<string | null>(null);
+  // Same note, but for the review type currently open in the edit/create modal.
+  const [modalRoleNote, setModalRoleNote] = useState<string | null>(null);
 
   // Export Monthly Reviews by Year
   const [exportMonthlyOpen, setExportMonthlyOpen] = useState(false);
@@ -1021,6 +1023,21 @@ function EmployeePerformanceReviewsTab({
   const [open, setOpen] = useState(false);
   const [formType, setFormType] = useState<ReviewFormType>("monthly");
   const [selectedFormId, setSelectedFormId] = useState<string>("");
+
+  // Job-level note for the review type open in the edit/create modal.
+  useEffect(() => {
+    if (!open) { setModalRoleNote(null); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.rpc("get_review_role_note", {
+        p_employee_id: employeeId,
+        p_review_type: formType,
+      });
+      if (!cancelled) setModalRoleNote((data as string | null) ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [open, formType, employeeId, roleNotesOpen]);
+
   const [year, setYear] = useState<number>(currentYear);
   const [month, setMonth] = useState<number>(currentMonth);
 
@@ -2687,6 +2704,14 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                 <div style={{ marginTop: 12 }}>
                   {formType === "monthly" ? <MonthlyIncreaseGuide /> : <AnnualEvaluationGuide />}
                 </div>
+
+                {/* Job-level note (what the employee will see for this role). */}
+                {modalRoleNote ? (
+                  <div style={{ marginTop: 12, border: "1px solid #e5e7eb", borderLeft: "4px solid #E6178D", borderRadius: 10, padding: "10px 14px", background: "#fff7fb" }}>
+                    <div style={{ fontWeight: 800, fontSize: 12, color: "#6b7280", marginBottom: 4 }}>Note</div>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{modalRoleNote}</div>
+                  </div>
+                ) : null}
 
                 <div className="row-between" style={{ gap: 10, flexWrap: "wrap", marginTop: 10 }}>
                   {formType === "monthly" ? (
