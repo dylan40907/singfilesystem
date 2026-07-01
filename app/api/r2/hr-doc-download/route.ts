@@ -41,12 +41,14 @@ export async function POST(req: Request) {
     if (recErr) return jsonError(recErr.message, 403);
     if (!rec || !rec.object_key) return jsonError("Not found", 404);
 
-    // Append-only audit trail (who downloaded which employee's sensitive doc).
+    // Append-only audit trail (who accessed which employee's sensitive doc).
+    // An inline request is just opening the preview → log it as a "view";
+    // an attachment request is a real "download".
     try {
       const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || null;
       const ua = req.headers.get("user-agent") || null;
       await supabase.rpc("log_document_audit", {
-        p_action: "download",
+        p_action: mode === "inline" ? "view" : "download",
         p_record_id: rec.id,
         p_employee_id: (rec as any).employee_id,
         p_doc_type_id: (rec as any).doc_type_id,

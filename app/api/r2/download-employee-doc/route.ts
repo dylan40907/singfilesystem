@@ -50,7 +50,7 @@ export async function POST(req: Request) {
       const ip = (req.headers.get("x-forwarded-for") || "").split(",")[0].trim() || null;
       const ua = req.headers.get("user-agent") || null;
       await supabase.rpc("log_document_audit", {
-        p_action: "download",
+        p_action: mode === "inline" ? "view" : "download",
         p_employee_id: (doc as any).employee_id,
         p_file_name: doc.name,
         p_detail: { ip, user_agent: ua, mode, source: "hr_employee_documents" },
