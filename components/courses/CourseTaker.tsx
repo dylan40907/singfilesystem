@@ -29,7 +29,13 @@ export default function CourseTaker({
   const objectsOf = (s: CourseSection) =>
     full.objects.filter((o) => o.section_id === s.id).sort((a, b) => a.position - b.position);
 
-  const [secIdx, setSecIdx] = useState(0);
+  // Resume on the section we left off on (if it still exists).
+  const [secIdx, setSecIdx] = useState(() => {
+    const lastSec = initialProgress.lastSectionId;
+    if (!lastSec) return 0;
+    const idx = sections.findIndex((s) => s.id === lastSec);
+    return idx > 0 ? idx : 0;
+  });
   const [done, setDone] = useState<Set<string>>(new Set(initialProgress.completedObjectIds ?? []));
   const [quizResults, setQuizResults] = useState<CourseProgress["quizResults"]>(initialProgress.quizResults ?? {});
   const persisted = useRef(false);
@@ -39,11 +45,12 @@ export default function CourseTaker({
   const courseComplete = allObjects.length > 0 && allObjects.every((o) => done.has(o.id));
 
   useEffect(() => {
-    const progress: CourseProgress = { completedObjectIds: Array.from(done), quizResults, lastObjectId: null };
+    const lastSectionId = sections.length ? sections[Math.min(secIdx, sections.length - 1)]?.id ?? null : null;
+    const progress: CourseProgress = { completedObjectIds: Array.from(done), quizResults, lastObjectId: null, lastSectionId };
     saveProgress(assignmentId, progress, courseComplete ? "completed" : "in_progress").catch(() => {});
     if (courseComplete && !persisted.current) { persisted.current = true; onCompletedChange?.(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [done, quizResults]);
+  }, [done, quizResults, secIdx]);
 
   function markDone(id: string) { setDone((s) => new Set(s).add(id)); }
 
@@ -206,7 +213,10 @@ function QuizView({ o, done, result, onQuiz }: {
   const showScore = o.settings.showScore !== false;
 
   const [picked, setPicked] = useState<Record<string, string>>({});
-  const [submitted, setSubmitted] = useState<{ score: number; passed: boolean } | null>(result ?? null);
+  // Only restore a PASSED result; a failed/incomplete quiz starts fresh on
+  // (re)mount so reopening a course doesn't drop the learner into a graded
+  // "try again" state — they can just retake it.
+  const [submitted, setSubmitted] = useState<{ score: number; passed: boolean } | null>(result?.passed ? result : null);
 
   function submit() {
     let correct = 0;

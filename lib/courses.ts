@@ -63,6 +63,8 @@ export type CourseProgress = {
   completedObjectIds?: string[];
   quizResults?: Record<string, { score: number; passed: boolean; answers?: Record<string, string[]> }>;
   lastObjectId?: string | null;
+  /** Section the learner was last on, so we can resume there on reopen. */
+  lastSectionId?: string | null;
 };
 
 // Quiz payload shapes (stored in course_objects.content / .settings for type 'quiz')
