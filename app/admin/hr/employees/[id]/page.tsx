@@ -19,6 +19,7 @@ import {
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import { useDialog } from "@/components/ui/useDialog";
+import RoleNotesModal from "@/components/hr/RoleNotesModal";
 
 const FortuneWorkbook = dynamic(() => import("@fortune-sheet/react").then((m) => m.Workbook), { ssr: false });
 
@@ -956,6 +957,9 @@ function EmployeePerformanceReviewsTab({
   const canEdit = !readOnly;
 
   const [status, setStatus] = useState<string>("");
+  const [roleNotesOpen, setRoleNotesOpen] = useState(false);
+  // Role-specific note to show at the bottom of this employee's reviews.
+  const [roleNote, setRoleNote] = useState<string | null>(null);
 
   // Export Monthly Reviews by Year
   const [exportMonthlyOpen, setExportMonthlyOpen] = useState(false);
@@ -966,6 +970,19 @@ function EmployeePerformanceReviewsTab({
 
   // Toggle display type (default monthly)
   const [showAnnual, setShowAnnual] = useState<boolean>(false);
+
+  // Load the role-specific note for this employee + current review type.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.rpc("get_review_role_note", {
+        p_employee_id: employeeId,
+        p_review_type: showAnnual ? "annual" : "monthly",
+      });
+      if (!cancelled) setRoleNote((data as string | null) ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [employeeId, showAnnual, roleNotesOpen]);
 
   // Forms + questions (read-only here)
   const [forms, setForms] = useState<HrReviewForm[]>([]);
@@ -2221,6 +2238,12 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
           ) : null}
 
           {canEdit ? (
+            <button className="btn" type="button" onClick={() => setRoleNotesOpen(true)}>
+              Manage Role Notes
+            </button>
+          ) : null}
+
+          {canEdit ? (
             <button className="btn" type="button" onClick={() => void openExportMonthlyModal()}>
               Export Monthly Reviews by Year
             </button>
@@ -2353,6 +2376,16 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
           ))}
         </div>
       )}
+
+      {/* Role-specific note (shown to the employee whose role matches). */}
+      {roleNote ? (
+        <div style={{ marginTop: 12, border: "1px solid #e5e7eb", borderLeft: "4px solid #E6178D", borderRadius: 10, padding: "10px 14px", background: "#fff7fb" }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: "#6b7280", marginBottom: 4 }}>Note</div>
+          <div style={{ whiteSpace: "pre-wrap" }}>{roleNote}</div>
+        </div>
+      ) : null}
+
+      {roleNotesOpen ? <RoleNotesModal onClose={() => setRoleNotesOpen(false)} /> : null}
 
       {/* =========================
           EDIT / CREATE MODAL

@@ -394,6 +394,18 @@ export default function HrDocumentsPage() {
     setStatus("Sending reminder…");
     const { data, error } = await supabase.rpc("notify_employee_doc", { p_employee_id: emp.id, p_doc_type_id: type.id });
     setStatus(error ? "Error: " + error.message : data ? "✅ Reminder sent." : "Could not send reminder.");
+    if (error || !data) throw new Error(error?.message ?? "Reminder failed");
+  }
+
+  // Remind an employee about EVERY required doc still missing/rejected, in one
+  // consolidated notification. Returns the confirmation label for the button.
+  async function remindEmployeeMissing(emp: Employee): Promise<string> {
+    const { data, error } = await supabase.rpc("notify_employee_missing_docs", { p_employee_id: emp.id });
+    if (error) { setStatus("Error: " + error.message); throw new Error(error.message); }
+    const n = (data as number) ?? 0;
+    if (n === 0) { setStatus(`✅ ${empName(emp)} has no missing documents.`); return "✓ Nothing missing"; }
+    setStatus(`✅ Reminded ${empName(emp)} about ${n} document(s).`);
+    return "✓ Reminder sent";
   }
 
   async function setRequired(emp: Employee, type: DocType, required: boolean) {
@@ -678,7 +690,17 @@ export default function HrDocumentsPage() {
                         boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)",
                       }}
                     >
-                      {empName(emp)}
+                      <div className="row-between" style={{ gap: 8, alignItems: "center" }}>
+                        <span>{empName(emp)}</span>
+                        {isAdmin && (
+                          <RemindButton
+                            label="🔔"
+                            title={`Remind ${empName(emp)} about all missing required documents`}
+                            style={{ padding: "2px 8px", fontSize: 12, fontWeight: 700, flexShrink: 0 }}
+                            onRemind={() => remindEmployeeMissing(emp)}
+                          />
+                        )}
+                      </div>
                     </td>
                     {visibleTypes.map((t) => {
                       const rec = records[cellKey(emp.id, t.id)];
@@ -771,6 +793,44 @@ export default function HrDocumentsPage() {
   );
 }
 
+// ─── Reminder button with inline "sent" confirmation ─────────────────────────
+// Any reminder action: shows "Sending…" then briefly swaps the label to the
+// confirmation returned by onRemind (default "✓ Reminder sent") before reverting.
+function RemindButton({
+  label, onRemind, className = "btn", style, title,
+}: {
+  label: React.ReactNode;
+  onRemind: () => Promise<string | void>;
+  className?: string;
+  style?: React.CSSProperties;
+  title?: string;
+}) {
+  const [state, setState] = useState<"idle" | "sending" | "done">("idle");
+  const [doneLabel, setDoneLabel] = useState("✓ Reminder sent");
+  return (
+    <button
+      className={className}
+      style={style}
+      title={title}
+      disabled={state !== "idle"}
+      onClick={async (e) => {
+        e.stopPropagation();
+        setState("sending");
+        try {
+          const msg = await onRemind();
+          setDoneLabel(msg || "✓ Reminder sent");
+          setState("done");
+          setTimeout(() => setState("idle"), 2200);
+        } catch {
+          setState("idle");
+        }
+      }}
+    >
+      {state === "sending" ? "Sending…" : state === "done" ? doneLabel : label}
+    </button>
+  );
+}
+
 // ─── Cell action modal ────────────────────────────────────────────────────
 
 function CellActionModal({
@@ -788,7 +848,7 @@ function CellActionModal({
   onReject: () => void;
   onClear: () => void;
   onSetRequired: (required: boolean) => void;
-  onRemind: () => void;
+  onRemind: () => Promise<string | void>;
 }) {
   const st = computeStatus(rec, type);
   const required = isRequired(rec, type);
@@ -876,7 +936,7 @@ function CellActionModal({
             )}
             <button className="btn btn-primary" onClick={onUpload}>{rec?.object_key ? "Replace file" : "Upload file"}</button>
             {(!rec?.object_key || rec.approval_status === "rejected") && (
-              <button className="btn" onClick={onRemind}>🔔 Remind to upload</button>
+              <RemindButton label="🔔 Remind to upload" onRemind={onRemind} />
             )}
             {rec?.object_key && rec.approval_status === "pending" && (
               <div className="row" style={{ gap: 8 }}>
@@ -1044,11 +1104,14 @@ function DocumentModal({
     onClose();
   }
 
-  async function remindMissing() {
-    if (!type?.id) return;
+  async function remindMissing(): Promise<string> {
+    if (!type?.id) return "✓ Reminder sent";
     setStatus("Sending reminders…");
     const { data, error } = await supabase.rpc("notify_missing_docs", { p_doc_type_ids: [type.id] });
-    setStatus(error ? "Error: " + error.message : `✅ Reminded ${data ?? 0} user(s) who haven't submitted.`);
+    if (error) { setStatus("Error: " + error.message); throw new Error(error.message); }
+    const n = (data as number) ?? 0;
+    setStatus(`✅ Reminded ${n} user(s) who haven't submitted.`);
+    return `✓ Reminded ${n}`;
   }
 
   async function resetEntries() {
@@ -1188,7 +1251,7 @@ function DocumentModal({
           <div className="row-between" style={{ flexWrap: "wrap", gap: 8 }}>
             {mode === "edit" ? (
               <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                <button className="btn btn-primary" onClick={() => void remindMissing()} disabled={saving}>🔔 Remind missing</button>
+                <RemindButton label="🔔 Remind missing" className="btn btn-primary" onRemind={remindMissing} />
                 <button className="btn" onClick={() => void resetEntries()} disabled={saving}>Reset entries</button>
                 <button className="btn" onClick={() => void deleteDoc()} disabled={saving} style={{ color: "#b91c1c" }}>Delete</button>
               </div>
