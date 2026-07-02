@@ -119,9 +119,21 @@ serve(async (req: Request) => {
 
       const { data: prof } = await admin
         .from("user_profiles")
-        .select("phone_e164, phone_verified")
+        .select("phone_e164, phone_verified, is_review_account")
         .eq("id", userId)
         .maybeSingle();
+
+      // App-store reviewer accounts skip SMS MFA — hand back the session directly
+      // (mirrors the MFA-disabled path). Real staff always go through MFA.
+      if (prof?.is_review_account === true) {
+        return json(origin, 200, {
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token,
+          expires_in: data.session.expires_in,
+          token_type: data.session.token_type,
+          user: data.user,
+        });
+      }
 
       const verified = !!prof?.phone_verified && !!prof?.phone_e164;
       const setup = !verified;

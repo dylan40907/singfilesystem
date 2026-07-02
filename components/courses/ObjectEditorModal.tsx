@@ -166,6 +166,13 @@ function QuizEditor({
     onChange(questions.map((q, i) => (i === qi ? { ...q, ...p } : q)));
   }
   function delQ(qi: number) { onChange(questions.filter((_, i) => i !== qi)); }
+  function moveQ(qi: number, dir: -1 | 1) {
+    const j = qi + dir;
+    if (j < 0 || j >= questions.length) return;
+    const next = [...questions];
+    [next[qi], next[j]] = [next[j], next[qi]];
+    onChange(next);
+  }
   function addA(qi: number) {
     patchQ(qi, { answers: [...questions[qi].answers, { id: uid(), text: "", correct: false }] });
   }
@@ -185,7 +192,11 @@ function QuizEditor({
       {questions.map((q, qi) => (
         <div key={q.id} style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 12 }}>
           <div className="row-between">
-            <span style={{ fontWeight: 800, color: "#6b7280" }}>Q{qi + 1}</span>
+            <div className="row" style={{ gap: 6, alignItems: "center" }}>
+              <span style={{ fontWeight: 800, color: "#6b7280" }}>Q{qi + 1}</span>
+              <button className="btn" title="Move up" onClick={() => moveQ(qi, -1)} disabled={qi === 0} style={{ padding: "2px 8px", fontSize: 12 }}>↑</button>
+              <button className="btn" title="Move down" onClick={() => moveQ(qi, 1)} disabled={qi === questions.length - 1} style={{ padding: "2px 8px", fontSize: 12 }}>↓</button>
+            </div>
             <button className="btn" onClick={() => delQ(qi)} style={{ padding: "2px 8px", fontSize: 12, color: "#991b1b" }}>🗑</button>
           </div>
           <textarea className="input" value={q.prompt} onChange={(e) => patchQ(qi, { prompt: e.target.value })} placeholder="Question text" rows={2} style={{ marginTop: 6, resize: "vertical" }} />
