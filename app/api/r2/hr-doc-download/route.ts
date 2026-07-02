@@ -73,7 +73,10 @@ export async function POST(req: Request) {
       ResponseContentDisposition: `${mode}; filename="${String(rec.file_name || "download").replace(/"/g, "")}"`,
     });
 
-    const url = await getSignedUrl(r2, cmd, { expiresIn: 120 });
+    // Inline previews render through embed viewers (Office/Google) that fetch
+    // the URL server-side and may reload it, so give them more headroom; a
+    // straight download happens immediately, so it can stay short-lived.
+    const url = await getSignedUrl(r2, cmd, { expiresIn: mode === "inline" ? 600 : 120 });
     return NextResponse.json({ url });
   } catch (e: any) {
     return jsonError(e?.message ?? "Download failed", 500);
