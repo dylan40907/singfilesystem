@@ -119,13 +119,14 @@ serve(async (req: Request) => {
 
       const { data: prof } = await admin
         .from("user_profiles")
-        .select("phone_e164, phone_verified, is_review_account")
+        .select("phone_e164, phone_verified, is_review_account, mfa_exempt")
         .eq("id", userId)
         .maybeSingle();
 
-      // App-store reviewer accounts skip SMS MFA — hand back the session directly
-      // (mirrors the MFA-disabled path). Real staff always go through MFA.
-      if (prof?.is_review_account === true) {
+      // MFA-exempt accounts (App-store reviewers + shared/kiosk accounts) skip
+      // SMS MFA — hand back the session directly (mirrors the MFA-disabled path).
+      // Everyone else always goes through MFA.
+      if (prof?.is_review_account === true || prof?.mfa_exempt === true) {
         return json(origin, 200, {
           access_token: data.session.access_token,
           refresh_token: data.session.refresh_token,
