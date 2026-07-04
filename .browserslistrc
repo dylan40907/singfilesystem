@@ -1,0 +1,12 @@
+# Keep the portal compatible with old iPads (iOS 12 Safari) that some staff use
+# as shared timeclock/manager devices. Next.js 13/14 targeted Safari 12 by
+# default; Next 15+ raised the baseline to modern browsers, which stopped
+# transpiling modern JS (optional chaining, nullish coalescing, etc.) down to a
+# form iOS 12 Safari can parse — breaking the whole page on those devices.
+# Pinning Safari/iOS 12 here restores the old, working transpile target. Modern
+# browsers still run the same site fine (just a marginally larger bundle).
+Chrome >= 64
+Edge >= 79
+Firefox >= 67
+Safari >= 12
+iOS >= 12
