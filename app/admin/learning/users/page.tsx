@@ -117,6 +117,10 @@ export default function UsersPage() {
   }
 
   async function approveUser(user: AppUser) {
+    // The approved row moves from the Pending section to the Approved section,
+    // unmounting the button that had focus — which bounces the scroll to the
+    // top. Capture the scroll position and restore it after the list updates.
+    const scrollY = typeof window !== "undefined" ? window.scrollY : 0;
     setBusy(user.id, true);
     setError("");
     const { error: e } = await supabase.rpc("admin_set_learning_access", {
@@ -131,6 +135,7 @@ export default function UsersPage() {
       ));
     }
     setBusy(user.id, false);
+    requestAnimationFrame(() => window.scrollTo({ top: scrollY }));
   }
 
   async function disableUser(user: AppUser) {
