@@ -134,6 +134,7 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/settings" || pathname.startsWith("/admin/hr/settings/")) return "settings";
     if (pathname === "/admin/hr/attendance" || pathname.startsWith("/admin/hr/attendance/")) return "attendance";
     if (pathname === "/admin/hr/employees" || pathname.startsWith("/admin/hr/employees/")) return "employees";
+    if (pathname === "/admin/hr/admissions" || pathname.startsWith("/admin/hr/admissions/")) return "admissions";
     if (pathname === "/admin/hr/documents" || pathname.startsWith("/admin/hr/documents/")) return "documents";
     if (pathname === "/admin/hr/employee-meetings" || pathname.startsWith("/admin/hr/employee-meetings/"))
       return "employee-meetings";
@@ -162,6 +163,7 @@ export default function HrNavbar() {
 
   const adminLinks = canUseHr && hasAdminAccess ? [
     { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
+    { href: "/admin/hr/admissions", label: "Admissions", tab: "admissions" },
     { href: "/admin/hr/documents", label: "Documents", tab: "documents" },
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
     { href: "/admin/hr/org-chart", label: "Org Chart", tab: "org-chart" },
