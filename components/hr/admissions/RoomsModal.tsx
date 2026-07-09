@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useDialog } from "@/components/ui/useDialog";
-import { Room, fetchRooms } from "@/lib/admissions";
+import { Room, fetchRooms, ROOM_COLORS } from "@/lib/admissions";
 import { Modal } from "@/components/hr/admissions/shared";
 
 /**
@@ -84,6 +84,7 @@ export default function RoomsModal({
           <RoomRow key={r.id} room={r} disabled={busy}
             onRename={(name) => patch(r.id, { name })}
             onCapacity={(capacity) => patch(r.id, { capacity })}
+            onColor={(color) => patch(r.id, { color })}
             onDelete={() => remove(r)}
             onUp={() => move(i, -1)} onDown={() => move(i, 1)}
             isFirst={i === 0} isLast={i === list.length - 1} />
@@ -103,12 +104,13 @@ export default function RoomsModal({
 }
 
 function RoomRow({
-  room, disabled, onRename, onCapacity, onDelete, onUp, onDown, isFirst, isLast,
+  room, disabled, onRename, onCapacity, onColor, onDelete, onUp, onDown, isFirst, isLast,
 }: {
   room: Room;
   disabled: boolean;
   onRename: (name: string) => void;
   onCapacity: (cap: number | null) => void;
+  onColor: (color: string) => void;
   onDelete: () => void;
   onUp: () => void;
   onDown: () => void;
@@ -117,22 +119,50 @@ function RoomRow({
 }) {
   const [name, setName] = useState(room.name);
   const [cap, setCap] = useState(room.capacity == null ? "" : String(room.capacity));
+  const [colorOpen, setColorOpen] = useState(false);
+  const [custom, setCustom] = useState(room.color);
   return (
-    <div className="row" style={{ gap: 8, alignItems: "center" }}>
-      <div className="stack" style={{ gap: 0 }}>
-        <button className="btn" style={{ padding: "0 6px", fontSize: 10, lineHeight: 1.4 }} disabled={disabled || isFirst} onClick={onUp} title="Move up">▲</button>
-        <button className="btn" style={{ padding: "0 6px", fontSize: 10, lineHeight: 1.4 }} disabled={disabled || isLast} onClick={onDown} title="Move down">▼</button>
+    <div className="stack" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <div className="stack" style={{ gap: 0 }}>
+          <button className="btn" style={{ padding: "0 6px", fontSize: 10, lineHeight: 1.4 }} disabled={disabled || isFirst} onClick={onUp} title="Move up">▲</button>
+          <button className="btn" style={{ padding: "0 6px", fontSize: 10, lineHeight: 1.4 }} disabled={disabled || isLast} onClick={onDown} title="Move down">▼</button>
+        </div>
+        <button
+          type="button"
+          title="Room color"
+          disabled={disabled}
+          onClick={() => setColorOpen((o) => !o)}
+          style={{ width: 26, height: 26, borderRadius: 999, background: room.color, border: "2px solid #e5e7eb", cursor: "pointer", flexShrink: 0 }}
+        />
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)}
+          onBlur={() => { if (name.trim() && name !== room.name) onRename(name.trim()); }}
+          disabled={disabled} style={{ flex: 1 }} />
+        <input className="input" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="numeric"
+          onBlur={() => {
+            const next = cap.trim() === "" ? null : Math.max(0, parseInt(cap, 10) || 0);
+            if (next !== room.capacity) onCapacity(next);
+          }}
+          placeholder="Cap" disabled={disabled} style={{ width: 64 }} title="Capacity (optional)" />
+        <button className="btn" style={{ color: "#b91c1c" }} disabled={disabled} onClick={onDelete}>Delete</button>
       </div>
-      <input className="input" value={name} onChange={(e) => setName(e.target.value)}
-        onBlur={() => { if (name.trim() && name !== room.name) onRename(name.trim()); }}
-        disabled={disabled} style={{ flex: 1 }} />
-      <input className="input" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="numeric"
-        onBlur={() => {
-          const next = cap.trim() === "" ? null : Math.max(0, parseInt(cap, 10) || 0);
-          if (next !== room.capacity) onCapacity(next);
-        }}
-        placeholder="Cap" disabled={disabled} style={{ width: 64 }} title="Capacity (optional)" />
-      <button className="btn" style={{ color: "#b91c1c" }} disabled={disabled} onClick={onDelete}>Delete</button>
+
+      {colorOpen && (
+        <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap", paddingLeft: 34 }}>
+          {ROOM_COLORS.map((c) => (
+            <button key={c} type="button" aria-label={c}
+              onClick={() => { onColor(c); setCustom(c); setColorOpen(false); }}
+              style={{ width: 24, height: 24, borderRadius: 999, background: c, cursor: "pointer",
+                border: room.color.toLowerCase() === c.toLowerCase() ? "3px solid #111827" : "2px solid #e5e7eb" }} />
+          ))}
+          <label title="Custom color" style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)}
+              onBlur={() => { if (custom.toLowerCase() !== room.color.toLowerCase()) onColor(custom); }}
+              style={{ width: 28, height: 28, padding: 0, border: "1px solid #e5e7eb", borderRadius: 8, background: "none", cursor: "pointer" }} />
+            <span className="subtle" style={{ fontSize: 12 }}>Custom</span>
+          </label>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,13 +6,23 @@ import { useDialog } from "@/components/ui/useDialog";
 import {
   RosterEntry, Program, Room,
   fetchRoster, fetchPrograms, fetchRooms,
-  ageYearsMonths, ageInMonths, fmtDate, siblingLabel, fullName, todayISO,
+  ageYearsMonths, fmtDate, fullName, todayISO,
   SortState, nextSort, compareForSort,
 } from "@/lib/admissions";
 import { Modal, Field, SortTh, th, td } from "@/components/hr/admissions/shared";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
 
 type SubFilter = "enrolled" | "withdrawn";
+
+// Shared style for the inline row selects (room / program) so they read as
+// tidy controls in the table rather than raw form widgets.
+const inlineSelect: React.CSSProperties = {
+  fontSize: 13,
+  padding: "6px 10px",
+  borderRadius: 8,
+  maxWidth: 180,
+  background: "#fff",
+};
 
 export default function RosterView({ campusId, myUserId }: { campusId: string; myUserId: string | null }) {
   const { confirm, modal: dialog } = useDialog();
@@ -81,10 +91,6 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       case "room": return e.room_id ? (roomOrder.get(e.room_id) ?? 999) : null;
       case "program": return (programById[e.program_id ?? ""]?.name ?? "").toLowerCase();
       case "dob": return e.date_of_birth;
-      case "age_planned": return ageInMonths(e.date_of_birth, e.planned_start_date ?? todayISO());
-      case "planned_start": return e.planned_start_date;
-      case "planned_completion": return e.planned_completion_date;
-      case "sibling": return (e.sibling_name ?? "").toLowerCase();
       case "enrolled": return e.enrolled_date;
       case "source": return e.source_waitlist_entry_id ? "Waitlist" : "Direct";
       default: return null;
@@ -138,6 +144,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
               label={r.name}
               count={roomCount(r.id)}
               capacity={r.capacity}
+              color={r.color}
               active={roomFilter === r.id}
               onClick={() => setRoomFilter(r.id)}
             />
@@ -169,10 +176,6 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                 <SortTh label="Room" sortKey="room" sort={sort} onSort={onSort} />
                 <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort} />
                 <SortTh label="Date of Birth" sortKey="dob" sort={sort} onSort={onSort} />
-                <SortTh label="Age @ Planned Start" sortKey="age_planned" sort={sort} onSort={onSort} />
-                <SortTh label="Planned Start" sortKey="planned_start" sort={sort} onSort={onSort} />
-                <SortTh label="Planned Completion" sortKey="planned_completion" sort={sort} onSort={onSort} />
-                <SortTh label="Sibling" sortKey="sibling" sort={sort} onSort={onSort} />
                 <SortTh label="Enrolled" sortKey="enrolled" sort={sort} onSort={onSort} />
                 <SortTh label="Source" sortKey="source" sort={sort} onSort={onSort} />
                 <th style={{ ...th, right: 0, position: "sticky", zIndex: 2, boxShadow: "-2px 0 5px -2px rgba(0,0,0,0.12)" }}>Actions</th>
@@ -181,24 +184,34 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
             <tbody>
               {visible.map((e, i) => {
                 const rowBg = i % 2 === 0 ? "white" : "#fafafa";
-                const at = e.planned_start_date ?? todayISO();
                 return (
                   <tr key={e.id} style={{ background: rowBg }}>
                     <td style={{ ...td, left: 0, position: "sticky", background: rowBg, fontWeight: 700, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>{fullName(e)}</td>
                     <td style={td}>
-                      {isEnrolled ? (
-                        <select className="select" value={e.room_id ?? ""} onChange={(ev) => void patchEntry(e.id, { room_id: ev.target.value || null })} style={{ fontSize: 12, padding: "4px 6px", maxWidth: 160 }}>
-                          <option value="">Unassigned</option>
-                          {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                        </select>
-                      ) : (
-                        rooms.find((r) => r.id === e.room_id)?.name ?? "Unassigned"
-                      )}
+                      {(() => {
+                        const roomColor = rooms.find((r) => r.id === e.room_id)?.color;
+                        return isEnrolled ? (
+                          <select
+                            className="select"
+                            value={e.room_id ?? ""}
+                            onChange={(ev) => void patchEntry(e.id, { room_id: ev.target.value || null })}
+                            style={{ ...inlineSelect, borderLeft: `5px solid ${roomColor ?? "#e5e7eb"}` }}
+                          >
+                            <option value="">Unassigned</option>
+                            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                          </select>
+                        ) : (
+                          <span className="row" style={{ gap: 8, alignItems: "center" }}>
+                            <RoomDot color={roomColor} />
+                            {rooms.find((r) => r.id === e.room_id)?.name ?? <span className="subtle">Unassigned</span>}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td style={td}>
                       {isEnrolled ? (
-                        <select className="select" value={e.program_id ?? ""} onChange={(ev) => void patchEntry(e.id, { program_id: ev.target.value || null })} style={{ fontSize: 12, padding: "4px 6px", maxWidth: 160 }}>
-                          <option value="">—</option>
+                        <select className="select" value={e.program_id ?? ""} onChange={(ev) => void patchEntry(e.id, { program_id: ev.target.value || null })} style={inlineSelect}>
+                          <option value="">— None —</option>
                           {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
                       ) : (
@@ -206,10 +219,6 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                       )}
                     </td>
                     <td style={td}>{fmtDate(e.date_of_birth) || "—"}</td>
-                    <td style={td}>{ageYearsMonths(e.date_of_birth, at) || "—"}</td>
-                    <td style={td}>{fmtDate(e.planned_start_date) || "—"}</td>
-                    <td style={td}>{fmtDate(e.planned_completion_date) || "—"}</td>
-                    <td style={td}>{siblingLabel(e.sibling_name)}</td>
                     <td style={td}>{fmtDate(e.enrolled_date) || "—"}</td>
                     <td style={td}>{e.source_waitlist_entry_id ? <span className="subtle">Waitlist</span> : <span className="subtle">Direct</span>}</td>
                     <td style={{ ...td, right: 0, position: "sticky", background: rowBg, boxShadow: "-2px 0 5px -2px rgba(0,0,0,0.12)" }}>
@@ -260,7 +269,16 @@ function SubTab({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-function RoomChip({ label, count, capacity, active, onClick }: { label: string; count: number; capacity?: number | null; active: boolean; onClick: () => void }) {
+function RoomDot({ color }: { color?: string | null }) {
+  return (
+    <span style={{
+      width: 10, height: 10, borderRadius: 999, flexShrink: 0, display: "inline-block",
+      background: color ?? "transparent", border: color ? "none" : "1.5px solid #d1d5db",
+    }} />
+  );
+}
+
+function RoomChip({ label, count, capacity, color, active, onClick }: { label: string; count: number; capacity?: number | null; color?: string; active: boolean; onClick: () => void }) {
   const over = capacity != null && count > capacity;
   return (
     <button onClick={onClick} style={{
@@ -269,6 +287,7 @@ function RoomChip({ label, count, capacity, active, onClick }: { label: string; 
       background: active ? "rgba(230,23,141,0.08)" : "white",
       color: active ? "#e6178d" : "#374151", fontWeight: 700, fontSize: 13,
     }}>
+      {color ? <RoomDot color={color} /> : null}
       {label}
       <span style={{ fontSize: 12, fontWeight: 800, color: over ? "#b91c1c" : "#6b7280" }}>
         {count}{capacity != null ? `/${capacity}` : ""}
@@ -296,16 +315,12 @@ function RosterEntryModal({
   const [roomId, setRoomId] = useState(entry?.room_id ?? "");
   const [programId, setProgramId] = useState(entry?.program_id ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
-  const [plannedStart, setPlannedStart] = useState(entry?.planned_start_date ?? "");
-  const [plannedComplete, setPlannedComplete] = useState(entry?.planned_completion_date ?? "");
-  const [sibling, setSibling] = useState(entry?.sibling_name ?? "");
   const [enrolled, setEnrolled] = useState(entry?.enrolled_date ?? (mode === "create" ? todayISO() : ""));
   const [notes, setNotes] = useState(entry?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
-  const at = plannedStart || todayISO();
-  const agePreview = ageYearsMonths(dob, at);
+  const agePreview = ageYearsMonths(dob, todayISO());
 
   async function save() {
     if (!firstName.trim() || !lastName.trim()) { setErr("First and last name are required."); return; }
@@ -318,9 +333,6 @@ function RosterEntryModal({
       date_of_birth: dob || null,
       program_id: programId || null,
       customer_preferred_start_date: prefStart || null,
-      planned_start_date: plannedStart || null,
-      planned_completion_date: plannedComplete || null,
-      sibling_name: sibling.trim() || null,
       enrolled_date: enrolled || null,
       notes: notes.trim() || null,
       updated_at: new Date().toISOString(),
@@ -387,14 +399,8 @@ function RosterEntryModal({
         </div>
 
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 180px" }}><Field label="Customer preferred start" optional><input className="input" type="date" value={prefStart} onChange={(e) => setPrefStart(e.target.value)} /></Field></div>
-          <div style={{ flex: "1 1 180px" }}><Field label="Planned start" optional><input className="input" type="date" value={plannedStart} onChange={(e) => setPlannedStart(e.target.value)} /></Field></div>
-          <div style={{ flex: "1 1 180px" }}><Field label="Planned completion" optional><input className="input" type="date" value={plannedComplete} onChange={(e) => setPlannedComplete(e.target.value)} /></Field></div>
-        </div>
-
-        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 220px" }}><Field label="Customer preferred start" optional><input className="input" type="date" value={prefStart} onChange={(e) => setPrefStart(e.target.value)} /></Field></div>
           <div style={{ flex: "1 1 220px" }}><Field label="Enrolled date" optional><input className="input" type="date" value={enrolled} onChange={(e) => setEnrolled(e.target.value)} /></Field></div>
-          <div style={{ flex: "1 1 220px" }}><Field label="Sibling who has attended" hint="Blank shows as “None”." optional><input className="input" value={sibling} onChange={(e) => setSibling(e.target.value)} placeholder="None" /></Field></div>
         </div>
 
         <Field label="Notes" optional>

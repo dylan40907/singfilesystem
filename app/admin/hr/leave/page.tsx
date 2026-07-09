@@ -189,6 +189,18 @@ function fmtHours(h: number): string {
   return mins === 0 ? `${hrs}h` : `${hrs}h ${mins}m`;
 }
 
+// Supabase's PostgrestError is a plain object (not an Error instance), so
+// `e instanceof Error` would hide it as "Unknown error". Pull the message from
+// either shape so DB errors (e.g. check-constraint violations) actually surface.
+function errMessage(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object" && "message" in e && (e as { message?: unknown }).message) {
+    return String((e as { message: unknown }).message);
+  }
+  if (typeof e === "string") return e;
+  return "Unknown error";
+}
+
 function sumClockedHours(entries: ClockEntryRow[], startYmd: string, endYmd: string): number {
   let totalMs = 0;
   for (const e of entries) {

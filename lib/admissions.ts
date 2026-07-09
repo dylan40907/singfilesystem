@@ -15,9 +15,14 @@ export type Room = {
   campus_id: string;
   name: string;
   capacity: number | null;
+  color: string;
   order_index: number;
   created_at: string;
 };
+
+/** Preset palette for room colors (matches the course-segment palette). */
+export const ROOM_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
+export const DEFAULT_ROOM_COLOR = "#6b7280";
 
 export type WaitlistStatus = "active" | "admitted" | "removed";
 
