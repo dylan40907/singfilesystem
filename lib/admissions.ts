@@ -53,9 +53,26 @@ export type WaitlistOffer = {
   waitlist_entry_id: string;
   offer_date: string;
   status: OfferStatus;
+  note: string | null;
   created_at: string;
   created_by: string | null;
 };
+
+/** A row in the offer log editor — persisted (has id) or a not-yet-saved draft. */
+export type OfferDraft = {
+  id?: string;
+  offer_date: string;
+  status: OfferStatus;
+  note: string | null;
+};
+
+export function offerCounts(list: { status: OfferStatus }[]): { sent: number; accepted: number; denied: number } {
+  return {
+    sent: list.filter((o) => o.status === "sent").length,
+    accepted: list.filter((o) => o.status === "accepted").length,
+    denied: list.filter((o) => o.status === "denied").length,
+  };
+}
 
 export type RosterStatus = "enrolled" | "withdrawn";
 
@@ -133,10 +150,62 @@ export function ageYearsMonths(dob: string | null | undefined, at: string | null
   return `${y} ${mo}`;
 }
 
+/** Whole age in months between a DOB and a reference date. Null if either is missing. */
+export function ageInMonths(dob: string | null | undefined, at: string | null | undefined): number | null {
+  const birth = parseDateOnly(dob);
+  const ref = at ? parseDateOnly(at) : new Date();
+  if (!birth || !ref) return null;
+  let months = (ref.getFullYear() - birth.getFullYear()) * 12 + (ref.getMonth() - birth.getMonth());
+  if (ref.getDate() < birth.getDate()) months -= 1;
+  return months;
+}
+
+/**
+ * Waitlist completion date — auto-derived, not manually entered. A waitlist is
+ * "complete" only once BOTH the application has been received AND the $100 fee
+ * has been paid; the completion date is the later of those two dates. Returns
+ * null until both are present.
+ */
+export function waitlistCompletionDate(
+  receivedDate: string | null | undefined,
+  feePaidDate: string | null | undefined
+): string | null {
+  if (!receivedDate || !feePaidDate) return null;
+  return receivedDate >= feePaidDate ? receivedDate : feePaidDate;
+}
+
 /** Display value for the sibling column — "None" when empty. */
 export function siblingLabel(name: string | null | undefined): string {
   const t = (name ?? "").trim();
   return t.length > 0 ? t : "None";
+}
+
+// ─── Sorting ─────────────────────────────────────────────────────────────────
+
+export type SortDir = "asc" | "desc";
+export type SortState = { key: string; dir: SortDir };
+
+/** Toggle helper for click-to-sort headers: same column flips direction, a new column starts fresh. */
+export function nextSort(prev: SortState, key: string, defaultDir: SortDir = "asc"): SortState {
+  if (prev.key === key) return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+  return { key, dir: defaultDir };
+}
+
+/** Comparator for a single sort key. Empty/null values always sink to the bottom. */
+export function compareForSort(
+  av: string | number | null | undefined,
+  bv: string | number | null | undefined,
+  dir: SortDir
+): number {
+  const aEmpty = av === null || av === undefined || av === "";
+  const bEmpty = bv === null || bv === undefined || bv === "";
+  if (aEmpty && bEmpty) return 0;
+  if (aEmpty) return 1;
+  if (bEmpty) return -1;
+  let c: number;
+  if (typeof av === "number" && typeof bv === "number") c = av - bv;
+  else c = String(av).localeCompare(String(bv));
+  return dir === "asc" ? c : -c;
 }
 
 export function fullName(e: { first_name: string; last_name: string }): string {

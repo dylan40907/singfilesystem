@@ -4,11 +4,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useDialog } from "@/components/ui/useDialog";
 import {
-  WaitlistEntry, WaitlistOffer, Program, Room, OfferStatus, OFFER_STATUS_LABEL,
+  WaitlistEntry, WaitlistOffer, OfferDraft, Program, Room, OfferStatus, OFFER_STATUS_LABEL, offerCounts,
   fetchWaitlist, fetchOffers, fetchPrograms, fetchRooms, admitWaitlistEntry,
-  ageYearsMonths, fmtDate, siblingLabel, fullName, sortByPlannedStart, todayISO, APPLICATION_FEE,
+  ageYearsMonths, ageInMonths, waitlistCompletionDate, fmtDate, siblingLabel, fullName,
+  SortState, nextSort, compareForSort, todayISO, APPLICATION_FEE,
 } from "@/lib/admissions";
-import { Modal, Field, Pill, th, td } from "@/components/hr/admissions/shared";
+import { Modal, Field, Pill, SortTh, th, td } from "@/components/hr/admissions/shared";
 import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
 
 type SubFilter = "active" | "admitted" | "removed";
@@ -31,6 +32,15 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
 
   const [sub, setSub] = useState<SubFilter>("active");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SortState>({ key: "planned_start", dir: "asc" });
+
+  // Each sub-view gets a sensible default sort; the user can then click any header.
+  useEffect(() => {
+    if (sub === "active") setSort({ key: "planned_start", dir: "asc" });
+    else if (sub === "admitted") setSort({ key: "date_admitted", dir: "desc" });
+    else setSort({ key: "removed_at", dir: "desc" });
+  }, [sub]);
+  const onSort = (key: string) => setSort((prev) => nextSort(prev, key));
 
   const [entryModal, setEntryModal] = useState<{ mode: "create" | "edit"; entry?: WaitlistEntry } | null>(null);
   const [offersFor, setOffersFor] = useState<WaitlistEntry | null>(null);
@@ -82,14 +92,36 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
     await patchEntry(e.id, { status: "active", removed_at: null });
   }
 
+  const sortVal = useCallback((e: WaitlistEntry, key: string): string | number | null => {
+    switch (key) {
+      case "child": return fullName(e).toLowerCase();
+      case "completion": return waitlistCompletionDate(e.application_received_date, e.application_fee_paid_date);
+      case "program": return (programById[e.program_id ?? ""]?.name ?? "").toLowerCase();
+      case "dob": return e.date_of_birth;
+      case "customer_preferred": return e.customer_preferred_start_date;
+      case "age_customer": return ageInMonths(e.date_of_birth, e.customer_preferred_start_date);
+      case "planned_start": return e.planned_start_date;
+      case "age_planned": return ageInMonths(e.date_of_birth, e.planned_start_date);
+      case "sibling": return (e.sibling_name ?? "").toLowerCase();
+      case "app_received": return e.application_received_date;
+      case "fee_paid": return e.application_fee_paid_date;
+      case "offers": return offers[e.id]?.length ?? 0;
+      case "date_admitted": return e.date_admitted;
+      case "admitted_room": return (roomById[e.admitted_room_id ?? ""]?.name ?? "").toLowerCase();
+      case "removed_at": return e.removed_at;
+      default: return null;
+    }
+  }, [programById, roomById, offers]);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = entries.filter((e) => e.status === sub);
     if (q) list = list.filter((e) => fullName(e).toLowerCase().includes(q));
-    if (sub === "active") return [...list].sort(sortByPlannedStart);
-    // admitted / removed: most recent first
-    return [...list].sort((a, b) => (b.date_admitted ?? b.removed_at ?? b.updated_at).localeCompare(a.date_admitted ?? a.removed_at ?? a.updated_at));
-  }, [entries, sub, search]);
+    return [...list].sort((a, b) => {
+      const c = compareForSort(sortVal(a, sort.key), sortVal(b, sort.key), sort.dir);
+      return c !== 0 ? c : fullName(a).toLowerCase().localeCompare(fullName(b).toLowerCase());
+    });
+  }, [entries, sub, search, sort, sortVal]);
 
   const counts = useMemo(() => ({
     active: entries.filter((e) => e.status === "active").length,
@@ -147,35 +179,35 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
             <thead>
               <tr>
-                <th style={{ ...th, left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)", position: "sticky" }}>Child</th>
-                <th style={th}>
-                  <span className="row" style={{ gap: 6, alignItems: "center" }}>
-                    Program
-                    <button
-                      className="btn"
-                      title="Add / edit programs"
-                      onClick={() => setProgramsOpen(true)}
-                      style={{ padding: "1px 7px", fontSize: 11 }}
-                    >
-                      ✎ Edit
-                    </button>
-                  </span>
-                </th>
-                <th style={th}>Date of Birth</th>
-                <th style={th}>Age @ Planned Start</th>
-                <th style={th}>Customer Preferred Start</th>
-                <th style={th}>Planned Start {isActive ? "▲" : ""}</th>
-                <th style={th}>Planned Completion</th>
-                <th style={th}>Sibling</th>
-                <th style={th}>Application Received</th>
-                <th style={th}>Fee Paid (${APPLICATION_FEE})</th>
-                <th style={th}>Offers</th>
+                <SortTh label="Child" sortKey="child" sort={sort} onSort={onSort} style={{ left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)", position: "sticky" }} />
+                <SortTh label="Waitlist Completion" sortKey="completion" sort={sort} onSort={onSort} />
+                <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort}>
+                  <button
+                    className="btn"
+                    title="Add / edit programs"
+                    onClick={(ev) => { ev.stopPropagation(); setProgramsOpen(true); }}
+                    style={{ padding: "1px 7px", fontSize: 11 }}
+                  >
+                    ✎ Edit
+                  </button>
+                </SortTh>
+                <SortTh label="Date of Birth" sortKey="dob" sort={sort} onSort={onSort} />
+                <SortTh label="Customer Preferred Start" sortKey="customer_preferred" sort={sort} onSort={onSort} />
+                <SortTh label="Age @ Customer Preferred Start" sortKey="age_customer" sort={sort} onSort={onSort} />
+                <SortTh label="Planned Start" sortKey="planned_start" sort={sort} onSort={onSort} />
+                <SortTh label="Age @ Planned Start" sortKey="age_planned" sort={sort} onSort={onSort} />
+                <SortTh label="Sibling" sortKey="sibling" sort={sort} onSort={onSort} />
+                <SortTh label="Application Received" sortKey="app_received" sort={sort} onSort={onSort} />
+                <SortTh label={`Fee Paid ($${APPLICATION_FEE})`} sortKey="fee_paid" sort={sort} onSort={onSort} />
+                <SortTh label="Offer Log" sortKey="offers" sort={sort} onSort={onSort} />
                 {sub === "active" ? (
                   <th style={{ ...th, right: 0, position: "sticky", zIndex: 2, boxShadow: "-2px 0 5px -2px rgba(0,0,0,0.12)" }}>Actions</th>
                 ) : (
                   <>
-                    <th style={th}>{sub === "admitted" ? "Date Admitted" : "Removed"}</th>
-                    {sub === "admitted" && <th style={th}>Admitted To</th>}
+                    {sub === "admitted"
+                      ? <SortTh label="Date Admitted" sortKey="date_admitted" sort={sort} onSort={onSort} />
+                      : <SortTh label="Removed" sortKey="removed_at" sort={sort} onSort={onSort} />}
+                    {sub === "admitted" && <SortTh label="Admitted To" sortKey="admitted_room" sort={sort} onSort={onSort} />}
                     <th style={{ ...th, right: 0, position: "sticky", zIndex: 2 }}>Actions</th>
                   </>
                 )}
@@ -185,11 +217,18 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
               {visible.map((e, i) => {
                 const rowBg = i % 2 === 0 ? "white" : "#fafafa";
                 const entryOffers = offers[e.id] ?? [];
-                const latest = entryOffers[0];
                 return (
                   <tr key={e.id} style={{ background: rowBg }}>
                     <td style={{ ...td, left: 0, position: "sticky", background: rowBg, fontWeight: 700, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>
                       {fullName(e)}
+                    </td>
+                    <td style={td}>
+                      {(() => {
+                        const comp = waitlistCompletionDate(e.application_received_date, e.application_fee_paid_date);
+                        return comp
+                          ? <span style={{ color: "#15803d", fontWeight: 700 }}>{fmtDate(comp)}</span>
+                          : <span className="subtle">—</span>;
+                      })()}
                     </td>
                     <td style={td}>
                       {isActive ? (
@@ -207,10 +246,10 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                       )}
                     </td>
                     <td style={td}>{fmtDate(e.date_of_birth)}</td>
-                    <td style={td}>{ageYearsMonths(e.date_of_birth, e.planned_start_date) || "—"}</td>
                     <td style={td}>{fmtDate(e.customer_preferred_start_date) || "—"}</td>
+                    <td style={td}>{ageYearsMonths(e.date_of_birth, e.customer_preferred_start_date) || "—"}</td>
                     <td style={{ ...td, fontWeight: 700 }}>{fmtDate(e.planned_start_date) || "—"}</td>
-                    <td style={td}>{fmtDate(e.planned_completion_date) || "—"}</td>
+                    <td style={td}>{ageYearsMonths(e.date_of_birth, e.planned_start_date) || "—"}</td>
                     <td style={td}>{siblingLabel(e.sibling_name)}</td>
                     <td style={td}>
                       {isActive ? (
@@ -227,15 +266,13 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                       )}
                     </td>
                     <td style={td}>
-                      <button className="btn" onClick={() => setOffersFor(e)} style={{ padding: "3px 10px", fontSize: 12 }}>
-                        {latest ? (
-                          <span className="row" style={{ gap: 6, alignItems: "center" }}>
-                            <Pill label={OFFER_STATUS_LABEL[latest.status]} {...OFFER_PILL[latest.status]} />
-                            {entryOffers.length > 1 ? <span className="subtle">+{entryOffers.length - 1}</span> : null}
-                          </span>
-                        ) : (
-                          <span className="subtle">+ Offer</span>
-                        )}
+                      <button
+                        className="btn"
+                        onClick={() => setOffersFor(e)}
+                        title="Open the offer log"
+                        style={{ padding: "4px 10px", fontSize: 12 }}
+                      >
+                        <OfferCounters offers={entryOffers} />
                       </button>
                     </td>
 
@@ -277,7 +314,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           myUserId={myUserId}
           programs={programs}
           onManagePrograms={() => setProgramsOpen(true)}
-          onClose={() => setEntryModal(null)}
+          onClose={async () => { setEntryModal(null); setOffers(await fetchOffers(entries.map((e) => e.id))); }}
           onSaved={() => { setEntryModal(null); void reload(); }}
         />
       )}
@@ -326,6 +363,22 @@ function DateCell({ value, onChange }: { value: string | null; onChange: (v: str
   );
 }
 
+function YesNoButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "6px 18px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 800, fontSize: 13,
+        background: active ? "white" : "transparent", color: active ? "#e6178d" : "#6b7280",
+        boxShadow: active ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function SubTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -361,7 +414,7 @@ function EntryModal({
   const [programId, setProgramId] = useState(entry?.program_id ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
   const [plannedStart, setPlannedStart] = useState(entry?.planned_start_date ?? "");
-  const [plannedComplete, setPlannedComplete] = useState(entry?.planned_completion_date ?? "");
+  const [siblingHas, setSiblingHas] = useState<boolean>(!!(entry?.sibling_name && entry.sibling_name.trim()));
   const [sibling, setSibling] = useState(entry?.sibling_name ?? "");
   const [appReceived, setAppReceived] = useState(entry?.application_received_date ?? "");
   const [feePaid, setFeePaid] = useState(entry?.application_fee_paid_date ?? "");
@@ -369,11 +422,46 @@ function EntryModal({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
+  // Offer log. In edit mode it reads/writes the DB live; in create mode offers
+  // are staged locally and inserted after the entry is created.
+  const [offers, setOffers] = useState<OfferDraft[]>([]);
+  useEffect(() => {
+    if (mode === "edit" && entry) {
+      fetchOffers([entry.id]).then((m) => setOffers(m[entry.id] ?? [])).catch(() => {});
+    }
+  }, [mode, entry]);
+
+  const sortOffers = (list: OfferDraft[]) => [...list].sort((a, b) => b.offer_date.localeCompare(a.offer_date));
+
+  async function addOffer(date: string, status: OfferStatus, note: string) {
+    const noteVal = note.trim() || null;
+    if (mode === "edit" && entry) {
+      const { data, error } = await supabase
+        .from("hr_waitlist_offers")
+        .insert({ waitlist_entry_id: entry.id, offer_date: date, status, note: noteVal, created_by: myUserId })
+        .select("*")
+        .single();
+      if (error) { setErr(error.message); return; }
+      setOffers((prev) => sortOffers([...prev, data as WaitlistOffer]));
+    } else {
+      setOffers((prev) => sortOffers([...prev, { offer_date: date, status, note: noteVal }]));
+    }
+  }
+
+  async function deleteOffer(o: OfferDraft) {
+    if (mode === "edit" && o.id) {
+      const { error } = await supabase.from("hr_waitlist_offers").delete().eq("id", o.id);
+      if (error) { setErr(error.message); return; }
+    }
+    setOffers((prev) => prev.filter((x) => (o.id ? x.id !== o.id : x !== o)));
+  }
+
   const agePreview = ageYearsMonths(dob, plannedStart);
 
   async function save() {
     if (!firstName.trim() || !lastName.trim()) { setErr("First and last name are required."); return; }
     if (!dob) { setErr("Date of birth is required (used to calculate age)."); return; }
+    if (siblingHas && !sibling.trim()) { setErr("Enter the sibling's name, or choose No."); return; }
     setSaving(true); setErr("");
     const payload = {
       campus_id: campusId,
@@ -383,8 +471,7 @@ function EntryModal({
       program_id: programId || null,
       customer_preferred_start_date: prefStart || null,
       planned_start_date: plannedStart || null,
-      planned_completion_date: plannedComplete || null,
-      sibling_name: sibling.trim() || null,
+      sibling_name: siblingHas ? sibling.trim() : null,
       application_received_date: appReceived || null,
       application_fee_paid_date: feePaid || null,
       notes: notes.trim() || null,
@@ -393,8 +480,19 @@ function EntryModal({
     };
     try {
       if (mode === "create") {
-        const { error } = await supabase.from("hr_waitlist_entries").insert({ ...payload, created_by: myUserId });
+        const { data, error } = await supabase
+          .from("hr_waitlist_entries")
+          .insert({ ...payload, created_by: myUserId })
+          .select("id")
+          .single();
         if (error) throw error;
+        const newId = (data as { id: string }).id;
+        if (offers.length > 0) {
+          const { error: offErr } = await supabase.from("hr_waitlist_offers").insert(
+            offers.map((o) => ({ waitlist_entry_id: newId, offer_date: o.offer_date, status: o.status, note: o.note, created_by: myUserId }))
+          );
+          if (offErr) throw offErr;
+        }
       } else if (entry) {
         const { error } = await supabase.from("hr_waitlist_entries").update(payload).eq("id", entry.id);
         if (error) throw error;
@@ -454,19 +552,31 @@ function EntryModal({
         </div>
 
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 200px" }}>
+          <div style={{ flex: "1 1 220px" }}>
             <Field label="Customer preferred start" optional><input className="input" type="date" value={prefStart} onChange={(e) => setPrefStart(e.target.value)} /></Field>
           </div>
-          <div style={{ flex: "1 1 200px" }}>
+          <div style={{ flex: "1 1 220px" }}>
             <Field label="Planned start" optional><input className="input" type="date" value={plannedStart} onChange={(e) => setPlannedStart(e.target.value)} /></Field>
-          </div>
-          <div style={{ flex: "1 1 200px" }}>
-            <Field label="Planned completion" optional><input className="input" type="date" value={plannedComplete} onChange={(e) => setPlannedComplete(e.target.value)} /></Field>
           </div>
         </div>
 
-        <Field label="Sibling who has attended" hint="Leave blank if none — it will show as “None”." optional>
-          <input className="input" value={sibling} onChange={(e) => setSibling(e.target.value)} placeholder="None" />
+        <Field label="Sibling who is currently attending">
+          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div className="row" style={{ gap: 4, background: "#f3f4f6", padding: 3, borderRadius: 10 }}>
+              <YesNoButton active={!siblingHas} onClick={() => setSiblingHas(false)}>No</YesNoButton>
+              <YesNoButton active={siblingHas} onClick={() => setSiblingHas(true)}>Yes</YesNoButton>
+            </div>
+            {siblingHas && (
+              <input
+                className="input"
+                autoFocus
+                placeholder="Sibling's name (required)"
+                value={sibling}
+                onChange={(e) => setSibling(e.target.value)}
+                style={{ flex: "1 1 220px" }}
+              />
+            )}
+          </div>
         </Field>
 
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
@@ -485,12 +595,114 @@ function EntryModal({
         <Field label="Notes" optional>
           <textarea className="input" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ resize: "vertical", minHeight: 54, padding: "8px 12px" }} />
         </Field>
+
+        <div className="hr" />
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="row-between" style={{ alignItems: "center" }}>
+            <div style={{ fontWeight: 800, fontSize: 13 }}>Offer log</div>
+            <OfferCounters offers={offers} />
+          </div>
+          <div className="subtle" style={{ fontSize: 12 }}>
+            Log an offer when you send it, then add another entry when it&apos;s accepted or denied.
+          </div>
+          <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} busy={saving} />
+        </div>
       </div>
     </Modal>
   );
 }
 
-// ─── Offers editor (multiple offers; each date + sent/accepted/denied) ────────
+// ─── Offer-log counters (table cell + editor summary) ─────────────────────────
+function OfferCount({ glyph, color, count, title }: { glyph: string; color: string; count: number; title: string }) {
+  return (
+    <span title={title} style={{ display: "inline-flex", alignItems: "center", gap: 3, opacity: count === 0 ? 0.5 : 1 }}>
+      <span style={{ color, fontWeight: 900, fontSize: 13 }}>{glyph}</span>
+      <span style={{ fontWeight: 800, color: "#374151" }}>{count}</span>
+    </span>
+  );
+}
+
+function OfferCounters({ offers }: { offers: { status: OfferStatus }[] }) {
+  const c = offerCounts(offers);
+  return (
+    <span className="row" style={{ gap: 10, alignItems: "center" }}>
+      <OfferCount glyph="✉" color="#6b7280" count={c.sent} title="Sent" />
+      <OfferCount glyph="✓" color="#15803d" count={c.accepted} title="Accepted" />
+      <OfferCount glyph="✕" color="#b91c1c" count={c.denied} title="Denied" />
+    </span>
+  );
+}
+
+// ─── Offer-log editor (multiple dated offers; each sent/accepted/denied + note) ─
+// Presentational: onAdd/onDelete are supplied by the parent, which decides
+// whether that's a live DB write (existing entry) or a local draft (new entry).
+function OfferRow({ o, onDelete, busy }: { o: OfferDraft; onDelete: (o: OfferDraft) => void | Promise<void>; busy?: boolean }) {
+  const [showNote, setShowNote] = useState(false);
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "8px 12px" }}>
+      <div className="row-between" style={{ alignItems: "center" }}>
+        <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(o.offer_date)}</span>
+          <Pill label={OFFER_STATUS_LABEL[o.status]} {...OFFER_PILL[o.status]} />
+          {o.note ? (
+            <button className="btn" style={{ padding: "1px 8px", fontSize: 11 }} onClick={() => setShowNote((s) => !s)}>
+              📝 {showNote ? "Hide note" : "Note"}
+            </button>
+          ) : null}
+        </div>
+        <button className="btn" style={{ padding: "3px 9px", fontSize: 12, color: "#b91c1c" }} onClick={() => void onDelete(o)} disabled={busy}>Delete</button>
+      </div>
+      {showNote && o.note ? (
+        <div className="subtle" style={{ marginTop: 8, fontSize: 13, whiteSpace: "pre-wrap" }}>{o.note}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function OfferLogEditor({
+  offers, onAdd, onDelete, busy,
+}: {
+  offers: OfferDraft[];
+  onAdd: (date: string, status: OfferStatus, note: string) => void | Promise<void>;
+  onDelete: (o: OfferDraft) => void | Promise<void>;
+  busy?: boolean;
+}) {
+  const [date, setDate] = useState(todayISO());
+  const [status, setStatus] = useState<OfferStatus>("sent");
+  const [note, setNote] = useState("");
+
+  async function add() {
+    if (!date) return;
+    await onAdd(date, status, note);
+    setDate(todayISO()); setStatus("sent"); setNote("");
+  }
+
+  return (
+    <div className="stack" style={{ gap: 12 }}>
+      <div className="stack" style={{ gap: 8 }}>
+        {offers.length === 0 ? (
+          <div className="subtle">No offers logged yet.</div>
+        ) : (
+          offers.map((o, i) => <OfferRow key={o.id ?? `draft-${i}`} o={o} onDelete={onDelete} busy={busy} />)
+        )}
+      </div>
+
+      <div className="hr" />
+      <div style={{ fontWeight: 800, fontSize: 13 }}>Log an offer</div>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ maxWidth: 170 }} />
+        <select className="select" value={status} onChange={(e) => setStatus(e.target.value as OfferStatus)}>
+          <option value="sent">Sent</option>
+          <option value="accepted">Accepted</option>
+          <option value="denied">Denied</option>
+        </select>
+      </div>
+      <input className="input" placeholder="Note for this offer (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div><button className="btn btn-primary" onClick={() => void add()} disabled={busy || !date}>Add to log</button></div>
+    </div>
+  );
+}
+
 function OffersModal({
   entry, myUserId, offers, onClose, onChanged,
 }: {
@@ -501,62 +713,38 @@ function OffersModal({
   onChanged: () => Promise<void>;
 }) {
   const { confirm, modal: dialog } = useDialog();
-  const [offerDate, setOfferDate] = useState(todayISO());
-  const [offerStatus, setOfferStatus] = useState<OfferStatus>("sent");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  async function addOffer() {
-    if (!offerDate) { setErr("Pick a date."); return; }
+  async function addOffer(date: string, status: OfferStatus, note: string) {
     setBusy(true); setErr("");
     const { error } = await supabase.from("hr_waitlist_offers").insert({
-      waitlist_entry_id: entry.id, offer_date: offerDate, status: offerStatus, created_by: myUserId,
+      waitlist_entry_id: entry.id, offer_date: date, status, note: note.trim() || null, created_by: myUserId,
     });
     setBusy(false);
     if (error) { setErr(error.message); return; }
     await onChanged();
   }
 
-  async function deleteOffer(id: string) {
-    if (!(await confirm("Delete this offer from the history?", { title: "Delete offer", confirmLabel: "Delete", danger: true }))) return;
+  async function deleteOffer(o: OfferDraft) {
+    if (!o.id) return;
+    if (!(await confirm("Delete this offer from the log?", { title: "Delete offer", confirmLabel: "Delete", danger: true }))) return;
     setBusy(true);
-    const { error } = await supabase.from("hr_waitlist_offers").delete().eq("id", id);
+    const { error } = await supabase.from("hr_waitlist_offers").delete().eq("id", o.id);
     setBusy(false);
     if (error) { setErr(error.message); return; }
     await onChanged();
   }
 
   return (
-    <Modal title="Offers" subtitle={fullName(entry)} onClose={onClose} width={480}>
+    <Modal title="Offer Log" subtitle={fullName(entry)} onClose={onClose} width={480}>
       {dialog}
-      <div className="stack" style={{ gap: 14 }}>
-        <div className="stack" style={{ gap: 8 }}>
-          {offers.length === 0 ? (
-            <div className="subtle">No offers recorded yet.</div>
-          ) : (
-            offers.map((o) => (
-              <div key={o.id} className="row-between" style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "8px 12px" }}>
-                <div className="row" style={{ gap: 10, alignItems: "center" }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(o.offer_date)}</span>
-                  <Pill label={OFFER_STATUS_LABEL[o.status]} {...OFFER_PILL[o.status]} />
-                </div>
-                <button className="btn" style={{ padding: "3px 9px", fontSize: 12, color: "#b91c1c" }} onClick={() => void deleteOffer(o.id)} disabled={busy}>Delete</button>
-              </div>
-            ))
-          )}
+      <div className="stack" style={{ gap: 12 }}>
+        <div className="row" style={{ gap: 14, alignItems: "center" }}>
+          <span className="subtle" style={{ fontSize: 12, fontWeight: 700 }}>Summary</span>
+          <OfferCounters offers={offers} />
         </div>
-
-        <div className="hr" />
-        <div style={{ fontWeight: 800, fontSize: 13 }}>Add an offer</div>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <input className="input" type="date" value={offerDate} onChange={(e) => setOfferDate(e.target.value)} style={{ maxWidth: 170 }} />
-          <select className="select" value={offerStatus} onChange={(e) => setOfferStatus(e.target.value as OfferStatus)}>
-            <option value="sent">Sent</option>
-            <option value="accepted">Accepted</option>
-            <option value="denied">Denied</option>
-          </select>
-          <button className="btn btn-primary" onClick={() => void addOffer()} disabled={busy}>Add</button>
-        </div>
+        <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} busy={busy} />
         {err ? <div style={{ color: "#b91c1c", fontSize: 12, fontWeight: 600 }}>{err}</div> : null}
       </div>
     </Modal>

@@ -31,6 +31,33 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     if (ref.current) onChange(ref.current.innerHTML);
   }
 
+  function saveSelection() {
+    const sel = window.getSelection();
+    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  }
+  function restoreSelection() {
+    if (!savedRange.current) return;
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(savedRange.current);
+  }
+
+  // Apply a font size to the selection. execCommand("fontSize") only accepts the
+  // legacy 1–7 scale, so we tag with size 7 then rewrite those <font> nodes to an
+  // exact CSS px value.
+  function applyFontSize(px: string) {
+    if (!px) return;
+    ref.current?.focus();
+    restoreSelection();
+    document.execCommand("styleWithCSS", false, "false");
+    document.execCommand("fontSize", false, "7");
+    ref.current?.querySelectorAll('font[size="7"]').forEach((f) => {
+      f.removeAttribute("size");
+      (f as HTMLElement).style.fontSize = px;
+    });
+    emit();
+  }
+
   async function onPickImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -49,8 +76,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
   }
 
   function openLink() {
-    const sel = window.getSelection();
-    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    saveSelection();
     setLinkUrl("");
     setLinkOpen(true);
   }
@@ -59,11 +85,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     setLinkOpen(false);
     if (!url) return;
     ref.current?.focus();
-    if (savedRange.current) {
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(savedRange.current);
-    }
+    restoreSelection();
     document.execCommand("createLink", false, url);
     emit();
   }
@@ -76,6 +98,16 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         <ToolBtn onClick={() => exec("bold")} title="Bold"><b>B</b></ToolBtn>
         <ToolBtn onClick={() => exec("italic")} title="Italic"><i>I</i></ToolBtn>
         <ToolBtn onClick={() => exec("underline")} title="Underline"><u>U</u></ToolBtn>
+        <select
+          title="Font size"
+          value=""
+          onMouseDown={saveSelection}
+          onChange={(e) => { applyFontSize(e.target.value); e.currentTarget.selectedIndex = 0; }}
+          style={{ ...btnStyle, cursor: "pointer", minWidth: 74, padding: "0 6px" }}
+        >
+          <option value="">Size</option>
+          {FONT_SIZES.map((s) => <option key={s.px} value={s.px}>{s.label}</option>)}
+        </select>
         <ToolBtn onClick={() => exec("insertUnorderedList")} title="Bullet list">•≡</ToolBtn>
         <ToolBtn onClick={() => exec("insertOrderedList")} title="Numbered list">1≡</ToolBtn>
         <ToolBtn onClick={openLink} title="Link">🔗</ToolBtn>
@@ -84,8 +116,16 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
           <input type="file" accept="image/*" style={{ display: "none" }} onChange={onPickImage} />
         </label>
       </div>
+      {/* Make links look like links inside the editor (matches how they render
+          when the course is taken). Scoped to .rte-content so it won't leak. */}
+      <style>{`
+        .rte-content a { color: #2563eb; text-decoration: underline; cursor: pointer; }
+        .rte-content h2 { font-size: 1.4em; font-weight: 800; margin: 0.4em 0; }
+        .rte-content img { max-width: 100%; }
+      `}</style>
       <div
         ref={ref}
+        className="rte-content"
         contentEditable
         suppressContentEditableWarning
         onInput={emit}
@@ -110,6 +150,14 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     </div>
   );
 }
+
+const FONT_SIZES: { label: string; px: string }[] = [
+  { label: "Small", px: "12px" },
+  { label: "Normal", px: "16px" },
+  { label: "Large", px: "20px" },
+  { label: "X-Large", px: "26px" },
+  { label: "Huge", px: "34px" },
+];
 
 const btnStyle: React.CSSProperties = {
   minWidth: 32, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center",

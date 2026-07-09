@@ -1,6 +1,7 @@
 "use client";
 
 import { ReactNode } from "react";
+import { SortState } from "@/lib/admissions";
 
 export const modalBackdrop: React.CSSProperties = {
   position: "fixed",
@@ -118,3 +119,36 @@ export const td: React.CSSProperties = {
   whiteSpace: "nowrap",
   verticalAlign: "middle",
 };
+
+/**
+ * Clickable table header that sorts by `sortKey`. Click toggles asc/desc. Pass
+ * extra header controls (e.g. an Edit button) as children — they stop click
+ * propagation so they don't trigger a sort.
+ */
+export function SortTh({
+  label, sortKey, sort, onSort, style, children,
+}: {
+  label: string;
+  sortKey: string;
+  sort: SortState;
+  onSort: (key: string) => void;
+  style?: React.CSSProperties;
+  children?: ReactNode;
+}) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      style={{ ...th, cursor: "pointer", userSelect: "none", ...style }}
+      onClick={() => onSort(sortKey)}
+      title="Click to sort"
+    >
+      <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+        <span>{label}</span>
+        {children}
+        <span style={{ fontSize: 9, color: active ? "#e6178d" : "#cbd5e1", lineHeight: 1 }}>
+          {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+        </span>
+      </span>
+    </th>
+  );
+}

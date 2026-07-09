@@ -6,9 +6,10 @@ import { useDialog } from "@/components/ui/useDialog";
 import {
   RosterEntry, Program, Room,
   fetchRoster, fetchPrograms, fetchRooms,
-  ageYearsMonths, fmtDate, siblingLabel, fullName, todayISO,
+  ageYearsMonths, ageInMonths, fmtDate, siblingLabel, fullName, todayISO,
+  SortState, nextSort, compareForSort,
 } from "@/lib/admissions";
-import { Modal, Field, th, td } from "@/components/hr/admissions/shared";
+import { Modal, Field, SortTh, th, td } from "@/components/hr/admissions/shared";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
 
 type SubFilter = "enrolled" | "withdrawn";
@@ -25,6 +26,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const [sub, setSub] = useState<SubFilter>("enrolled");
   const [search, setSearch] = useState("");
   const [roomFilter, setRoomFilter] = useState<string>("all"); // "all" | "unassigned" | roomId
+  const [sort, setSort] = useState<SortState>({ key: "room", dir: "asc" });
+  const onSort = (key: string) => setSort((prev) => nextSort(prev, key));
 
   const [entryModal, setEntryModal] = useState<{ mode: "create" | "edit"; entry?: RosterEntry } | null>(null);
   const [roomsOpen, setRoomsOpen] = useState(false);
@@ -70,21 +73,35 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const enrolledForCounts = useMemo(() => entries.filter((e) => e.status === "enrolled"), [entries]);
   const roomCount = useCallback((roomId: string | null) => enrolledForCounts.filter((e) => e.room_id === roomId).length, [enrolledForCounts]);
 
+  const roomOrder = useMemo(() => new Map(rooms.map((r, i) => [r.id, i])), [rooms]);
+
+  const sortVal = useCallback((e: RosterEntry, key: string): string | number | null => {
+    switch (key) {
+      case "child": return fullName(e).toLowerCase();
+      case "room": return e.room_id ? (roomOrder.get(e.room_id) ?? 999) : null;
+      case "program": return (programById[e.program_id ?? ""]?.name ?? "").toLowerCase();
+      case "dob": return e.date_of_birth;
+      case "age_planned": return ageInMonths(e.date_of_birth, e.planned_start_date ?? todayISO());
+      case "planned_start": return e.planned_start_date;
+      case "planned_completion": return e.planned_completion_date;
+      case "sibling": return (e.sibling_name ?? "").toLowerCase();
+      case "enrolled": return e.enrolled_date;
+      case "source": return e.source_waitlist_entry_id ? "Waitlist" : "Direct";
+      default: return null;
+    }
+  }, [roomOrder, programById]);
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     let list = entries.filter((e) => e.status === sub);
     if (roomFilter === "unassigned") list = list.filter((e) => !e.room_id);
     else if (roomFilter !== "all") list = list.filter((e) => e.room_id === roomFilter);
     if (q) list = list.filter((e) => fullName(e).toLowerCase().includes(q));
-    // Sort by room order, then name
-    const roomOrder = new Map(rooms.map((r, i) => [r.id, i]));
     return [...list].sort((a, b) => {
-      const ao = a.room_id ? (roomOrder.get(a.room_id) ?? 999) : 1000;
-      const bo = b.room_id ? (roomOrder.get(b.room_id) ?? 999) : 1000;
-      if (ao !== bo) return ao - bo;
-      return fullName(a).localeCompare(fullName(b));
+      const c = compareForSort(sortVal(a, sort.key), sortVal(b, sort.key), sort.dir);
+      return c !== 0 ? c : fullName(a).toLowerCase().localeCompare(fullName(b).toLowerCase());
     });
-  }, [entries, sub, roomFilter, search, rooms]);
+  }, [entries, sub, roomFilter, search, sort, sortVal]);
 
   const counts = useMemo(() => ({
     enrolled: entries.filter((e) => e.status === "enrolled").length,
@@ -148,16 +165,16 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
           <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
             <thead>
               <tr>
-                <th style={{ ...th, left: 0, zIndex: 2, position: "sticky", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>Child</th>
-                <th style={th}>Room</th>
-                <th style={th}>Program</th>
-                <th style={th}>Date of Birth</th>
-                <th style={th}>Age @ Planned Start</th>
-                <th style={th}>Planned Start</th>
-                <th style={th}>Planned Completion</th>
-                <th style={th}>Sibling</th>
-                <th style={th}>Enrolled</th>
-                <th style={th}>Source</th>
+                <SortTh label="Child" sortKey="child" sort={sort} onSort={onSort} style={{ left: 0, zIndex: 2, position: "sticky", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }} />
+                <SortTh label="Room" sortKey="room" sort={sort} onSort={onSort} />
+                <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort} />
+                <SortTh label="Date of Birth" sortKey="dob" sort={sort} onSort={onSort} />
+                <SortTh label="Age @ Planned Start" sortKey="age_planned" sort={sort} onSort={onSort} />
+                <SortTh label="Planned Start" sortKey="planned_start" sort={sort} onSort={onSort} />
+                <SortTh label="Planned Completion" sortKey="planned_completion" sort={sort} onSort={onSort} />
+                <SortTh label="Sibling" sortKey="sibling" sort={sort} onSort={onSort} />
+                <SortTh label="Enrolled" sortKey="enrolled" sort={sort} onSort={onSort} />
+                <SortTh label="Source" sortKey="source" sort={sort} onSort={onSort} />
                 <th style={{ ...th, right: 0, position: "sticky", zIndex: 2, boxShadow: "-2px 0 5px -2px rgba(0,0,0,0.12)" }}>Actions</th>
               </tr>
             </thead>
