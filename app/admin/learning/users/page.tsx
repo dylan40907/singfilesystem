@@ -23,6 +23,7 @@ type WhitelistEntry = {
   email: string;
   added_at: string;
   notes: string | null;
+  expires_at: string | null;
 };
 
 type DeletedUser = {
@@ -83,6 +84,8 @@ export default function UsersPage() {
   const [newNotes, setNewNotes] = useState("");
   const [addingEmail, setAddingEmail] = useState(false);
   const [error, setError] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const [approvedPage, setApprovedPage] = useState(0);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -202,27 +205,25 @@ export default function UsersPage() {
     } catch { return ""; }
   }
 
-  async function setExpiry(user: AppUser, dateStr: string | null) {
-    setBusy(user.id, true);
+  // Expiry is keyed by EMAIL so the whitelist row and the account's access stay
+  // in sync — set it in one place and both update. Updates local state for both
+  // sections (no full reload / scroll jump).
+  async function setExpiryForEmail(email: string, dateStr: string | null) {
     setError("");
-    const { error: e } = await supabase.rpc("admin_set_learning_expiry", {
-      target_user_id: user.id,
-      expiry_date: dateStr || null,
+    const { error: e } = await supabase.rpc("admin_set_learning_expiry_by_email", {
+      p_email: email,
+      p_expiry: dateStr || null,
     });
-    if (e) {
-      setError(e.message);
-    } else {
-      // Recompute the displayed timestamp: midnight LA on the picked day
-      let iso: string | null = null;
-      if (dateStr) {
-        // Build a Date matching LA local midnight; not perfect with DST but accurate to the day
-        iso = new Date(`${dateStr}T00:00:00-07:00`).toISOString();
-      }
-      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, access_expires_at: iso } : u));
-      // Background cron will flip status to disabled once the timestamp passes; reload to reflect
-      await loadAll();
-    }
-    setBusy(user.id, false);
+    if (e) { setError(e.message); return; }
+    // Midnight LA on the picked day (matches the RPC's stored value).
+    const iso = dateStr ? new Date(`${dateStr}T00:00:00-07:00`).toISOString() : null;
+    const lower = email.toLowerCase();
+    setUsers(prev => prev.map(u => u.email.toLowerCase() === lower ? { ...u, access_expires_at: iso } : u));
+    setWhitelist(prev => prev.map(w => w.email.toLowerCase() === lower ? { ...w, expires_at: iso } : w));
+  }
+
+  function setExpiry(user: AppUser, dateStr: string | null) {
+    return setExpiryForEmail(user.email, dateStr);
   }
 
   async function deleteUser(user: AppUser) {
@@ -361,8 +362,20 @@ export default function UsersPage() {
   }
 
   const pending  = users.filter(u => u.access_status === "pending" || u.access_status === "no_record");
-  const approved = users.filter(u => u.access_status === "approved");
+  const approvedAll = users.filter(u => u.access_status === "approved");
   const disabled = users.filter(u => u.access_status === "disabled");
+
+  // The approved list gets long. Filter it by a search box and page it.
+  const APPROVED_PAGE_SIZE = 25;
+  const q = userSearch.trim().toLowerCase();
+  const approvedFiltered = q
+    ? approvedAll.filter(u =>
+        u.email.toLowerCase().includes(q) ||
+        [u.first_name, u.last_name].filter(Boolean).join(" ").toLowerCase().includes(q))
+    : approvedAll;
+  const approvedPageCount = Math.max(1, Math.ceil(approvedFiltered.length / APPROVED_PAGE_SIZE));
+  const approvedPageSafe = Math.min(approvedPage, approvedPageCount - 1);
+  const approved = approvedFiltered.slice(approvedPageSafe * APPROVED_PAGE_SIZE, (approvedPageSafe + 1) * APPROVED_PAGE_SIZE);
 
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
 
@@ -435,6 +448,7 @@ export default function UsersPage() {
                 <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{entry.email}</span>
                 {entry.notes && <span className="subtle" style={{ fontSize: 12 }}>{entry.notes}</span>}
                 <span className="subtle" style={{ fontSize: 11 }}>{new Date(entry.added_at).toLocaleDateString()}</span>
+                <ExpiryField initial={expiryToInputDate(entry.expires_at)} onCommit={(d) => setExpiryForEmail(entry.email, d)} />
                 <GroupSelect groups={groups} value={groupAssignments[entry.email.toLowerCase()]} onChange={(gid) => assignGroup(entry.email, gid)} />
                 <button
                   onClick={() => openPermissions(entry.email, "")}
@@ -531,22 +545,45 @@ export default function UsersPage() {
       </section>
 
       {/* Approved */}
-      {approved.length > 0 && (
+      {approvedAll.length > 0 && (
         <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 14 }}>Approved ({approved.length})</h2>
-          <UserList
-            users={approved}
-            isWhitelisted={isWhitelisted}
-            onDisable={disableUser}
-            onDelete={deleteUser}
-            onExpiry={setExpiry}
-            expiryToInputDate={expiryToInputDate}
-            busy={actionBusy}
-            onPermissions={openPermissions}
-            groups={groups}
-            groupAssignments={groupAssignments}
-            onAssignGroup={assignGroup}
-          />
+          <div className="row-between" style={{ gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+            <h2 style={{ fontSize: 17, fontWeight: 700 }}>Approved ({approvedAll.length})</h2>
+            <input
+              value={userSearch}
+              onChange={(e) => { setUserSearch(e.target.value); setApprovedPage(0); }}
+              placeholder="Search approved by name or email…"
+              style={{ minWidth: 240, border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14 }}
+            />
+          </div>
+          {approvedFiltered.length === 0 ? (
+            <div className="subtle" style={{ fontSize: 14, padding: "12px 0" }}>No approved users match &ldquo;{userSearch}&rdquo;.</div>
+          ) : (
+            <>
+              <UserList
+                users={approved}
+                isWhitelisted={isWhitelisted}
+                onDisable={disableUser}
+                onDelete={deleteUser}
+                onExpiry={setExpiry}
+                expiryToInputDate={expiryToInputDate}
+                busy={actionBusy}
+                onPermissions={openPermissions}
+                groups={groups}
+                groupAssignments={groupAssignments}
+                onAssignGroup={assignGroup}
+              />
+              {approvedPageCount > 1 && (
+                <div className="row-between" style={{ alignItems: "center", marginTop: 14 }}>
+                  <button className="btn" disabled={approvedPageSafe === 0} onClick={() => setApprovedPage(p => Math.max(0, p - 1))}>‹ Prev</button>
+                  <span className="subtle" style={{ fontSize: 13 }}>
+                    Page {approvedPageSafe + 1} of {approvedPageCount} · {approvedFiltered.length} users
+                  </span>
+                  <button className="btn" disabled={approvedPageSafe >= approvedPageCount - 1} onClick={() => setApprovedPage(p => Math.min(approvedPageCount - 1, p + 1))}>Next ›</button>
+                </div>
+              )}
+            </>
+          )}
         </section>
       )}
 
@@ -689,7 +726,7 @@ function UserList({
             </span>
 
             {onExpiry && (
-              <ExpiryField user={user} initial={expiryInputValue} disabled={isBusy} onCommit={onExpiry} />
+              <ExpiryField initial={expiryInputValue} disabled={isBusy} onCommit={(d) => onExpiry(user, d)} />
             )}
 
             {onAssignGroup && (
@@ -759,15 +796,13 @@ function UserList({
 // the clear button). Committing on every onChange used to fire an RPC + full reload
 // per keystroke, which reset the field and prevented finishing the date.
 function ExpiryField({
-  user,
   initial,
   disabled,
   onCommit,
 }: {
-  user: AppUser;
   initial: string;
   disabled?: boolean;
-  onCommit: (u: AppUser, dateStr: string | null) => void;
+  onCommit: (dateStr: string | null) => void;
 }) {
   const [value, setValue] = useState(initial);
 
@@ -778,7 +813,7 @@ function ExpiryField({
     const normalized = next || null;
     // Skip the network call + reload if nothing actually changed.
     if ((initial || null) === normalized) return;
-    onCommit(user, normalized);
+    onCommit(normalized);
   }
 
   return (

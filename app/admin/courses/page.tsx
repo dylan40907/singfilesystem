@@ -14,6 +14,7 @@ import {
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
 import CourseProgressPanel from "@/components/courses/CourseProgressPanel";
+import EmployeeCourses from "@/components/courses/EmployeeCourses";
 
 const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
 
@@ -36,7 +37,9 @@ export default function AdminCoursesPage() {
   const { confirm, modal: dialogModal } = useDialog();
 
   const [authzd, setAuthzd] = useState<boolean | null>(null);
-  const [view, setView] = useState<"courses" | "groups" | "progress">("courses");
+  const [view, setView] = useState<"courses" | "groups" | "progress" | "mine">("courses");
+  // Admins can be assigned courses too — "My Courses" lets them take them here.
+  const [takingMine, setTakingMine] = useState(false);
   const [tab, setTab] = useState<"active" | "archived">("active");
   // multi-select + bulk
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -65,7 +68,7 @@ export default function AdminCoursesPage() {
   useEffect(() => {
     (async () => {
       const profile = await fetchMyProfile();
-      setAuthzd(!!profile?.is_active && profile.role === "admin");
+      setAuthzd(!!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin"));
     })();
   }, []);
 
@@ -329,21 +332,33 @@ export default function AdminCoursesPage() {
   if (authzd === null) return <main className="stack"><div className="subtle">Loading…</div></main>;
   if (!authzd) return <main className="stack"><h1 className="h1">Courses</h1><div className="card">Admin access required.</div></main>;
 
+  // While taking one of your own assigned courses, hide the admin chrome so the
+  // player is full-width (same behaviour as the HR page's Courses tab).
+  const hideChrome = view === "mine" && takingMine;
+
   return (
     <main className="stack">
       {dialogModal}
-      <div className="row-between">
-        <h1 className="h1">📘 Courses</h1>
-        {status ? <span className="badge badge-pink">{status}</span> : null}
-      </div>
+      {!hideChrome && (
+        <>
+          <div className="row-between">
+            <h1 className="h1">📘 Courses</h1>
+            {status ? <span className="badge badge-pink">{status}</span> : null}
+          </div>
 
-      <div className="row" style={{ gap: 6 }}>
-        <button className={`btn${view === "courses" ? " btn-primary" : ""}`} onClick={() => setView("courses")}>Courses</button>
-        <button className={`btn${view === "groups" ? " btn-primary" : ""}`} onClick={() => setView("groups")}>Groups</button>
-        <button className={`btn${view === "progress" ? " btn-primary" : ""}`} onClick={() => setView("progress")}>Progress</button>
-      </div>
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <button className={`btn${view === "courses" ? " btn-primary" : ""}`} onClick={() => setView("courses")}>Courses</button>
+            <button className={`btn${view === "groups" ? " btn-primary" : ""}`} onClick={() => setView("groups")}>Groups</button>
+            <button className={`btn${view === "progress" ? " btn-primary" : ""}`} onClick={() => setView("progress")}>Progress</button>
+            <span style={{ width: 1, height: 22, background: "#e5e7eb", margin: "0 4px" }} />
+            <button className={`btn${view === "mine" ? " btn-primary" : ""}`} onClick={() => setView("mine")}>⭐ My Courses</button>
+          </div>
+        </>
+      )}
 
-      {view === "groups" ? (
+      {view === "mine" ? (
+        <EmployeeCourses onTakingChange={setTakingMine} />
+      ) : view === "groups" ? (
         <div className="card"><CourseGroupsPanel /></div>
       ) : view === "progress" ? (
         <div className="card"><CourseProgressPanel /></div>

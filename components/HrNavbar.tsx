@@ -171,7 +171,7 @@ export default function HrNavbar() {
     { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
     { href: "/admin/hr/timesheets", label: "Timesheets", tab: "timesheets" },
     { href: "/admin/hr/leave", label: "Leave", tab: "leave" },
-    ...(isAdmin ? [{ href: "/admin/courses", label: "Courses", tab: "courses" }] : []),
+    ...((isAdmin || isCampusAdmin) ? [{ href: "/admin/courses", label: "Courses", tab: "courses" }] : []),
     ...(isAdmin ? [{ href: "/admin/hr/settings", label: "Settings", tab: "settings" }] : []),
     ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
   ] : canUseHr && isSupervisor ? [
