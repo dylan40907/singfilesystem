@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useCampusFilter } from "@/lib/CampusContext";
 import WaitlistView from "@/components/hr/admissions/WaitlistView";
@@ -9,27 +9,32 @@ import RosterView from "@/components/hr/admissions/RosterView";
 type Tab = "waitlist" | "roster";
 
 export default function AdmissionsPage() {
-  const { loading, campuses, filter, setFilter, isCampusAdmin, isTrueAdmin, lockedCampusId } = useCampusFilter();
+  // We read the campus *list* and role info from context, but Admissions keeps
+  // its OWN campus selection — it deliberately does not touch the global top-bar
+  // picker (which drives the other HR tabs).
+  const { loading, campuses, isCampusAdmin, isTrueAdmin, lockedCampusId } = useCampusFilter();
 
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
 
   const [tab, setTab] = useState<Tab>("waitlist");
 
+  // Local, tab-scoped campus selection (independent of the top-bar picker).
+  const [selectedCampusId, setSelectedCampusId] = useState<string | null>(null);
+
   useEffect(() => {
     (async () => setMe(await fetchMyProfile()))();
   }, []);
 
-  // Resolve the single campus we're operating on. Campus admins are locked to
-  // their campus; true admins must pick a concrete campus (the "All"/"Unassigned"
-  // navbar options don't make sense for a per-campus waitlist/roster).
-  const activeCampusId = useMemo<string | null>(() => {
-    if (isCampusAdmin) return lockedCampusId;
-    if (filter === "all" || filter === "unassigned") return null;
-    return filter;
-  }, [isCampusAdmin, lockedCampusId, filter]);
+  // Campus admins are always locked to their own campus — auto-select it.
+  useEffect(() => {
+    if (isCampusAdmin && lockedCampusId) setSelectedCampusId(lockedCampusId);
+  }, [isCampusAdmin, lockedCampusId]);
 
+  const activeCampusId = isCampusAdmin ? lockedCampusId : selectedCampusId;
   const activeCampus = campuses.find((c) => c.id === activeCampusId) ?? null;
+  // Admins with more than one campus get an in-tab "Change campus" control.
+  const canSwitch = isTrueAdmin && campuses.length > 1;
 
   if (me && !canUse) {
     return (
@@ -47,34 +52,34 @@ export default function AdmissionsPage() {
       <div className="stack" style={{ gap: 6 }}>
         <h1 className="h1">Admissions</h1>
         <div className="subtle">
-          Campus waitlist &amp; roster. Each campus is kept completely separate — switch campuses from the selector in the top bar.
+          Campus waitlist &amp; roster. Each campus is kept completely separate.
         </div>
       </div>
 
       {loading ? (
         <div className="subtle" style={{ padding: 20 }}>Loading…</div>
       ) : !activeCampusId ? (
-        // True admin viewing "All"/"Unassigned": prompt to choose one campus.
+        // Admin hasn't picked a campus yet (campus admins never reach this).
         <div className="card">
           <div style={{ fontWeight: 800 }}>Choose a campus</div>
           <div className="subtle" style={{ marginTop: 6, marginBottom: 14 }}>
-            Waitlists and rosters are per-campus. Pick the campus you want to view.
+            Waitlists and rosters are per-campus. Pick the campus you want to work in.
           </div>
           {campuses.length === 0 ? (
             <div className="subtle">No campuses yet. Add one from the campus selector in the top bar.</div>
           ) : (
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               {campuses.map((c) => (
-                <button key={c.id} className="btn" onClick={() => setFilter(c.id)}>{c.name}</button>
+                <button key={c.id} className="btn" onClick={() => setSelectedCampusId(c.id)}>{c.name}</button>
               ))}
             </div>
           )}
         </div>
       ) : (
         <>
-          {/* Campus banner + Waitlist/Roster toggle */}
+          {/* Campus banner + in-tab switch + Waitlist/Roster toggle */}
           <div className="row-between" style={{ flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-            <div className="row" style={{ gap: 10, alignItems: "center" }}>
+            <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <span
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
@@ -85,8 +90,15 @@ export default function AdmissionsPage() {
               >
                 🏫 {activeCampus?.name ?? "Campus"}
               </span>
-              {isTrueAdmin && (
-                <span className="subtle" style={{ fontSize: 12 }}>Switch campus in the top bar</span>
+              {canSwitch && (
+                <button
+                  className="btn"
+                  onClick={() => setSelectedCampusId(null)}
+                  title="Choose a different campus"
+                  style={{ fontSize: 13 }}
+                >
+                  ⇆ Change campus
+                </button>
               )}
             </div>
 

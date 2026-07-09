@@ -86,6 +86,8 @@ export default function UsersPage() {
   const [error, setError] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [approvedPage, setApprovedPage] = useState(0);
+  const [whitelistSearch, setWhitelistSearch] = useState("");
+  const [whitelistPage, setWhitelistPage] = useState(0);
 
   useEffect(() => { loadAll(); }, []);
 
@@ -377,6 +379,16 @@ export default function UsersPage() {
   const approvedPageSafe = Math.min(approvedPage, approvedPageCount - 1);
   const approved = approvedFiltered.slice(approvedPageSafe * APPROVED_PAGE_SIZE, (approvedPageSafe + 1) * APPROVED_PAGE_SIZE);
 
+  // The whitelist also gets long — search + page it the same way.
+  const WHITELIST_PAGE_SIZE = 25;
+  const wq = whitelistSearch.trim().toLowerCase();
+  const whitelistFiltered = wq
+    ? whitelist.filter(w => w.email.toLowerCase().includes(wq) || (w.notes ?? "").toLowerCase().includes(wq))
+    : whitelist;
+  const whitelistPageCount = Math.max(1, Math.ceil(whitelistFiltered.length / WHITELIST_PAGE_SIZE));
+  const whitelistPageSafe = Math.min(whitelistPage, whitelistPageCount - 1);
+  const whitelistPaged = whitelistFiltered.slice(whitelistPageSafe * WHITELIST_PAGE_SIZE, (whitelistPageSafe + 1) * WHITELIST_PAGE_SIZE);
+
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
 
   return (
@@ -414,7 +426,9 @@ export default function UsersPage() {
 
       {/* Email whitelist */}
       <section style={{ background: "#fff", borderRadius: 16, border: "1px solid #e5e7eb", padding: 24, marginBottom: 32, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
-        <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Email Whitelist</h2>
+        <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>
+          Email Whitelist{whitelist.length > 0 ? ` (${whitelist.length})` : ""}
+        </h2>
         <p className="subtle" style={{ fontSize: 13, marginBottom: 16 }}>
           Emails added here are automatically approved on sign-up, or immediately if they already have an account.
         </p>
@@ -439,11 +453,22 @@ export default function UsersPage() {
           </button>
         </div>
 
+        {whitelist.length > WHITELIST_PAGE_SIZE && (
+          <input
+            value={whitelistSearch}
+            onChange={(e) => { setWhitelistSearch(e.target.value); setWhitelistPage(0); }}
+            placeholder="Search whitelist by email or notes…"
+            style={{ width: "100%", border: "1px solid #d1d5db", borderRadius: 8, padding: "8px 12px", fontSize: 14, marginBottom: 12 }}
+          />
+        )}
+
         {whitelist.length === 0 ? (
           <div className="subtle" style={{ fontSize: 13 }}>No whitelisted emails yet.</div>
+        ) : whitelistFiltered.length === 0 ? (
+          <div className="subtle" style={{ fontSize: 13 }}>No whitelisted emails match &ldquo;{whitelistSearch}&rdquo;.</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {whitelist.map(entry => (
+            {whitelistPaged.map(entry => (
               <div key={entry.email} style={{ display: "flex", alignItems: "center", gap: 10, background: "#f9fafb", borderRadius: 8, padding: "8px 12px", border: "1px solid #e5e7eb" }}>
                 <span style={{ fontWeight: 600, fontSize: 14, flex: 1 }}>{entry.email}</span>
                 {entry.notes && <span className="subtle" style={{ fontSize: 12 }}>{entry.notes}</span>}
@@ -465,6 +490,15 @@ export default function UsersPage() {
                 </button>
               </div>
             ))}
+            {whitelistPageCount > 1 && (
+              <div className="row-between" style={{ alignItems: "center", marginTop: 8 }}>
+                <button className="btn" disabled={whitelistPageSafe === 0} onClick={() => setWhitelistPage(p => Math.max(0, p - 1))}>‹ Prev</button>
+                <span className="subtle" style={{ fontSize: 13 }}>
+                  Page {whitelistPageSafe + 1} of {whitelistPageCount} · {whitelistFiltered.length} email{whitelistFiltered.length === 1 ? "" : "s"}
+                </span>
+                <button className="btn" disabled={whitelistPageSafe >= whitelistPageCount - 1} onClick={() => setWhitelistPage(p => Math.min(whitelistPageCount - 1, p + 1))}>Next ›</button>
+              </div>
+            )}
           </div>
         )}
       </section>

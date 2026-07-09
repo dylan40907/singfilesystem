@@ -4716,6 +4716,18 @@ type LeaveBalanceRow = {
   sick_initial_balance: number;
   sick_carryover: number;
   pto_carryover: number;
+  // Accrual-rate overrides + anchors + hours-worked override. These mirror the
+  // admin leave page so the phone shows the exact same balances. All optional
+  // because older balance rows may predate them.
+  hours_worked_override?: number | null;
+  sick_accrual_amount?: number | null;
+  sick_accrual_per?: number | null;
+  sick_accrual_anchor_hours?: number | null;
+  sick_accrual_anchor_accrued?: number | null;
+  pto_accrual_amount?: number | null;
+  pto_accrual_per?: number | null;
+  pto_accrual_anchor_hours?: number | null;
+  pto_accrual_anchor_accrued?: number | null;
 };
 
 type LeaveEntryRow = {
@@ -4760,22 +4772,67 @@ function hoursWorked(rows: ClockHoursRow[]): number {
   return ms / 3_600_000;
 }
 
+// Default sick accrual: 1 hour earned per 30 hours worked.
+const DEFAULT_SICK_RATE = 30;
+
+function isOverrideActive(amount: number | null | undefined, per: number | null | undefined): boolean {
+  return amount != null && per != null && Number(amount) > 0 && Number(per) > 0;
+}
+
+// NOTE: these mirror computeSickBalance / computePtoBalance in the admin leave
+// page (app/admin/hr/leave/page.tsx) exactly, so the balance a teacher sees on
+// their phone matches what the admin sees. Any change to the accrual model must
+// be made in both places.
 function calcSickBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entries: LeaveEntryRow[]) {
-  const worked = hoursWorked(clockRows);
-  const accrued = bal.sick_frontloaded ? bal.sick_annual_cap : Math.min(Math.floor(worked * 60 / 30) / 60, bal.sick_annual_cap);
-  const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + e.hours, 0);
-  const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + e.hours, 0);
-  return Math.min(bal.sick_carryover + bal.sick_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
+  const worked = hoursWorked(clockRows) + Number(bal.hours_worked_override ?? 0);
+  const cap = bal.sick_annual_cap ?? 40;
+  const carryover = Number(bal.sick_carryover ?? 0);
+  const overrideActive = isOverrideActive(bal.sick_accrual_amount, bal.sick_accrual_per);
+  let accruedRaw: number;
+  if (overrideActive) {
+    // Custom rate: frozen at the anchor, earning at the override rate beyond it.
+    const rate = Number(bal.sick_accrual_per) / Number(bal.sick_accrual_amount);
+    const anchorHours = Number(bal.sick_accrual_anchor_hours ?? 0);
+    const anchorAccrued = Number(bal.sick_accrual_anchor_accrued ?? 0);
+    const extra = Math.max(0, worked - anchorHours);
+    accruedRaw = anchorAccrued + Math.floor(extra * 60 / rate) / 60;
+  } else if (bal.sick_frontloaded) {
+    accruedRaw = cap;
+  } else {
+    accruedRaw = Math.floor(worked * 60 / DEFAULT_SICK_RATE) / 60;
+  }
+  const accrued = Math.min(accruedRaw, cap);
+  const used = entries.filter((e) => e.entry_type === "sick_paid").reduce((s, e) => s + Number(e.hours), 0);
+  const adjustments = entries.filter((e) => e.entry_type === "sick_adjustment").reduce((s, e) => s + Number(e.hours), 0);
+  const initial = Number(bal.sick_initial_balance ?? 0);
+  return Math.min(carryover + initial + accrued + adjustments - used, MAX_LEAVE_BALANCE);
 }
 
 function calcPtoBalance(bal: LeaveBalanceRow, clockRows: ClockHoursRow[], entries: LeaveEntryRow[]) {
-  if (!bal.pto_active || !bal.pto_plan_hours || !bal.pto_weeks) return 0;
-  const worked = hoursWorked(clockRows);
-  const rate = (bal.pto_weeks * 40) / bal.pto_plan_hours;
-  const accrued = Math.min(Math.floor(worked * 60 / rate) / 60, bal.pto_plan_hours);
-  const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + e.hours, 0);
-  const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + e.hours, 0);
-  return Math.min(bal.pto_carryover + bal.pto_initial_balance + accrued + adjustments - used, MAX_LEAVE_BALANCE);
+  if (!bal.pto_active) return 0;
+  const plan = bal.pto_plan_hours ?? 0;   // annual accrual cap (0 = PTO given as initial/adjustments only)
+  const weeks = bal.pto_weeks ?? 48;
+  const worked = hoursWorked(clockRows) + Number(bal.hours_worked_override ?? 0);
+  const carryover = Number(bal.pto_carryover ?? 0);
+  const overrideActive = isOverrideActive(bal.pto_accrual_amount, bal.pto_accrual_per);
+  let accrued = 0;
+  if (plan > 0) {
+    if (overrideActive) {
+      // Custom rate: frozen at the anchor, earning at the override rate beyond it.
+      const rate = Number(bal.pto_accrual_per) / Number(bal.pto_accrual_amount);
+      const anchorHours = Number(bal.pto_accrual_anchor_hours ?? 0);
+      const anchorAccrued = Number(bal.pto_accrual_anchor_accrued ?? 0);
+      const extra = Math.max(0, worked - anchorHours);
+      accrued = Math.min(anchorAccrued + Math.floor(extra * 60 / rate) / 60, plan);
+    } else {
+      const rate = (weeks * 40) / plan;
+      accrued = Math.min(Math.floor(worked * 60 / rate) / 60, plan);
+    }
+  }
+  const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + Number(e.hours), 0);
+  const adjustments = entries.filter((e) => e.entry_type === "pto_adjustment").reduce((s, e) => s + Number(e.hours), 0);
+  const initial = Number(bal.pto_initial_balance ?? 0);
+  return Math.min(carryover + initial + accrued + adjustments - used, MAX_LEAVE_BALANCE);
 }
 
 function fmtLeaveTime(hms: string): string {
@@ -4826,33 +4883,15 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
   }, [employeeId, year]);
 
   async function submitRequest() {
-    const isSingleDay = reqType === "sick_paid" || reqType === "pto";
-    const isUnpaid = reqType === "unpaid";
-
-    let hrs: number;
-    let endDate: string;
-
-    if (isUnpaid) {
-      if (!reqStart || !reqEnd) { setSubmitMsg("Please select start and end dates."); return; }
-      if (reqEnd < reqStart) { setSubmitMsg("End date must be on or after start date."); return; }
-      const startD = new Date(reqStart + "T12:00:00");
-      const endD = new Date(reqEnd + "T12:00:00");
-      hrs = Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1;
-      endDate = reqEnd;
-    } else if (isSingleDay) {
-      if (!reqStart) { setSubmitMsg("Please select a date."); return; }
-      if (!reqStartTime || !reqEndTime) { setSubmitMsg("Please enter start and end times."); return; }
-      const [sh, sm] = reqStartTime.split(":").map(Number);
-      const [eh, em] = reqEndTime.split(":").map(Number);
-      hrs = (eh * 60 + em - (sh * 60 + sm)) / 60;
-      if (hrs <= 0) { setSubmitMsg("End time must be after start time."); return; }
-      endDate = reqStart;
-    } else {
-      if (!reqStart || !reqEnd || !reqHours) { setSubmitMsg("Please fill in all required fields."); return; }
-      hrs = parseFloat(reqHours);
-      if (isNaN(hrs) || hrs <= 0) { setSubmitMsg("Hours must be a positive number."); return; }
-      endDate = reqEnd;
-    }
+    // All leave types (sick, PTO, unpaid) are a single day with a start/end time
+    // → hours. This matches how the admin leave page logs and reads every type.
+    if (!reqStart) { setSubmitMsg("Please select a date."); return; }
+    if (!reqStartTime || !reqEndTime) { setSubmitMsg("Please enter start and end times."); return; }
+    const [sh, sm] = reqStartTime.split(":").map(Number);
+    const [eh, em] = reqEndTime.split(":").map(Number);
+    const hrs = (eh * 60 + em - (sh * 60 + sm)) / 60;
+    if (hrs <= 0) { setSubmitMsg("End time must be after start time."); return; }
+    const endDate = reqStart;
 
     setSubmitBusy(true);
     setSubmitMsg("");
@@ -4861,8 +4900,8 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
       entry_type: reqType,
       start_date: reqStart,
       end_date: endDate,
-      start_time: isSingleDay ? reqStartTime : null,
-      end_time: isSingleDay ? reqEndTime : null,
+      start_time: reqStartTime,
+      end_time: reqEndTime,
       hours: hrs,
       notes: reqNotes.trim() || null,
       status: "pending",
@@ -4928,8 +4967,8 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
         <div style={{ fontWeight: 950, fontSize: 18, marginBottom: 12 }}>Request Leave</div>
         {(() => {
-          const isSingleDay = reqType === "sick_paid" || reqType === "pto";
-          const isUnpaid = reqType === "unpaid";
+          // Every type — sick, PTO, and unpaid — is a single day with a time range.
+          const isSingleDay = true;
           const calcHours = (() => {
             if (!isSingleDay || !reqStartTime || !reqEndTime) return null;
             const [sh, sm] = reqStartTime.split(":").map(Number);
@@ -5026,7 +5065,7 @@ function EmployeeLeaveTab({ employeeId }: { employeeId: string }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   {statusBadge(r.status)}
                   <span style={{ fontWeight: 700, fontSize: 14 }}>{entryTypeLabel(r.entry_type)}</span>
-                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date === r.end_date ? r.start_date : `${r.start_date} – ${r.end_date}`}{r.entry_type !== "unpaid" && r.start_time && r.end_time ? ` · ${fmtLeaveTime(r.start_time)} – ${fmtLeaveTime(r.end_time)}` : ""} · {r.entry_type === "unpaid" ? `${Math.round(Number(r.hours))} day${Math.round(Number(r.hours)) !== 1 ? "s" : ""}` : (() => { const m = Math.round(Number(r.hours) * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })()}</span>
+                  <span className="subtle" style={{ fontSize: 13 }}>{r.start_date === r.end_date ? r.start_date : `${r.start_date} – ${r.end_date}`}{r.start_time && r.end_time ? ` · ${fmtLeaveTime(r.start_time)} – ${fmtLeaveTime(r.end_time)}` : ""} · {(() => { const m = Math.round(Number(r.hours) * 60); const h = Math.floor(m / 60); const min = m % 60; return min === 0 ? `${h}h` : `${h}h ${min}m`; })()}</span>
                 </div>
                 {r.notes && <div className="subtle" style={{ marginTop: 6, fontSize: 13 }}>{r.notes}</div>}
                 {r.review_notes && (
