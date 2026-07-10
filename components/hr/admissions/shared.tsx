@@ -120,6 +120,26 @@ export const td: React.CSSProperties = {
   verticalAlign: "middle",
 };
 
+// Shared style for inline row selects (room / program) so they read as tidy
+// controls in a table rather than raw form widgets.
+export const inlineSelect: React.CSSProperties = {
+  fontSize: 13,
+  padding: "6px 10px",
+  borderRadius: 8,
+  maxWidth: 180,
+  background: "#fff",
+};
+
+/** A small round color dot for a room (hollow outline when no color/unassigned). */
+export function RoomDot({ color }: { color?: string | null }) {
+  return (
+    <span style={{
+      width: 10, height: 10, borderRadius: 999, flexShrink: 0, display: "inline-block",
+      background: color ?? "transparent", border: color ? "none" : "1.5px solid #d1d5db",
+    }} />
+  );
+}
+
 /**
  * Clickable table header that sorts by `sortKey`. Click toggles asc/desc. Pass
  * extra header controls (e.g. an Edit button) as children — they stop click

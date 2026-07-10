@@ -42,6 +42,7 @@ export type WaitlistEntry = {
   date_admitted: string | null;
   admitted_room_id: string | null;
   admitted_roster_id: string | null;
+  prospective_room_id: string | null;
   status: WaitlistStatus;
   removed_at: string | null;
   notes: string | null;
