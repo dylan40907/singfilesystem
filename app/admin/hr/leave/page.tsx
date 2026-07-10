@@ -655,7 +655,7 @@ export default function LeavePage() {
       if (error) throw error;
       setBalance(data as LeaveBalanceRow);
     } catch (e: unknown) {
-      await alert(`Could not save settings: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not save settings: ${errMessage(e)}`);
     } finally {
       setCfgBusy(false);
     }
@@ -708,7 +708,7 @@ export default function LeavePage() {
       if (reErr) throw reErr;
       setEntries((data ?? []) as LeaveEntryRow[]);
     } catch (e: unknown) {
-      await alert(`Could not log leave: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not log leave: ${errMessage(e)}`);
     } finally {
       setLogBusy(false);
     }
@@ -722,7 +722,7 @@ export default function LeavePage() {
       if (error) throw error;
       setEntries((prev) => prev.filter((e) => e.id !== id));
     } catch (e: unknown) {
-      await alert(`Could not delete: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not delete: ${errMessage(e)}`);
     }
   }
 
@@ -762,7 +762,7 @@ export default function LeavePage() {
         setEntries((data ?? []) as LeaveEntryRow[]);
       }
     } catch (e: unknown) {
-      await alert(`Could not approve request: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not approve request: ${errMessage(e)}`);
     }
   }
 
@@ -780,7 +780,7 @@ export default function LeavePage() {
       if (error) throw error;
       setPendingRequests((prev) => prev.filter((r) => r.id !== req.id));
     } catch (e: unknown) {
-      await alert(`Could not deny request: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not deny request: ${errMessage(e)}`);
     }
   }
 
@@ -879,7 +879,7 @@ export default function LeavePage() {
 
       setEditField(null);
     } catch (e: unknown) {
-      await alert(`Could not save: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await alert(`Could not save: ${errMessage(e)}`);
     } finally {
       setEditBusy(false);
     }

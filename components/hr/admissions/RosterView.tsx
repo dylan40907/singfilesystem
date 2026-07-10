@@ -11,6 +11,7 @@ import {
 } from "@/lib/admissions";
 import { Modal, Field, SortTh, th, td } from "@/components/hr/admissions/shared";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
+import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
 
 type SubFilter = "enrolled" | "withdrawn";
 
@@ -41,6 +42,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
   const [entryModal, setEntryModal] = useState<{ mode: "create" | "edit"; entry?: RosterEntry } | null>(null);
   const [roomsOpen, setRoomsOpen] = useState(false);
+  const [programsOpen, setProgramsOpen] = useState(false);
 
   const programById = useMemo(() => Object.fromEntries(programs.map((p) => [p.id, p])), [programs]);
 
@@ -169,12 +171,21 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
         </div>
       ) : (
         <div style={{ overflow: "auto", maxHeight: "70vh", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
-          <table style={{ borderCollapse: "collapse", background: "white", minWidth: "max-content" }}>
+          <table style={{ borderCollapse: "collapse", background: "white", width: "100%", minWidth: "max-content" }}>
             <thead>
               <tr>
                 <SortTh label="Child" sortKey="child" sort={sort} onSort={onSort} style={{ left: 0, zIndex: 2, position: "sticky", boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }} />
                 <SortTh label="Room" sortKey="room" sort={sort} onSort={onSort} />
-                <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort} />
+                <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort}>
+                  <button
+                    className="btn"
+                    title="Add / edit programs"
+                    onClick={(ev) => { ev.stopPropagation(); setProgramsOpen(true); }}
+                    style={{ padding: "1px 7px", fontSize: 11 }}
+                  >
+                    ✎ Edit
+                  </button>
+                </SortTh>
                 <SortTh label="Date of Birth" sortKey="dob" sort={sort} onSort={onSort} />
                 <SortTh label="Enrolled" sortKey="enrolled" sort={sort} onSort={onSort} />
                 <SortTh label="Source" sortKey="source" sort={sort} onSort={onSort} />
@@ -254,6 +265,10 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
       {roomsOpen && (
         <RoomsModal campusId={campusId} onClose={() => setRoomsOpen(false)} onChanged={async () => setRooms(await fetchRooms(campusId))} />
+      )}
+
+      {programsOpen && (
+        <ProgramsModal campusId={campusId} onClose={() => setProgramsOpen(false)} onChanged={async () => setPrograms(await fetchPrograms(campusId))} />
       )}
     </div>
   );
