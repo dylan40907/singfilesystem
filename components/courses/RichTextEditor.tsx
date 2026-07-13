@@ -14,11 +14,42 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
   const [uploading, setUploading] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
+  // pt size shown in the picker: the current selection's size, "" when the
+  // selection spans multiple sizes (or the editor isn't focused).
+  const [curSize, setCurSize] = useState("");
 
   // Seed once; afterwards the DOM is the source of truth (avoids cursor jumps).
   useEffect(() => {
     if (ref.current && ref.current.innerHTML !== value) ref.current.innerHTML = value || "";
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reflect the font size at the caret / selection in the picker (like a normal
+  // editor). Reads computed px and converts to pt; blank when sizes are mixed.
+  useEffect(() => {
+    function onSel() {
+      const el = ref.current;
+      if (!el || document.activeElement !== el) return;
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) { setCurSize(""); return; }
+      const range = sel.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) return;
+      const pxOf = (node: Node): number | null => {
+        let n: HTMLElement | null = node.nodeType === 3 ? node.parentElement : (node as HTMLElement);
+        if (!n || !el.contains(n)) n = el;
+        const px = parseFloat(getComputedStyle(n).fontSize);
+        return Number.isFinite(px) ? px : null;
+      };
+      const a = pxOf(range.startContainer);
+      const b = pxOf(range.endContainer);
+      if (a == null) { setCurSize(""); return; }
+      if (b != null && Math.abs(a - b) > 0.5) { setCurSize(""); return; } // mixed
+      const pt = Math.round(a * 0.75); // px → pt (72/96)
+      const nearest = FONT_PTS.reduce((x, y) => (Math.abs(y - pt) < Math.abs(x - pt) ? y : x), FONT_PTS[0]);
+      setCurSize(String(nearest));
+    }
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
   }, []);
 
   function exec(cmd: string, arg?: string) {
@@ -42,19 +73,20 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     sel?.addRange(savedRange.current);
   }
 
-  // Apply a font size to the selection. execCommand("fontSize") only accepts the
-  // legacy 1–7 scale, so we tag with size 7 then rewrite those <font> nodes to an
-  // exact CSS px value.
-  function applyFontSize(px: string) {
-    if (!px) return;
+  // Apply a font size (in pt) to the selection. execCommand("fontSize") only
+  // accepts the legacy 1–7 scale, so we tag with size 7 then rewrite those
+  // <font> nodes to an exact CSS pt value.
+  function applyFontSize(pt: string) {
+    if (!pt) return;
     ref.current?.focus();
     restoreSelection();
     document.execCommand("styleWithCSS", false, "false");
     document.execCommand("fontSize", false, "7");
     ref.current?.querySelectorAll('font[size="7"]').forEach((f) => {
       f.removeAttribute("size");
-      (f as HTMLElement).style.fontSize = px;
+      (f as HTMLElement).style.fontSize = `${pt}pt`;
     });
+    setCurSize(pt);
     emit();
   }
 
@@ -99,14 +131,14 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         <ToolBtn onClick={() => exec("italic")} title="Italic"><i>I</i></ToolBtn>
         <ToolBtn onClick={() => exec("underline")} title="Underline"><u>U</u></ToolBtn>
         <select
-          title="Font size"
-          value=""
+          title="Font size (pt)"
+          value={curSize}
           onMouseDown={saveSelection}
-          onChange={(e) => { applyFontSize(e.target.value); e.currentTarget.selectedIndex = 0; }}
-          style={{ ...btnStyle, cursor: "pointer", minWidth: 74, padding: "0 6px" }}
+          onChange={(e) => applyFontSize(e.target.value)}
+          style={{ ...btnStyle, cursor: "pointer", minWidth: 78, padding: "0 6px" }}
         >
           <option value="">Size</option>
-          {FONT_SIZES.map((s) => <option key={s.px} value={s.px}>{s.label}</option>)}
+          {FONT_PTS.map((pt) => <option key={pt} value={String(pt)}>{pt} pt</option>)}
         </select>
         <ToolBtn onClick={() => exec("insertUnorderedList")} title="Bullet list">•≡</ToolBtn>
         <ToolBtn onClick={() => exec("insertOrderedList")} title="Numbered list">1≡</ToolBtn>
@@ -130,7 +162,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         suppressContentEditableWarning
         onInput={emit}
         onBlur={emit}
-        style={{ minHeight: 160, maxHeight: 360, overflowY: "auto", padding: "12px 14px", fontSize: 14, lineHeight: 1.5, outline: "none" }}
+        style={{ minHeight: 160, maxHeight: 360, overflowY: "auto", padding: "12px 14px", fontSize: 16, lineHeight: 1.5, outline: "none" }}
       />
 
       {linkOpen && (
@@ -151,13 +183,8 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
   );
 }
 
-const FONT_SIZES: { label: string; px: string }[] = [
-  { label: "Small", px: "12px" },
-  { label: "Normal", px: "16px" },
-  { label: "Large", px: "20px" },
-  { label: "X-Large", px: "26px" },
-  { label: "Huge", px: "34px" },
-];
+// Point sizes offered in the picker (fine-grained control).
+const FONT_PTS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 40, 48];
 
 const btnStyle: React.CSSProperties = {
   minWidth: 32, height: 30, display: "inline-flex", alignItems: "center", justifyContent: "center",

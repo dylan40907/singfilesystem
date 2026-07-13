@@ -17,7 +17,7 @@ export default function AdmissionsPage() {
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
 
-  const [tab, setTab] = useState<Tab>("waitlist");
+  const [tab, setTab] = useState<Tab>("roster");
 
   // Local, tab-scoped campus selection (independent of the top-bar picker).
   const [selectedCampusId, setSelectedCampusId] = useState<string | null>(null);
@@ -103,8 +103,8 @@ export default function AdmissionsPage() {
             </div>
 
             <div className="row" style={{ gap: 4, background: "#f3f4f6", padding: 4, borderRadius: 12 }}>
-              <TabButton active={tab === "waitlist"} onClick={() => setTab("waitlist")}>Waitlist</TabButton>
               <TabButton active={tab === "roster"} onClick={() => setTab("roster")}>Roster</TabButton>
+              <TabButton active={tab === "waitlist"} onClick={() => setTab("waitlist")}>Waitlist</TabButton>
             </div>
           </div>
 
