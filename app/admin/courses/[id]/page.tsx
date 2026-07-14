@@ -205,12 +205,12 @@ export default function CourseBuilderPage() {
             const objs = objectsBySection.get(s.id) ?? [];
             return (
               <div key={s.id} style={{ marginBottom: 18, border: "1px solid #e5e7eb", borderRadius: 12, padding: 14 }}>
-                <div className="row-between" style={{ marginBottom: 10 }}>
-                  <div className="row" style={{ gap: 8 }}>
-                    <span style={{ fontSize: 18 }}>📖</span>
-                    <span style={{ fontWeight: 800, fontSize: 15 }}>{s.title || "Untitled section"}</span>
+                <div className="row-between" style={{ marginBottom: 10, gap: 8, alignItems: "flex-start" }}>
+                  <div className="row" style={{ gap: 8, minWidth: 0, flex: 1, alignItems: "flex-start" }}>
+                    <span style={{ fontSize: 18, flexShrink: 0 }}>📖</span>
+                    <span style={{ fontWeight: 800, fontSize: 15, overflowWrap: "anywhere", wordBreak: "break-word" }}>{s.title || "Untitled section"}</span>
                   </div>
-                  <div className="row" style={{ gap: 6 }}>
+                  <div className="row" style={{ gap: 6, flexShrink: 0 }}>
                     <button className="btn" onClick={() => moveSection(s, -1)} disabled={si === 0} style={icoBtn}>↑</button>
                     <button className="btn" onClick={() => moveSection(s, 1)} disabled={si === arr.length - 1} style={icoBtn}>↓</button>
                     <button className="btn" onClick={() => renameSection(s)} style={mini}>Rename</button>
@@ -219,15 +219,15 @@ export default function CourseBuilderPage() {
                 </div>
 
                 {objs.map((o, i) => (
-                  <div key={o.id} className="row-between" style={{ padding: "8px 10px", border: "1px solid #f1f5f9", borderRadius: 8, marginBottom: 6 }}>
-                    <div className="row" style={{ gap: 10, minWidth: 0 }}>
-                      <span style={{ color: "#6b7280", width: 18 }}>{i + 1}</span>
-                      <span style={{ fontSize: 18 }}>{objIcon(o.type)}</span>
-                      <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: o.title?.trim() ? undefined : "#9ca3af", fontStyle: o.title?.trim() ? undefined : "italic" }}>
+                  <div key={o.id} className="row-between" style={{ padding: "8px 10px", border: "1px solid #f1f5f9", borderRadius: 8, marginBottom: 6, gap: 8, alignItems: "flex-start" }}>
+                    <div className="row" style={{ gap: 10, minWidth: 0, flex: 1, alignItems: "flex-start" }}>
+                      <span style={{ color: "#6b7280", width: 18, flexShrink: 0 }}>{i + 1}</span>
+                      <span style={{ fontSize: 18, flexShrink: 0 }}>{objIcon(o.type)}</span>
+                      <span style={{ fontWeight: 600, overflowWrap: "anywhere", wordBreak: "break-word", color: o.title?.trim() ? undefined : "#9ca3af", fontStyle: o.title?.trim() ? undefined : "italic" }}>
                         {o.title?.trim() || "Untitled text"}
                       </span>
                     </div>
-                    <div className="row" style={{ gap: 4 }}>
+                    <div className="row" style={{ gap: 4, flexShrink: 0 }}>
                       <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>
                       <button className="btn" onClick={() => moveObject(o, 1)} disabled={i === objs.length - 1} style={icoBtn}>↓</button>
                       <button className="btn" onClick={() => openEditObject(o)} style={icoBtn}>✏️</button>
