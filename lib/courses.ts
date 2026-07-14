@@ -506,13 +506,31 @@ export async function saveProgress(
 // ─── Media upload (images / files used inside courses) ───────────────────────
 
 export async function uploadCourseMedia(file: File): Promise<{ url: string; name: string }> {
+  // Course media lives in Cloudflare R2 (free egress, no Supabase upload cap).
+  // The browser PUTs directly to R2 via a presigned URL (up to 5 GB per file),
+  // and we store a stable /api/course-media URL that redirects to signed R2 GETs.
   const safe = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
-  const path = `${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
-  const { error } = await supabase.storage.from("course-media").upload(path, file, {
-    contentType: file.type || "application/octet-stream",
-    upsert: false,
+  const name = `${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
+  const contentType = file.type || "application/octet-stream";
+
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error("Not signed in");
+
+  const presRes = await fetch("/api/r2/presign-course-media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ name, contentType }),
   });
-  if (error) throw error;
-  const { data } = supabase.storage.from("course-media").getPublicUrl(path);
-  return { url: data.publicUrl, name: file.name };
+  const pres = await presRes.json().catch(() => ({}));
+  if (!presRes.ok) throw new Error(pres?.error || "Could not prepare upload");
+
+  const put = await fetch(pres.uploadUrl as string, {
+    method: "PUT",
+    headers: { "Content-Type": contentType },
+    body: file,
+  });
+  if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+
+  return { url: pres.publicUrl as string, name: file.name };
 }
