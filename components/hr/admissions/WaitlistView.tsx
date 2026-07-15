@@ -336,6 +336,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
         <AdmitModal
           entry={admitFor}
           rooms={rooms}
+          programs={programs}
           onClose={() => setAdmitFor(null)}
           onAdmitted={() => { setAdmitFor(null); void reload(); }}
         />
@@ -766,21 +767,23 @@ function OffersModal({
 // Pick the child's STARTING room (applied to the admit month only — later months
 // are planned in the roster grid). Then create the roster entry.
 export function AdmitModal({
-  entry, rooms, onClose, onAdmitted,
+  entry, rooms, programs, onClose, onAdmitted,
 }: {
   entry: WaitlistEntry;
   rooms: Room[];
+  programs: Program[];
   onClose: () => void;
   onAdmitted: () => void;
 }) {
   const [roomId, setRoomId] = useState<string>("");
+  const [programId, setProgramId] = useState<string>(entry.program_id ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   async function admit() {
     setBusy(true); setErr("");
     try {
-      await admitWaitlistEntry(entry.id, roomId || null);
+      await admitWaitlistEntry(entry.id, roomId || null, programId || null);
       onAdmitted();
     } catch (e: any) {
       setErr(e?.message ?? "Could not admit");
@@ -812,6 +815,16 @@ export function AdmitModal({
             <select className="select" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
               <option value="">Unassigned</option>
               {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
+            </select>
+          )}
+        </Field>
+        <Field label="Starting program" hint="Just for the admit month — change programs per-month later in the roster grid.">
+          {programs.length === 0 ? (
+            <div className="subtle">No programs yet. You can admit with <strong>no program</strong> and set it later.</div>
+          ) : (
+            <select className="select" value={programId} onChange={(e) => setProgramId(e.target.value)}>
+              <option value="">— None —</option>
+              {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
         </Field>

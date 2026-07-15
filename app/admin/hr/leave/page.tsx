@@ -43,7 +43,7 @@ type LeaveBalanceRow = {
   pto_accrual_anchor_accrued: number | null;
 };
 
-type EditField = "sick" | "pto" | "unpaid" | "hours_worked";
+type EditField = "sick" | "pto" | "unpaid" | "hours_worked" | "sick_accrued" | "pto_accrued";
 
 type ManualAdjRow = {
   id: string;
@@ -97,6 +97,8 @@ type ClockEntryRow = {
 
 const PROBATION_DAYS = 90;
 const MAX_BALANCE = 80;
+// Max hours that can be carried into a new year (even if the prior-year balance is higher).
+const CARRYOVER_CAP = 40;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -230,15 +232,22 @@ function computeSickBalance(
   const overrideActive = isOverrideActive(bal?.sick_accrual_amount, bal?.sick_accrual_per);
   const overrideAmount = Number(bal?.sick_accrual_amount ?? 0);
   const overridePer = Number(bal?.sick_accrual_per ?? 0);
+  // The anchor is a universal baseline: "at `anchor_hours` worked, accrued was `anchor_accrued`."
+  // It's set either when the accrual rate changes (to preserve prior accrual) or when an admin
+  // manually edits Accrued YTD. Accrual then continues from that point at the active rate.
+  const hasAnchor = bal?.sick_accrual_anchor_accrued != null;
+  const anchorHours = Number(bal?.sick_accrual_anchor_hours ?? 0);
+  const anchorAccrued = Number(bal?.sick_accrual_anchor_accrued ?? 0);
   let accruedRaw: number;
   if (overrideActive) {
-    // From now on: keep the accrual frozen at the anchor, then earn at the custom rate
-    // for hours worked beyond the anchor. rate = worked-hours per 1 accrued-hour.
+    // Custom rate from the anchor onward. rate = worked-hours per 1 accrued-hour.
     const rate = overridePer / overrideAmount;
-    const anchorHours = Number(bal?.sick_accrual_anchor_hours ?? 0);
-    const anchorAccrued = Number(bal?.sick_accrual_anchor_accrued ?? 0);
     const extra = Math.max(0, hoursWorked - anchorHours);
     accruedRaw = anchorAccrued + Math.floor(extra * 60 / rate) / 60;
+  } else if (hasAnchor) {
+    // Default rate, continuing from a manually-set Accrued YTD baseline.
+    const extra = Math.max(0, hoursWorked - anchorHours);
+    accruedRaw = anchorAccrued + Math.floor(extra * 60 / DEFAULT_SICK_RATE) / 60;
   } else if (bal?.sick_frontloaded) {
     accruedRaw = cap;
   } else {
@@ -264,20 +273,24 @@ function computePtoBalance(
   const overrideActive = isOverrideActive(bal?.pto_accrual_amount, bal?.pto_accrual_per);
   const overrideAmount = Number(bal?.pto_accrual_amount ?? 0);
   const overridePer = Number(bal?.pto_accrual_per ?? 0);
+  const hasAnchor = bal?.pto_accrual_anchor_accrued != null;
+  const anchorHours = Number(bal?.pto_accrual_anchor_hours ?? 0);
+  const anchorAccrued = Number(bal?.pto_accrual_anchor_accrued ?? 0);
   let accrued = 0;
   let accrualRate = 0;
   if (active && plan > 0) {
     if (overrideActive) {
-      // Custom rate from now on: freeze at the anchor, earn at the override rate for
-      // hours beyond it. weeks is ignored; plan still caps the annual total.
+      // Custom rate from the anchor onward. weeks is ignored; plan caps the annual total.
       accrualRate = overridePer / overrideAmount;
-      const anchorHours = Number(bal?.pto_accrual_anchor_hours ?? 0);
-      const anchorAccrued = Number(bal?.pto_accrual_anchor_accrued ?? 0);
       const extra = Math.max(0, hoursWorked - anchorHours);
       accrued = Math.min(anchorAccrued + Math.floor(extra * 60 / accrualRate) / 60, plan);
     } else {
       accrualRate = (weeks * 40) / plan;
-      accrued = Math.min(Math.floor(hoursWorked * 60 / accrualRate) / 60, plan);
+      // Continue from a manually-set Accrued YTD baseline when one exists.
+      const base = hasAnchor ? anchorAccrued : 0;
+      const baseHours = hasAnchor ? anchorHours : 0;
+      const extra = Math.max(0, hoursWorked - baseHours);
+      accrued = Math.min(base + Math.floor(extra * 60 / accrualRate) / 60, plan);
     }
   }
   const used = entries.filter((e) => e.entry_type === "pto").reduce((s, e) => s + Number(e.hours), 0);
@@ -314,10 +327,14 @@ function buildOverridePatch(
   currentHours: number,
   currentAccrued: number,
 ): OverridePatch {
-  if (!enabled || amount <= 0 || per <= 0) {
-    return { amount: null, per: null, anchor_hours: null, anchor_accrued: null };
-  }
   const prevActive = isOverrideActive(prev.amount, prev.per);
+  if (!enabled || amount <= 0 || per <= 0) {
+    // Turning a previously-active override OFF: preserve accrued-so-far, then continue at
+    // the default rate. Otherwise leave any existing anchor (e.g. a manual Accrued YTD
+    // baseline) untouched rather than clearing it.
+    if (prevActive) return { amount: null, per: null, anchor_hours: currentHours, anchor_accrued: currentAccrued };
+    return { amount: null, per: null, anchor_hours: prev.anchor_hours, anchor_accrued: prev.anchor_accrued };
+  }
   const rateChanged = !prevActive
     || Math.abs(Number(prev.amount) - amount) > 1e-9
     || Math.abs(Number(prev.per) - per) > 1e-9;
@@ -521,8 +538,8 @@ export default function LeavePage() {
             const prevHours = sumClockedHours(prevClock, `${prevYear}-01-01`, `${prevYear}-12-31`);
             const prevSick = computeSickBalance(prevBal, prevHours, prevEntries);
             const prevPto = computePtoBalance(prevBal, prevHours, prevEntries);
-            const sickCarryover = Math.max(0, Math.min(prevSick.balance, MAX_BALANCE));
-            const ptoCarryover = Math.max(0, Math.min(prevPto.balance, MAX_BALANCE));
+            const sickCarryover = Math.max(0, Math.min(prevSick.balance, CARRYOVER_CAP));
+            const ptoCarryover = Math.max(0, Math.min(prevPto.balance, CARRYOVER_CAP));
             b = { ...defaultBalance(selectedEmployeeId, year), sick_carryover: sickCarryover, pto_carryover: ptoCarryover };
           } else {
             b = defaultBalance(selectedEmployeeId, year);
@@ -621,8 +638,8 @@ export default function LeavePage() {
       sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
       pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
       sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
-      sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
-      pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
+      sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
+      pto_carryover: Math.min(hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM), CARRYOVER_CAP),
       ...overridePatches(),
       created_by: me?.id ?? null, updated_by: me?.id ?? null,
     };
@@ -643,8 +660,8 @@ export default function LeavePage() {
         sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
         pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
         sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
-        sick_carryover: hmToDec(cfgSickCarryoverH, cfgSickCarryoverM),
-        pto_carryover: hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM),
+        sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
+        pto_carryover: Math.min(hmToDec(cfgPtoCarryoverH, cfgPtoCarryoverM), CARRYOVER_CAP),
         ...overridePatches(),
         updated_by: me?.id ?? null,
       };
@@ -790,6 +807,8 @@ export default function LeavePage() {
     const currentVal =
       field === "sick" ? sickCalc.balance
       : field === "pto" ? ptoCalc.balance
+      : field === "sick_accrued" ? sickCalc.accrued
+      : field === "pto_accrued" ? ptoCalc.accrued
       : field === "unpaid" ? unpaidUsed
       : hoursWorkedYtd;
     setEditField(field);
@@ -820,6 +839,8 @@ export default function LeavePage() {
     const oldVal =
       editField === "sick" ? sickCalc.balance
       : editField === "pto" ? ptoCalc.balance
+      : editField === "sick_accrued" ? sickCalc.accrued
+      : editField === "pto_accrued" ? ptoCalc.accrued
       : editField === "unpaid" ? unpaidUsed
       : hoursWorkedYtd;
     setEditBusy(true);
@@ -841,6 +862,31 @@ export default function LeavePage() {
         const { data, error } = await supabase
           .from("hr_leave_balances")
           .update({ pto_initial_balance: newInitial })
+          .eq("id", balRow.id)
+          .select("*").single();
+        if (error) throw error;
+        setBalance(data as LeaveBalanceRow);
+        const [pih, pim] = decToHM(Math.max(0, newInitial)); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
+      } else if (editField === "sick_accrued") {
+        // Re-base accrual: at the current hours-worked, accrued = newVal (capped at the annual
+        // cap). Future worked hours keep accruing from here at the active rate. Shift the initial
+        // balance by the accrued delta so the usable total stays put (only future accrual grows it).
+        const anchored = Math.min(newVal, sickCalc.cap);
+        const newInitial = sickCalc.initial - (anchored - sickCalc.accrued);
+        const { data, error } = await supabase
+          .from("hr_leave_balances")
+          .update({ sick_accrual_anchor_hours: hoursWorkedYtd, sick_accrual_anchor_accrued: anchored, sick_initial_balance: newInitial })
+          .eq("id", balRow.id)
+          .select("*").single();
+        if (error) throw error;
+        setBalance(data as LeaveBalanceRow);
+        const [sih, sim] = decToHM(Math.max(0, newInitial)); setCfgSickInitialH(sih); setCfgSickInitialM(sim);
+      } else if (editField === "pto_accrued") {
+        const anchored = ptoCalc.plan > 0 ? Math.min(newVal, ptoCalc.plan) : newVal;
+        const newInitial = ptoCalc.initial - (anchored - ptoCalc.accrued);
+        const { data, error } = await supabase
+          .from("hr_leave_balances")
+          .update({ pto_accrual_anchor_hours: hoursWorkedYtd, pto_accrual_anchor_accrued: anchored, pto_initial_balance: newInitial })
           .eq("id", balRow.id)
           .select("*").single();
         if (error) throw error;
@@ -920,7 +966,7 @@ export default function LeavePage() {
             <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <div style={{ fontWeight: 800, fontSize: 16 }}>
-                  Edit {editField === "sick" ? "Sick Balance" : editField === "pto" ? "PTO Balance" : editField === "unpaid" ? "Unpaid Hours" : "Hours Worked YTD"}
+                  Edit {editField === "sick" ? "Sick Balance" : editField === "pto" ? "PTO Balance" : editField === "sick_accrued" ? "Sick Accrued YTD" : editField === "pto_accrued" ? "PTO Accrued YTD" : editField === "unpaid" ? "Unpaid Hours" : "Hours Worked YTD"}
                 </div>
                 <div style={{ fontSize: 13, color: "#6b7280", marginTop: 2 }}>
                   {selectedEmployee ? getDisplayName(selectedEmployee) : ""} · {year}
@@ -932,7 +978,7 @@ export default function LeavePage() {
             <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
                 <FieldLabel>
-                  {editField === "unpaid" ? "Total unpaid hours used" : editField === "hours_worked" ? "Total hours worked YTD" : "New balance"}
+                  {editField === "unpaid" ? "Total unpaid hours used" : editField === "hours_worked" ? "Total hours worked YTD" : editField === "sick_accrued" || editField === "pto_accrued" ? "Accrued YTD" : "New balance"}
                 </FieldLabel>
                 {editField === "unpaid" ? (
                   <TextInput type="number" min="0" step="0.25" value={editNewValue} onChange={(e) => setEditNewValue(e.target.value)} autoFocus style={{ fontSize: 18, fontWeight: 700 }} />
@@ -942,6 +988,11 @@ export default function LeavePage() {
                 {(editField === "sick" || editField === "pto") && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
                     Setting this adjusts the initial balance so that the computed total matches your entered value. Accruals continue normally.
+                  </div>
+                )}
+                {(editField === "sick_accrued" || editField === "pto_accrued") && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                    Re-bases how much has been accrued so far this year (useful when migrating records mid-year). Hours worked from now on keep accruing from this value, up to the annual cap ({editField === "sick_accrued" ? fmtHours(sickCalc.cap) : ptoCalc.plan > 0 ? fmtHours(ptoCalc.plan) : "plan"}).
                   </div>
                 )}
                 {editField === "hours_worked" && (
@@ -1098,11 +1149,14 @@ export default function LeavePage() {
                     sickCalc.overrideActive
                       ? ` (${fmtHours(sickCalc.overrideAmount)} per ${fmtHours(sickCalc.overridePer)})`
                       : !balance?.sick_frontloaded && sickCalc.accruedRaw > sickCalc.cap ? ` (capped at ${sickCalc.cap})` : ""
-                  }`],
+                  }`,
+                  () => void openEditModal("sick_accrued")] as [string, string, () => void],
                 ["Used", `−${fmtHours(sickCalc.used)}`],
                 ...(sickCalc.adjustments !== 0 ? [[`Adjustments`, `${sickCalc.adjustments >= 0 ? "+" : ""}${fmtHours(sickCalc.adjustments)}`] as [string, string]] : []),
                 ...(sickCalc.balance >= MAX_BALANCE ? [["Max balance reached", `(${MAX_BALANCE}h cap)`] as [string, string]] : []),
               ]}
+              capAlert={!balance?.sick_frontloaded && sickCalc.accrued >= sickCalc.cap
+                ? `Accrued the yearly max (${fmtHours(sickCalc.cap)}) — no longer accruing until ${year + 1}.` : undefined}
               onEdit={() => void openEditModal("sick")}
             />
             <BalanceCard
@@ -1117,11 +1171,14 @@ export default function LeavePage() {
                     ptoCalc.overrideActive
                       ? ` (${fmtHours(ptoCalc.overrideAmount)} per ${fmtHours(ptoCalc.overridePer)}, cap ${ptoCalc.plan}h)`
                       : ptoCalc.accrualRate > 0 ? ` (1h per ${fmtHours(ptoCalc.accrualRate)}, cap ${ptoCalc.plan}h)` : ""
-                  }`],
+                  }`,
+                  () => void openEditModal("pto_accrued")] as [string, string, () => void],
                 ["Used", `−${fmtHours(ptoCalc.used)}`],
                 ...(ptoCalc.adjustments !== 0 ? [[`Adjustments`, `${ptoCalc.adjustments >= 0 ? "+" : ""}${fmtHours(ptoCalc.adjustments)}`] as [string, string]] : []),
                 ...(ptoCalc.balance >= MAX_BALANCE ? [["Max balance reached", `(${MAX_BALANCE}h cap)`] as [string, string]] : []),
               ] : [["", "PTO not activated for this employee/year."]]}
+              capAlert={ptoCalc.active && ptoCalc.plan > 0 && ptoCalc.accrued >= ptoCalc.plan
+                ? `Accrued the yearly max (${fmtHours(ptoCalc.plan)}) — no longer accruing until ${year + 1}.` : undefined}
               onEdit={() => void openEditModal("pto")}
             />
             <BalanceCard
@@ -1416,8 +1473,10 @@ function Card({ title, children, style }: { title: string; children: React.React
   );
 }
 
-function BalanceCard({ title, balance, accent, lines, balanceLabel = "available", onEdit, formatBalance = fmtHours }: {
-  title: string; balance: number; accent: string; lines: Array<[string, string]>; balanceLabel?: string; onEdit?: () => void; formatBalance?: (n: number) => string;
+function BalanceCard({ title, balance, accent, lines, balanceLabel = "available", onEdit, formatBalance = fmtHours, capAlert }: {
+  title: string; balance: number; accent: string;
+  lines: Array<[string, string] | [string, string, () => void]>;
+  balanceLabel?: string; onEdit?: () => void; formatBalance?: (n: number) => string; capAlert?: string;
 }) {
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, background: "white", padding: 16 }}>
@@ -1437,12 +1496,29 @@ function BalanceCard({ title, balance, accent, lines, balanceLabel = "available"
         {formatBalance(balance)}
       </button>
       <div className="subtle" style={{ fontSize: 12, marginBottom: 10 }}>{balanceLabel}</div>
-      {lines.map(([k, v], i) => (
-        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginTop: 2 }}>
-          <span className="subtle">{k}</span>
-          <span style={{ fontWeight: 600 }}>{v}</span>
+      {lines.map((line, i) => {
+        const [k, v, onClick] = line;
+        if (onClick) {
+          return (
+            <button key={i} onClick={onClick} title="Click to edit accrued YTD"
+              style={{ display: "flex", justifyContent: "space-between", width: "100%", fontSize: 12, marginTop: 2, background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+              <span className="subtle">{k}</span>
+              <span style={{ fontWeight: 600, textDecoration: "underline dotted #d1d5db", textUnderlineOffset: 3 }}>{v}</span>
+            </button>
+          );
+        }
+        return (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginTop: 2 }}>
+            <span className="subtle">{k}</span>
+            <span style={{ fontWeight: 600 }}>{v}</span>
+          </div>
+        );
+      })}
+      {capAlert && (
+        <div style={{ marginTop: 10, padding: "7px 10px", borderRadius: 10, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 12, fontWeight: 700, lineHeight: 1.35 }}>
+          {capAlert}
         </div>
-      ))}
+      )}
     </div>
   );
 }

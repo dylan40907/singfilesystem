@@ -211,17 +211,19 @@ export function buildMonths(count: number, start = ROSTER_START_MONTH): string[]
   return Array.from({ length: Math.max(0, count) }, (_, i) => addMonthsISO(start, i));
 }
 
-/** Column key for the second half (16th) of a split month. */
-export function secondHalfKey(monthIso: string): string { return monthIso.slice(0, 8) + "16"; }
-/** True if a column key is a split month's second half. */
-export function isSecondHalf(key: string): boolean { return key.endsWith("-16"); }
+/** Column key for the second half of a split month (starts on `day`). */
+export function secondHalfKey(monthIso: string, day: number): string { return monthIso.slice(0, 8) + String(day).padStart(2, "0"); }
+/** True if a column key is a split month's second half (any day other than the 1st). */
+export function isSecondHalf(key: string): boolean { return !key.endsWith("-01"); }
+/** The day-of-month a column key falls on. */
+export function dayOf(key: string): number { return Number(key.slice(8, 10)); }
 /** The first-of-month ISO that a column key belongs to. */
 export function monthOf(key: string): string { return key.slice(0, 8) + "01"; }
 
-export async function fetchSplitMonths(campusId: string): Promise<string[]> {
-  const { data, error } = await supabase.from("hr_admissions_split_months").select("month").eq("campus_id", campusId);
+export async function fetchSplitMonths(campusId: string): Promise<{ month: string; day: number }[]> {
+  const { data, error } = await supabase.from("hr_admissions_split_months").select("month, split_day").eq("campus_id", campusId);
   if (error) throw error;
-  return (data ?? []).map((r) => (r as { month: string }).month);
+  return (data ?? []).map((r) => ({ month: (r as { month: string }).month, day: (r as { split_day: number }).split_day }));
 }
 
 /** e.g. "Jul 2026". */
@@ -419,10 +421,11 @@ export async function fetchRoster(campusId: string): Promise<RosterEntry[]> {
 }
 
 /** Move a waitlist entry onto the roster (into the given room). Returns roster id. */
-export async function admitWaitlistEntry(entryId: string, roomId: string | null): Promise<string> {
+export async function admitWaitlistEntry(entryId: string, roomId: string | null, programId: string | null = null): Promise<string> {
   const { data, error } = await supabase.rpc("admit_waitlist_entry", {
     p_entry_id: entryId,
     p_room_id: roomId,
+    p_program_id: programId,
   });
   if (error) throw error;
   return data as string;

@@ -8,7 +8,7 @@ import {
   RoomChange, ProgramChange, MonthNote, MonthNoteKind, NOTE_STYLE,
   fetchRoster, fetchWaitlist, fetchPrograms, fetchRooms,
   fetchRoomChanges, fetchProgramChanges, fetchMonthNotes, fetchRosterMonthCount, fetchSplitMonths,
-  secondHalfKey, isSecondHalf, monthOf,
+  secondHalfKey, isSecondHalf, monthOf, dayOf,
   buildMonths, monthLabelShort, monthLabelLong, ageShort, resolveSeries, currentMonthISO, currentLAMonthISO,
   ageYearsMonths, fmtDate, fullName, todayISO,
   SortState, nextSort, compareForSort,
@@ -45,7 +45,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const [roomChanges, setRoomChanges] = useState<RoomChange[]>([]);
   const [programChanges, setProgramChanges] = useState<ProgramChange[]>([]);
   const [monthNotes, setMonthNotes] = useState<MonthNote[]>([]);
-  const [splitMonths, setSplitMonths] = useState<Set<string>>(new Set());
+  const [splitMonths, setSplitMonths] = useState<Map<string, number>>(new Map()); // month -> split day
   const [monthCount, setMonthCount] = useState(24);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
@@ -65,6 +65,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const [cell, setCell] = useState<{ row: Row; monthIso: string } | null>(null);
   const [withdrawFor, setWithdrawFor] = useState<RosterEntry | null>(null);
   const [addMonthsOpen, setAddMonthsOpen] = useState(false);
+  const [splitFor, setSplitFor] = useState<string | null>(null);
   const [roomsOpen, setRoomsOpen] = useState(false);
   const [programsOpen, setProgramsOpen] = useState(false);
 
@@ -75,7 +76,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   // A split month contributes two columns: the 1st and the 16th.
   const columns = useMemo(() => {
     const out: string[] = [];
-    for (const m of months) { out.push(m); if (splitMonths.has(m)) out.push(secondHalfKey(m)); }
+    for (const m of months) { out.push(m); if (splitMonths.has(m)) out.push(secondHalfKey(m, splitMonths.get(m)!)); }
     return out;
   }, [months, splitMonths]);
   const laMonth = useMemo(() => currentLAMonthISO(), []);
@@ -98,7 +99,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       setEntries(ent); setPrograms(prog); setRooms(rms);
       setWlEntries(wl.filter((w) => w.status === "active"));
       setMonthCount(mc);
-      setSplitMonths(new Set(split));
+      setSplitMonths(new Map(split.map((s) => [s.month, s.day])));
       await reloadTimelines();
       setStatus("");
     } catch (e: any) {
@@ -119,15 +120,19 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     const noteByE = new Map<string, Map<string, MonthNote>>();
     for (const n of monthNotes) { const k = n.roster_entry_id ?? n.waitlist_entry_id!; const m = noteByE.get(k) ?? noteByE.set(k, new Map()).get(k)!; m.set(n.month, n); }
 
-    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote>; withdrawFrom: string | null }>();
+    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote>; withdrawFrom: string | null; admitFrom: string | null }>();
     const ids = [...entries.map((e) => e.id), ...wlEntries.map((e) => e.id)];
     for (const id of ids) {
       const room = resolveSeries((roomByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.room_id })), columns);
       const program = resolveSeries((progByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.program_id })), columns);
       const notes = noteByE.get(id) ?? new Map<string, MonthNote>();
       let withdrawFrom: string | null = null;
-      for (const [mo, n] of notes) if (n.kind === "withdraw" && (!withdrawFrom || mo < withdrawFrom)) withdrawFrom = mo;
-      map.set(id, { room, program, notes, withdrawFrom });
+      let admitFrom: string | null = null;
+      for (const [mo, n] of notes) {
+        if (n.kind === "withdraw" && (!withdrawFrom || mo < withdrawFrom)) withdrawFrom = mo;
+        if (n.kind === "admit" && (!admitFrom || mo < admitFrom)) admitFrom = mo;
+      }
+      map.set(id, { room, program, notes, withdrawFrom, admitFrom });
     }
     return map;
   }, [roomChanges, programChanges, monthNotes, entries, wlEntries, columns]);
@@ -167,6 +172,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       columns.forEach((m, mi) => {
         if (!cellActive(r, m)) return;
         if (s.withdrawFrom && m > s.withdrawFrom) return; // planned-withdrawn → not counted after
+        if (s.admitFrom && m < s.admitFrom) return; // not yet admitted → not counted before
         const roomId = s.room[mi]; if (!roomId) return;
         const cur = res[mi].get(roomId) ?? { enrolled: 0, prospective: 0 };
         if (r.kind === "roster") cur.enrolled++; else cur.prospective++;
@@ -249,22 +255,24 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     setAddMonthsOpen(false);
   }
 
-  async function toggleSplit(monthIso: string, isSplit: boolean) {
-    if (!isSplit) {
-      const ok = await confirm(`Split ${monthLabelLong(monthIso)} into two halves (1–15 and 16+)? You can then set each half's room, program and notes separately.`, { title: "Split month", confirmLabel: "Split" });
-      if (!ok) return;
-      const { error } = await supabase.from("hr_admissions_split_months").insert({ campus_id: campusId, month: monthIso, created_by: myUserId });
-      if (error) { setStatus("Error: " + error.message); return; }
-    } else {
-      const ok = await confirm(`Undo the split for ${monthLabelLong(monthIso)}? All second-half cells will be deleted — only the first half is kept.`, { title: "Undo split", confirmLabel: "Undo split", danger: true });
-      if (!ok) return;
-      const half2 = secondHalfKey(monthIso);
-      await supabase.from("hr_admissions_split_months").delete().eq("campus_id", campusId).eq("month", monthIso);
-      await supabase.from("hr_admissions_room_changes").delete().eq("campus_id", campusId).eq("effective_month", half2);
-      await supabase.from("hr_admissions_program_changes").delete().eq("campus_id", campusId).eq("effective_month", half2);
-      await supabase.from("hr_admissions_month_notes").delete().eq("campus_id", campusId).eq("month", half2);
-    }
-    setSplitMonths(new Set(await fetchSplitMonths(campusId)));
+  async function reloadSplits() {
+    setSplitMonths(new Map((await fetchSplitMonths(campusId)).map((s) => [s.month, s.day])));
+  }
+  async function doSplit(monthIso: string, day: number) {
+    const { error } = await supabase.from("hr_admissions_split_months").insert({ campus_id: campusId, month: monthIso, split_day: day, created_by: myUserId });
+    if (error) { setStatus("Error: " + error.message); return; }
+    setSplitFor(null);
+    await reloadSplits();
+  }
+  async function unsplit(monthIso: string, day: number) {
+    const ok = await confirm(`Undo the split for ${monthLabelLong(monthIso)}? All second-half cells will be deleted — only the first half is kept.`, { title: "Undo split", confirmLabel: "Undo split", danger: true });
+    if (!ok) return;
+    const half2 = secondHalfKey(monthIso, day);
+    await supabase.from("hr_admissions_split_months").delete().eq("campus_id", campusId).eq("month", monthIso);
+    await supabase.from("hr_admissions_room_changes").delete().eq("campus_id", campusId).eq("effective_month", half2);
+    await supabase.from("hr_admissions_program_changes").delete().eq("campus_id", campusId).eq("effective_month", half2);
+    await supabase.from("hr_admissions_month_notes").delete().eq("campus_id", campusId).eq("month", half2);
+    await reloadSplits();
     await reloadTimelines();
   }
 
@@ -327,12 +335,14 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                   const mi = colIndex.get(m)!;
                   const roomSortActive = sort.key === `room:${m}`;
                   const m1 = monthOf(m);
-                  const split = splitMonths.has(m1);
+                  const splitDay = splitMonths.get(m1);
+                  const split = splitDay != null;
                   const secondHalf = isSecondHalf(m);
+                  const sublabel = split ? (secondHalf ? `${splitDay}+` : `1–${splitDay! - 1}`) : undefined;
                   return (
                     <th key={m} style={{ ...th, minWidth: MONTH_W, width: MONTH_W, verticalAlign: "top" }}>
                       <div className="row-between" style={{ gap: 4, alignItems: "flex-start" }}>
-                        <MonthHeader label={monthLabelShort(m1)} sublabel={split ? (secondHalf ? "2nd half (16+)" : "1st half (1–15)") : undefined} counts={monthCounts[mi]} rooms={rooms} />
+                        <MonthHeader label={monthLabelShort(m1)} sublabel={sublabel} counts={monthCounts[mi]} rooms={rooms} />
                         <div className="stack" style={{ gap: 3, alignItems: "center", flexShrink: 0 }}>
                           <button
                             title="Group students by room for this month"
@@ -343,8 +353,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                           </button>
                           {!secondHalf && (
                             <button
-                              title={split ? "Undo split for this month" : "Split this month into two halves"}
-                              onClick={() => void toggleSplit(m1, split)}
+                              title={split ? "Undo split for this month" : "Split this month at a day you choose"}
+                              onClick={() => (split ? void unsplit(m1, splitDay!) : setSplitFor(m1))}
                               style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 13, lineHeight: 1, color: split ? "#e6178d" : "#cbd5e1" }}
                             >
                               ◫
@@ -397,6 +407,15 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                     {visibleCols.map((m) => {
                       const mi = colIndex.get(m)!;
                       if (!cellActive(r, m)) return <td key={m} style={{ ...td, minWidth: MONTH_W, width: MONTH_W, background: faded ? PROSPECTIVE_BG : "#fbfbfb" }} />;
+                      // Months before a planned "Admit" note: not on the roster yet (empty, no color, locked).
+                      if (s?.admitFrom && m < s.admitFrom) {
+                        return (
+                          <td key={m}
+                            style={{ ...td, minWidth: MONTH_W, width: MONTH_W, background: faded ? PROSPECTIVE_BG : "#fbfbfb", textAlign: "center", color: "#c0c6cf", fontSize: 10, fontWeight: 700 }}>
+                            not admitted
+                          </td>
+                        );
+                      }
                       // Months after a planned "Withdraw" note: projected out (empty, faint red).
                       if (s?.withdrawFrom && m > s.withdrawFrom) {
                         return (
@@ -437,6 +456,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
       {entryModal && (
         <RosterEntryModal entry={entryModal.entry} campusId={campusId} myUserId={myUserId}
+          rooms={rooms} programs={programs}
+          onManageRooms={() => setRoomsOpen(true)} onManagePrograms={() => setProgramsOpen(true)}
           onClose={() => setEntryModal(null)} onSaved={() => { setEntryModal(null); void reload(); }} />
       )}
 
@@ -467,6 +488,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       )}
 
       {addMonthsOpen && <AddMonthsModal months={months} onClose={() => setAddMonthsOpen(false)} onAdd={addMonths} />}
+
+      {splitFor && <SplitModal monthIso={splitFor} onClose={() => setSplitFor(null)} onConfirm={(d) => void doSplit(splitFor, d)} />}
 
       {roomsOpen && <RoomsModal campusId={campusId} onClose={() => setRoomsOpen(false)} onChanged={async () => setRooms(await fetchRooms(campusId))} />}
       {programsOpen && <ProgramsModal campusId={campusId} onClose={() => setProgramsOpen(false)} onChanged={async () => setPrograms(await fetchPrograms(campusId))} />}
@@ -537,7 +560,7 @@ function CellEditor({
 }) {
   const [noteDate, setNoteDate] = useState(note?.note_date ?? monthIso);
   return (
-    <Modal title={name} subtitle={`${monthLabelLong(monthOf(monthIso))}${isSecondHalf(monthIso) ? " · 2nd half (16+)" : ""} — applies from this point onward`} onClose={onClose} width={460}>
+    <Modal title={name} subtitle={`${monthLabelLong(monthOf(monthIso))}${isSecondHalf(monthIso) ? ` · 2nd half (${dayOf(monthIso)}+)` : ""} — applies from this point onward`} onClose={onClose} width={460}>
       <div className="stack" style={{ gap: 16 }}>
         {/* Room */}
         <div className="stack" style={{ gap: 8 }}>
@@ -657,9 +680,36 @@ function AddMonthsModal({ months, onClose, onAdd }: { months: string[]; onClose:
   );
 }
 
+function SplitModal({ monthIso, onClose, onConfirm }: { monthIso: string; onClose: () => void; onConfirm: (day: number) => void }) {
+  const [day, setDay] = useState(16);
+  const days = Array.from({ length: 27 }, (_, i) => i + 2); // 2..28
+  return (
+    <Modal title={`Split ${monthLabelLong(monthIso)}`} subtitle="Choose the day the second half starts" onClose={onClose} width={400}
+      footer={<>
+        <span />
+        <div className="row" style={{ gap: 8 }}>
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={() => onConfirm(day)}>Split here</button>
+        </div>
+      </>}>
+      <Field label="Second half starts on day">
+        <select className="select" value={day} onChange={(e) => setDay(Number(e.target.value))}>
+          {days.map((d) => <option key={d} value={d}>{d}</option>)}
+        </select>
+      </Field>
+      <p style={{ margin: "10px 2px 0", fontSize: 13, color: "var(--muted)" }}>
+        1st half covers days <b>1–{day - 1}</b>, 2nd half covers days <b>{day}+</b>. You can set each half&apos;s room, program and notes separately.
+      </p>
+    </Modal>
+  );
+}
+
 // ─── Simplified roster child edit modal (name / DOB / dates / notes) ──────────
-function RosterEntryModal({ entry, campusId, myUserId, onClose, onSaved }: {
-  entry?: RosterEntry; campusId: string; myUserId: string | null; onClose: () => void; onSaved: () => void;
+function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManageRooms, onManagePrograms, onClose, onSaved }: {
+  entry?: RosterEntry; campusId: string; myUserId: string | null;
+  rooms: Room[]; programs: Program[];
+  onManageRooms: () => void; onManagePrograms: () => void;
+  onClose: () => void; onSaved: () => void;
 }) {
   const mode = entry ? "edit" : "create";
   const [firstName, setFirstName] = useState(entry?.first_name ?? "");
@@ -667,6 +717,8 @@ function RosterEntryModal({ entry, campusId, myUserId, onClose, onSaved }: {
   const [dob, setDob] = useState(entry?.date_of_birth ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
   const [enrolled, setEnrolled] = useState(entry?.enrolled_date ?? (mode === "create" ? todayISO() : ""));
+  const [startRoom, setStartRoom] = useState<string>("");
+  const [startProgram, setStartProgram] = useState<string>("");
   const [notes, setNotes] = useState(entry?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -683,8 +735,25 @@ function RosterEntryModal({ entry, campusId, myUserId, onClose, onSaved }: {
     };
     try {
       if (mode === "create") {
-        const { error } = await supabase.from("hr_roster_entries").insert({ ...payload, status: "enrolled", created_by: myUserId });
+        const { data, error } = await supabase.from("hr_roster_entries")
+          .insert({ ...payload, status: "enrolled", room_id: startRoom || null, program_id: startProgram || null, created_by: myUserId })
+          .select("id").single();
         if (error) throw error;
+        const newId = (data as { id: string }).id;
+        // Seed the STARTING room/program as change-points from the enrolled month (floored at the
+        // first real roster month). They're not permanent — change them per-month in the grid later.
+        const startMonth = monthOf(enrolled || todayISO());
+        const seedMonth = startMonth < "2026-07-01" ? "2026-07-01" : startMonth;
+        if (startRoom) {
+          const { error: rErr } = await supabase.from("hr_admissions_room_changes")
+            .insert({ campus_id: campusId, roster_entry_id: newId, effective_month: seedMonth, room_id: startRoom, created_by: myUserId });
+          if (rErr) throw rErr;
+        }
+        if (startProgram) {
+          const { error: pErr } = await supabase.from("hr_admissions_program_changes")
+            .insert({ campus_id: campusId, roster_entry_id: newId, effective_month: seedMonth, program_id: startProgram, created_by: myUserId });
+          if (pErr) throw pErr;
+        }
       } else if (entry) {
         const { error } = await supabase.from("hr_roster_entries").update(payload).eq("id", entry.id);
         if (error) throw error;
@@ -714,10 +783,36 @@ function RosterEntryModal({ entry, campusId, myUserId, onClose, onSaved }: {
           <div style={{ flex: "1 1 200px" }}><Field label="Customer preferred start" optional><input className="input" type="date" value={prefStart} onChange={(e) => setPrefStart(e.target.value)} /></Field></div>
           <div style={{ flex: "1 1 200px" }}><Field label="Enrolled date" optional><input className="input" type="date" value={enrolled} onChange={(e) => setEnrolled(e.target.value)} /></Field></div>
         </div>
+        {mode === "create" && (
+          <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+            <div style={{ flex: "1 1 200px" }}>
+              <Field label="Starting room" hint="Just the enrolled month — change per-month in the grid." optional>
+                <div className="row" style={{ gap: 6 }}>
+                  <select className="select" value={startRoom} onChange={(e) => setStartRoom(e.target.value)} style={{ flex: 1 }}>
+                    <option value="">Unassigned</option>
+                    {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
+                  </select>
+                  <button className="btn" type="button" onClick={onManageRooms} title="Add / edit rooms">✎</button>
+                </div>
+              </Field>
+            </div>
+            <div style={{ flex: "1 1 200px" }}>
+              <Field label="Starting program" hint="Just the enrolled month — change per-month in the grid." optional>
+                <div className="row" style={{ gap: 6 }}>
+                  <select className="select" value={startProgram} onChange={(e) => setStartProgram(e.target.value)} style={{ flex: 1 }}>
+                    <option value="">— None —</option>
+                    {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <button className="btn" type="button" onClick={onManagePrograms} title="Add / edit programs">✎</button>
+                </div>
+              </Field>
+            </div>
+          </div>
+        )}
         <Field label="Notes" optional>
           <textarea className="input" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ resize: "vertical", minHeight: 54, padding: "8px 12px" }} />
         </Field>
-        <div className="subtle" style={{ fontSize: 12 }}>Room &amp; program are set per-month in the grid — click a month cell.</div>
+        {mode === "edit" && <div className="subtle" style={{ fontSize: 12 }}>Room &amp; program are set per-month in the grid — click a month cell.</div>}
       </div>
     </Modal>
   );
