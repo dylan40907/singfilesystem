@@ -9,7 +9,7 @@ import {
   ageYearsMonths, ageInMonths, waitlistCompletionDate, fmtDate, siblingLabel, fullName,
   SortState, nextSort, compareForSort, todayISO, APPLICATION_FEE,
 } from "@/lib/admissions";
-import { Modal, Field, Pill, SortTh, RoomDot, inlineSelect, th, td } from "@/components/hr/admissions/shared";
+import { Modal, Field, Pill, SortTh, th, td } from "@/components/hr/admissions/shared";
 import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
 
@@ -99,7 +99,6 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
       case "child": return fullName(e).toLowerCase();
       case "completion": return waitlistCompletionDate(e.application_received_date, e.application_fee_paid_date);
       case "program": return (programById[e.program_id ?? ""]?.name ?? "").toLowerCase();
-      case "prospective_room": return e.prospective_room_id ? (roomById[e.prospective_room_id]?.name ?? "").toLowerCase() : null;
       case "dob": return e.date_of_birth;
       case "customer_preferred": return e.customer_preferred_start_date;
       case "age_customer": return ageInMonths(e.date_of_birth, e.customer_preferred_start_date);
@@ -151,7 +150,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
             placeholder="Search name…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ maxWidth: 200 }}
+            style={{ width: 150 }}
           />
           <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Manage rooms</button>
           <button className="btn" onClick={() => void reload()}>Refresh</button>
@@ -184,7 +183,6 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
             <thead>
               <tr>
                 <SortTh label="Child" sortKey="child" sort={sort} onSort={onSort} style={{ left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)", position: "sticky" }} />
-                <SortTh label="Prospective Room" sortKey="prospective_room" sort={sort} onSort={onSort} />
                 <SortTh label="Waitlist Completion" sortKey="completion" sort={sort} onSort={onSort} />
                 <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort}>
                   <button
@@ -226,27 +224,6 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                   <tr key={e.id} style={{ background: rowBg }}>
                     <td style={{ ...td, left: 0, position: "sticky", background: rowBg, fontWeight: 700, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>
                       {fullName(e)}
-                    </td>
-                    <td style={td}>
-                      {(() => {
-                        const roomColor = roomById[e.prospective_room_id ?? ""]?.color;
-                        return isActive ? (
-                          <select
-                            className="select"
-                            value={e.prospective_room_id ?? ""}
-                            onChange={(ev) => void patchEntry(e.id, { prospective_room_id: ev.target.value || null })}
-                            style={{ ...inlineSelect, borderLeft: `5px solid ${roomColor ?? "#e5e7eb"}` }}
-                          >
-                            <option value="">Unassigned</option>
-                            {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                          </select>
-                        ) : (
-                          <span className="row" style={{ gap: 8, alignItems: "center" }}>
-                            <RoomDot color={roomColor} />
-                            {roomById[e.prospective_room_id ?? ""]?.name ?? <span className="subtle">—</span>}
-                          </span>
-                        );
-                      })()}
                     </td>
                     <td style={td}>
                       {(() => {
@@ -339,7 +316,6 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           campusId={campusId}
           myUserId={myUserId}
           programs={programs}
-          rooms={rooms}
           onManagePrograms={() => setProgramsOpen(true)}
           onClose={async () => { setEntryModal(null); setOffers(await fetchOffers(entries.map((e) => e.id))); }}
           onSaved={() => { setEntryModal(null); void reload(); }}
@@ -431,14 +407,13 @@ function SubTab({ active, onClick, children }: { active: boolean; onClick: () =>
 
 // ─── Add / edit waitlist entry ───────────────────────────────────────────────
 export function EntryModal({
-  mode, entry, campusId, myUserId, programs, rooms, onManagePrograms, onClose, onSaved,
+  mode, entry, campusId, myUserId, programs, onManagePrograms, onClose, onSaved,
 }: {
   mode: "create" | "edit";
   entry?: WaitlistEntry;
   campusId: string;
   myUserId: string | null;
   programs: Program[];
-  rooms: Room[];
   onManagePrograms: () => void;
   onClose: () => void;
   onSaved: () => void;
@@ -448,7 +423,6 @@ export function EntryModal({
   const [lastName, setLastName] = useState(entry?.last_name ?? "");
   const [dob, setDob] = useState(entry?.date_of_birth ?? "");
   const [programId, setProgramId] = useState(entry?.program_id ?? "");
-  const [prospectiveRoomId, setProspectiveRoomId] = useState(entry?.prospective_room_id ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
   const [plannedStart, setPlannedStart] = useState(entry?.planned_start_date ?? "");
   const [siblingHas, setSiblingHas] = useState<boolean>(!!(entry?.sibling_name && entry.sibling_name.trim()));
@@ -506,7 +480,6 @@ export function EntryModal({
       last_name: lastName.trim(),
       date_of_birth: dob,
       program_id: programId || null,
-      prospective_room_id: prospectiveRoomId || null,
       customer_preferred_start_date: prefStart || null,
       planned_start_date: plannedStart || null,
       sibling_name: siblingHas ? sibling.trim() : null,
@@ -585,14 +558,6 @@ export function EntryModal({
                 </select>
                 <button className="btn" type="button" onClick={onManagePrograms} title="Add / edit programs">✎</button>
               </div>
-            </Field>
-          </div>
-          <div style={{ flex: "1 1 220px" }}>
-            <Field label="Prospective room" hint="Room you plan to place them in — used when admitting." optional>
-              <select className="select" value={prospectiveRoomId} onChange={(e) => setProspectiveRoomId(e.target.value)}>
-                <option value="">Unassigned</option>
-                {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
             </Field>
           </div>
         </div>
@@ -798,8 +763,8 @@ function OffersModal({
 }
 
 // ─── Admit modal ─────────────────────────────────────────────────────────────
-// If the entry already has a prospective room, this is just a confirmation
-// ("Admit X to <room>?"). Otherwise it falls back to a room picker.
+// Pick the child's STARTING room (applied to the admit month only — later months
+// are planned in the roster grid). Then create the roster entry.
 export function AdmitModal({
   entry, rooms, onClose, onAdmitted,
 }: {
@@ -808,15 +773,14 @@ export function AdmitModal({
   onClose: () => void;
   onAdmitted: () => void;
 }) {
-  const prospective = rooms.find((r) => r.id === entry.prospective_room_id) ?? null;
-  const [roomId, setRoomId] = useState<string>(entry.prospective_room_id ?? "");
+  const [roomId, setRoomId] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   async function admit() {
     setBusy(true); setErr("");
     try {
-      await admitWaitlistEntry(entry.id, (prospective ? prospective.id : roomId) || null);
+      await admitWaitlistEntry(entry.id, roomId || null);
       onAdmitted();
     } catch (e: any) {
       setErr(e?.message ?? "Could not admit");
@@ -841,28 +805,16 @@ export function AdmitModal({
       }
     >
       <div className="stack" style={{ gap: 12 }}>
-        {prospective ? (
-          <div style={{ fontSize: 14 }}>
-            Admit <strong>{fullName(entry)}</strong> to{" "}
-            <span className="row" style={{ gap: 6, alignItems: "center", display: "inline-flex", verticalAlign: "middle" }}>
-              <RoomDot color={prospective.color} /> <strong>{prospective.name}</strong>
-            </span>
-            ?
-          </div>
-        ) : (
-          <Field label="Which room?">
-            {rooms.length === 0 ? (
-              <div className="subtle">
-                No rooms exist for this campus yet. You can admit as <strong>Unassigned</strong> now and place them later.
-              </div>
-            ) : (
-              <select className="select" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
-                <option value="">Unassigned</option>
-                {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
-              </select>
-            )}
-          </Field>
-        )}
+        <Field label="Starting room" hint="Just for the admit month — change rooms per-month later in the roster grid.">
+          {rooms.length === 0 ? (
+            <div className="subtle">No rooms yet. You can admit as <strong>Unassigned</strong> and place them later.</div>
+          ) : (
+            <select className="select" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
+              <option value="">Unassigned</option>
+              {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
+            </select>
+          )}
+        </Field>
         <div className="subtle" style={{ fontSize: 12 }}>
           Admitting stamps today ({fmtDate(todayISO())}) as the date admitted.
         </div>
