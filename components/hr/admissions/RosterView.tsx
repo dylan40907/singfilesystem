@@ -8,7 +8,7 @@ import {
   RoomChange, ProgramChange, MonthNote, MonthNoteKind, NOTE_STYLE,
   fetchRoster, fetchWaitlist, fetchPrograms, fetchRooms,
   fetchRoomChanges, fetchProgramChanges, fetchMonthNotes, fetchRosterMonthCount,
-  buildMonths, monthLabelShort, monthLabelLong, ageShort, resolveSeries, currentMonthISO,
+  buildMonths, monthLabelShort, monthLabelLong, ageShort, resolveSeries, currentMonthISO, currentLAMonthISO,
   ageYearsMonths, fmtDate, fullName, todayISO,
   SortState, nextSort, compareForSort,
 } from "@/lib/admissions";
@@ -21,9 +21,17 @@ type SubFilter = "enrolled" | "withdrawn";
 type Row = { kind: "roster"; entry: RosterEntry } | { kind: "prospective"; entry: WaitlistEntry };
 
 // Frozen left column widths.
-const NAME_W = 156, DOB_W = 94, ENR_W = 100, MONTH_W = 120;
-const PROSPECTIVE_BG = "#d9dde3"; // distinctly grey so waitlist rows stand out
+const NAME_W = 156, DOB_W = 94, ENR_W = 100, MONTH_W = 138;
+const PROSPECTIVE_BG = "#c6ccd6"; // distinctly grey so waitlist rows stand out
 const frozenPad: React.CSSProperties = { padding: "7px 9px" };
+
+// Cell background: room tint (enrolled). Prospective cells — and any cell with a
+// pending "promote" note — keep their room hue but are veiled noticeably dimmer.
+function cellBackground(roomColor: string | undefined, prospective: boolean, promote: boolean): string | undefined {
+  const tint = roomColor ? roomColor + "22" : undefined;
+  if (prospective || promote) return `linear-gradient(0deg, rgba(71,85,105,0.34), rgba(71,85,105,0.34)), ${tint ?? "#ffffff"}`;
+  return tint;
+}
 
 export default function RosterView({ campusId, myUserId }: { campusId: string; myUserId: string | null }) {
   const { confirm, modal: dialog } = useDialog();
@@ -43,6 +51,11 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>({ key: "dob", dir: "asc" });
   const onSort = (key: string) => setSort((prev) => nextSort(prev, key));
+  // Remembers the last frozen-column sort so a room-by-month sort keeps it as the
+  // secondary sort within each room (e.g. sort by DOB, then group by room).
+  const [baseSort, setBaseSort] = useState<SortState>({ key: "dob", dir: "asc" });
+  useEffect(() => { if (!sort.key.startsWith("room:")) setBaseSort(sort); }, [sort]);
+  const [showPast, setShowPast] = useState(false);
 
   const [entryModal, setEntryModal] = useState<{ entry?: RosterEntry } | null>(null);
   const [wlEntryModal, setWlEntryModal] = useState<{ entry: WaitlistEntry } | null>(null);
@@ -54,7 +67,13 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
   const programById = useMemo(() => Object.fromEntries(programs.map((p) => [p.id, p])), [programs]);
   const roomById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
+  const roomOrder = useMemo(() => new Map(rooms.map((r, i) => [r.id, i])), [rooms]);
   const months = useMemo(() => buildMonths(monthCount), [monthCount]);
+  const laMonth = useMemo(() => currentLAMonthISO(), []);
+  const monthIndex = useMemo(() => new Map(months.map((m, i) => [m, i])), [months]);
+  // Months before the current LA month are hidden by default (revealable via toggle).
+  const visibleMonths = useMemo(() => months.filter((m) => showPast || m >= laMonth), [months, showPast, laMonth]);
+  const pastCount = useMemo(() => months.filter((m) => m < laMonth).length, [months, laMonth]);
 
   const reloadTimelines = useCallback(async () => {
     const [rc, pc, mn] = await Promise.all([fetchRoomChanges(campusId), fetchProgramChanges(campusId), fetchMonthNotes(campusId)]);
@@ -90,12 +109,15 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     const noteByE = new Map<string, Map<string, MonthNote>>();
     for (const n of monthNotes) { const k = n.roster_entry_id ?? n.waitlist_entry_id!; const m = noteByE.get(k) ?? noteByE.set(k, new Map()).get(k)!; m.set(n.month, n); }
 
-    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote> }>();
+    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote>; withdrawFrom: string | null }>();
     const ids = [...entries.map((e) => e.id), ...wlEntries.map((e) => e.id)];
     for (const id of ids) {
       const room = resolveSeries((roomByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.room_id })), months);
       const program = resolveSeries((progByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.program_id })), months);
-      map.set(id, { room, program, notes: noteByE.get(id) ?? new Map() });
+      const notes = noteByE.get(id) ?? new Map<string, MonthNote>();
+      let withdrawFrom: string | null = null;
+      for (const [mo, n] of notes) if (n.kind === "withdraw" && (!withdrawFrom || mo < withdrawFrom)) withdrawFrom = mo;
+      map.set(id, { room, program, notes, withdrawFrom });
     }
     return map;
   }, [roomChanges, programChanges, monthNotes, entries, wlEntries, months]);
@@ -106,16 +128,23 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     const prospective: Row[] = sub === "enrolled" ? wlEntries.map((e) => ({ kind: "prospective", entry: e })) : [];
     let all = [...rosterRows, ...prospective];
     if (q) all = all.filter((r) => fullName(r.entry).toLowerCase().includes(q));
-    const val = (r: Row): string => {
-      if (sort.key === "name") return fullName(r.entry).toLowerCase();
-      if (sort.key === "dob") return r.entry.date_of_birth ?? "";
+    const sortValue = (r: Row, key: string): string | number => {
+      if (key.startsWith("room:")) {
+        const mi = monthIndex.get(key.slice(5));
+        const roomId = (mi != null ? seriesByEntry.get(r.entry.id)?.room[mi] : null) ?? null;
+        return roomId ? (roomOrder.get(roomId) ?? 9998) : 9999; // no room sorts last
+      }
+      if (key === "name") return fullName(r.entry).toLowerCase();
+      if (key === "dob") return r.entry.date_of_birth ?? "";
       return r.kind === "roster" ? (r.entry.enrolled_date ?? "") : "";
     };
     return all.sort((a, b) => {
-      const c = compareForSort(val(a), val(b), sort.dir);
+      let c = compareForSort(sortValue(a, sort.key), sortValue(b, sort.key), sort.dir);
+      // Within a room group, fall back to the last frozen-column sort (e.g. DOB).
+      if (c === 0 && sort.key.startsWith("room:")) c = compareForSort(sortValue(a, baseSort.key), sortValue(b, baseSort.key), baseSort.dir);
       return c !== 0 ? c : fullName(a.entry).toLowerCase().localeCompare(fullName(b.entry).toLowerCase());
     });
-  }, [entries, wlEntries, sub, search, sort]);
+  }, [entries, wlEntries, sub, search, sort, baseSort, monthIndex, seriesByEntry, roomOrder]);
 
   const rowWithdrawMonth = (r: Row): string | null => (r.kind === "roster" ? (r.entry as RosterEntry).withdrawal_month : null);
   const cellActive = (r: Row, monthIso: string) => { const wd = rowWithdrawMonth(r); return !wd || monthIso <= wd; };
@@ -127,6 +156,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       const s = seriesByEntry.get(r.entry.id); if (!s) continue;
       months.forEach((m, mi) => {
         if (!cellActive(r, m)) return;
+        if (s.withdrawFrom && m > s.withdrawFrom) return; // planned-withdrawn → not counted after
         const roomId = s.room[mi]; if (!roomId) return;
         const cur = res[mi].get(roomId) ?? { enrolled: 0, prospective: 0 };
         if (r.kind === "roster") cur.enrolled++; else cur.prospective++;
@@ -235,6 +265,9 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
           <input className="input" placeholder="Search name…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 150 }} />
           <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Rooms</button>
           <button className="btn" onClick={() => setProgramsOpen(true)}>📋 Programs</button>
+          {pastCount > 0 && (
+            <button className="btn" onClick={() => setShowPast((p) => !p)}>{showPast ? "Hide past" : `Show past · ${pastCount}`}</button>
+          )}
           <button className="btn" onClick={() => void reload()}>Refresh</button>
           <button className="btn btn-primary" onClick={() => setEntryModal({})}>+ Add student</button>
         </div>
@@ -261,11 +294,24 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                 <SortTh label="Name" sortKey="name" sort={sort} onSort={onSort} style={{ left: 0, width: NAME_W, minWidth: NAME_W, zIndex: 6, boxShadow: undefined }} />
                 <SortTh label="DOB" sortKey="dob" sort={sort} onSort={onSort} style={{ left: NAME_W, width: DOB_W, minWidth: DOB_W, zIndex: 6 }} />
                 <SortTh label="Enrolled" sortKey="enrolled" sort={sort} onSort={onSort} style={{ left: NAME_W + DOB_W, width: ENR_W, minWidth: ENR_W, zIndex: 6, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }} />
-                {months.map((m, mi) => (
-                  <th key={m} style={{ ...th, minWidth: MONTH_W, width: MONTH_W, verticalAlign: "top" }}>
-                    <MonthHeader label={monthLabelShort(m)} counts={monthCounts[mi]} rooms={rooms} />
-                  </th>
-                ))}
+                {visibleMonths.map((m) => {
+                  const mi = monthIndex.get(m)!;
+                  const roomSortActive = sort.key === `room:${m}`;
+                  return (
+                    <th key={m} style={{ ...th, minWidth: MONTH_W, width: MONTH_W, verticalAlign: "top" }}>
+                      <div className="row-between" style={{ gap: 4, alignItems: "flex-start" }}>
+                        <MonthHeader label={monthLabelShort(m)} counts={monthCounts[mi]} rooms={rooms} />
+                        <button
+                          title="Group students by room for this month"
+                          onClick={() => onSort(`room:${m}`)}
+                          style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 12, lineHeight: 1, flexShrink: 0, color: roomSortActive ? "#e6178d" : "#cbd5e1" }}
+                        >
+                          {roomSortActive ? (sort.dir === "asc" ? "☰↑" : "☰↓") : "☰"}
+                        </button>
+                      </div>
+                    </th>
+                  );
+                })}
                 <th style={{ ...th, minWidth: 120, verticalAlign: "top" }}>
                   <button className="btn" style={{ fontSize: 12 }} onClick={() => setAddMonthsOpen(true)}>+ Add months</button>
                 </th>
@@ -273,14 +319,14 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
             </thead>
             <tbody>
               {rows.map((r, ri) => {
-                const rowBg = r.kind === "prospective" ? "#f3f4f6" : (ri % 2 === 0 ? "white" : "#fafafa");
                 const faded = r.kind === "prospective";
+                const rowBg = faded ? PROSPECTIVE_BG : (ri % 2 === 0 ? "white" : "#fafafa");
                 const s = seriesByEntry.get(r.entry.id);
                 const wd = rowWithdrawMonth(r);
                 return (
-                  <tr key={r.entry.id} style={{ background: rowBg, opacity: faded ? 0.82 : 1 }}>
+                  <tr key={r.entry.id} style={{ background: rowBg }}>
                     {/* Name (frozen) */}
-                    <td style={{ ...td, position: "sticky", left: 0, width: NAME_W, minWidth: NAME_W, background: rowBg, zIndex: 3 }}>
+                    <td style={{ ...td, ...frozenPad, position: "sticky", left: 0, width: NAME_W, minWidth: NAME_W, background: rowBg, zIndex: 3 }}>
                       <div style={{ fontWeight: 700 }}>{fullName(r.entry)}</div>
                       <div className="row" style={{ gap: 6, marginTop: 4 }}>
                         <button className="btn" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => (r.kind === "roster" ? setEntryModal({ entry: r.entry }) : setWlEntryModal({ entry: r.entry }))}>Edit</button>
@@ -294,16 +340,26 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                       </div>
                     </td>
                     {/* DOB (frozen) */}
-                    <td style={{ ...td, position: "sticky", left: NAME_W, width: DOB_W, minWidth: DOB_W, background: rowBg, zIndex: 3 }}>{fmtDate(r.entry.date_of_birth) || "—"}</td>
+                    <td style={{ ...td, ...frozenPad, position: "sticky", left: NAME_W, width: DOB_W, minWidth: DOB_W, background: rowBg, zIndex: 3 }}>{fmtDate(r.entry.date_of_birth) || "—"}</td>
                     {/* Enrolled (frozen) */}
-                    <td style={{ ...td, position: "sticky", left: NAME_W + DOB_W, width: ENR_W, minWidth: ENR_W, background: rowBg, zIndex: 3, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>
+                    <td style={{ ...td, ...frozenPad, position: "sticky", left: NAME_W + DOB_W, width: ENR_W, minWidth: ENR_W, background: rowBg, zIndex: 3, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)" }}>
                       {r.kind === "prospective" ? <span className="subtle" style={{ fontStyle: "italic" }}>On waitlist</span>
                         : sub === "withdrawn" ? <span className="subtle">← {wd ? monthLabelShort(wd) : "—"}</span>
                         : (fmtDate(r.entry.enrolled_date) || "—")}
                     </td>
                     {/* Month cells */}
-                    {months.map((m, mi) => {
-                      if (!cellActive(r, m)) return <td key={m} style={{ ...td, minWidth: MONTH_W, width: MONTH_W, background: "#fbfbfb" }} />;
+                    {visibleMonths.map((m) => {
+                      const mi = monthIndex.get(m)!;
+                      if (!cellActive(r, m)) return <td key={m} style={{ ...td, minWidth: MONTH_W, width: MONTH_W, background: faded ? PROSPECTIVE_BG : "#fbfbfb" }} />;
+                      // Months after a planned "Withdraw" note: projected out (empty, faint red).
+                      if (s?.withdrawFrom && m > s.withdrawFrom) {
+                        return (
+                          <td key={m} onClick={() => setCell({ row: r, monthIso: m })}
+                            style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: "#fdeaea", textAlign: "center", color: "#f08a8a", fontSize: 10, fontWeight: 700 }}>
+                            withdrawn
+                          </td>
+                        );
+                      }
                       const roomId = s?.room[mi] ?? null;
                       const roomColor = roomById[roomId ?? ""]?.color;
                       const progName = programById[s?.program[mi] ?? ""]?.name;
@@ -313,18 +369,14 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                         <td
                           key={m}
                           onClick={() => setCell({ row: r, monthIso: m })}
-                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: roomColor ? roomColor + "22" : undefined, verticalAlign: "top", padding: "6px 8px" }}
+                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: cellBackground(roomColor, faded, note?.kind === "promote"), verticalAlign: "top", padding: "6px 7px" }}
                         >
-                          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                          <div className="row" style={{ gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
                             <RoomDot color={roomColor} />
-                            <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{age || "—"}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>{age || "—"}</span>
+                            {progName && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "#eef2ff", color: "#3730a3", whiteSpace: "nowrap", flexShrink: 0 }}>{progName}</span>}
                           </div>
-                          {(progName || note) && (
-                            <div className="row" style={{ gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-                              {progName && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "#eef2ff", color: "#3730a3" }}>{progName}</span>}
-                              {note && <NoteTag kind={note.kind} date={note.note_date} />}
-                            </div>
-                          )}
+                          {note && <div style={{ marginTop: 3 }}><NoteTag kind={note.kind} date={note.note_date} /></div>}
                         </td>
                       );
                     })}

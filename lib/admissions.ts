@@ -160,7 +160,15 @@ export function ageYearsMonths(dob: string | null | undefined, at: string | null
 // ─── Month grid (roster timeline) ────────────────────────────────────────────
 
 /** The roster grid always starts here; the number of months shown is per-campus. */
-export const ROSTER_START_MONTH = "2026-07-01";
+export const ROSTER_START_MONTH = "2026-06-01";
+
+/** First-of-month ISO for "now" in America/Los_Angeles (months roll over at LA midnight). */
+export function currentLAMonthISO(): string {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit" }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value ?? "2026";
+  const m = parts.find((p) => p.type === "month")?.value ?? "01";
+  return `${y}-${m}-01`;
+}
 
 export type RoomChange = {
   id: string; campus_id: string;
@@ -213,11 +221,11 @@ export function monthLabelLong(iso: string): string {
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
 
-/** Compact age like "4y 2m" at a given month. Empty before birth. */
+/** Age like "4 yr. 2 mo." at a given month. Empty before birth. */
 export function ageShort(dob: string | null | undefined, atIso: string): string {
   const months = ageInMonths(dob, atIso);
   if (months == null || months < 0) return "";
-  return `${Math.floor(months / 12)}y ${months % 12}m`;
+  return `${Math.floor(months / 12)} yr. ${months % 12} mo.`;
 }
 
 /**
