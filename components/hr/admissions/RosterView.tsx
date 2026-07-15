@@ -21,7 +21,9 @@ type SubFilter = "enrolled" | "withdrawn";
 type Row = { kind: "roster"; entry: RosterEntry } | { kind: "prospective"; entry: WaitlistEntry };
 
 // Frozen left column widths.
-const NAME_W = 210, DOB_W = 104, ENR_W = 128, MONTH_W = 132;
+const NAME_W = 156, DOB_W = 94, ENR_W = 100, MONTH_W = 120;
+const PROSPECTIVE_BG = "#d9dde3"; // distinctly grey so waitlist rows stand out
+const frozenPad: React.CSSProperties = { padding: "7px 9px" };
 
 export default function RosterView({ campusId, myUserId }: { campusId: string; myUserId: string | null }) {
   const { confirm, modal: dialog } = useDialog();
