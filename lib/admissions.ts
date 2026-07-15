@@ -211,6 +211,19 @@ export function buildMonths(count: number, start = ROSTER_START_MONTH): string[]
   return Array.from({ length: Math.max(0, count) }, (_, i) => addMonthsISO(start, i));
 }
 
+/** Column key for the second half (16th) of a split month. */
+export function secondHalfKey(monthIso: string): string { return monthIso.slice(0, 8) + "16"; }
+/** True if a column key is a split month's second half. */
+export function isSecondHalf(key: string): boolean { return key.endsWith("-16"); }
+/** The first-of-month ISO that a column key belongs to. */
+export function monthOf(key: string): string { return key.slice(0, 8) + "01"; }
+
+export async function fetchSplitMonths(campusId: string): Promise<string[]> {
+  const { data, error } = await supabase.from("hr_admissions_split_months").select("month").eq("campus_id", campusId);
+  if (error) throw error;
+  return (data ?? []).map((r) => (r as { month: string }).month);
+}
+
 /** e.g. "Jul 2026". */
 export function monthLabelShort(iso: string): string {
   const [y, m] = iso.split("-").map(Number);
