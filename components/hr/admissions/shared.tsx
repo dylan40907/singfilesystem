@@ -1,7 +1,7 @@
 "use client";
 
-import { ReactNode } from "react";
-import { SortState } from "@/lib/admissions";
+import { ReactNode, useState } from "react";
+import { SortState, TagItem, MonthNoteKind, NOTE_STYLE, monthOf, monthLabelLong, fmtDate } from "@/lib/admissions";
 
 export const modalBackdrop: React.CSSProperties = {
   position: "fixed",
@@ -74,6 +74,53 @@ export function Field({
       </div>
       {children}
       {hint ? <div className="subtle" style={{ fontSize: 12 }}>{hint}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * Editable list of planning tags (Admit / Promote / Withdraw), each with a date.
+ * Pick a date and the tag auto-lands in that month's cell. Purely staging — the
+ * parent persists via saveMonthNoteTags on save.
+ */
+export function TagListEditor({ tags, onChange }: { tags: TagItem[]; onChange: (next: TagItem[]) => void }) {
+  const [kind, setKind] = useState<MonthNoteKind>("admit");
+  const [date, setDate] = useState("");
+  const sorted = [...tags].sort((a, b) => a.date.localeCompare(b.date));
+  function add() {
+    if (!date) return;
+    onChange([...tags, { kind, date }]);
+    setDate("");
+  }
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      {sorted.length === 0 ? (
+        <div className="subtle" style={{ fontSize: 12 }}>No tags yet — add one below to pre-place it in the grid.</div>
+      ) : (
+        sorted.map((t, i) => {
+          const s = NOTE_STYLE[t.kind];
+          return (
+            <div key={t.id ?? `new-${i}`} className="row-between" style={{ gap: 8, border: "1px solid #e5e7eb", borderRadius: 8, padding: "6px 10px" }}>
+              <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <Pill {...s} />
+                <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtDate(t.date)}</span>
+                <span className="subtle" style={{ fontSize: 12 }}>→ {monthLabelLong(monthOf(t.date))} cell</span>
+              </div>
+              <button className="btn" type="button" style={{ padding: "2px 8px", fontSize: 12, color: "#b91c1c" }}
+                onClick={() => onChange(tags.filter((x) => x !== t))}>Remove</button>
+            </div>
+          );
+        })
+      )}
+      <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <select className="select" value={kind} onChange={(e) => setKind(e.target.value as MonthNoteKind)} style={{ maxWidth: 130 }}>
+          <option value="admit">Admit</option>
+          <option value="promote">Promote</option>
+          <option value="withdraw">Withdraw</option>
+        </select>
+        <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ maxWidth: 170 }} />
+        <button className="btn" type="button" onClick={add} disabled={!date}>Add tag</button>
+      </div>
     </div>
   );
 }

@@ -12,8 +12,9 @@ import {
   buildMonths, monthLabelShort, monthLabelLong, ageShort, resolveSeries, currentMonthISO, currentLAMonthISO,
   ageYearsMonths, fmtDate, fullName, todayISO,
   SortState, nextSort, compareForSort,
+  TagItem, saveMonthNoteTags,
 } from "@/lib/admissions";
-import { Modal, Field, SortTh, RoomDot, th, td } from "@/components/hr/admissions/shared";
+import { Modal, Field, SortTh, RoomDot, TagListEditor, th, td } from "@/components/hr/admissions/shared";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
 import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
 import { EntryModal as WaitlistEntryModal } from "@/components/hr/admissions/WaitlistView";
@@ -704,7 +705,15 @@ function SplitModal({ monthIso, onClose, onConfirm }: { monthIso: string; onClos
   );
 }
 
-// ─── Simplified roster child edit modal (name / DOB / dates / notes) ──────────
+// First real roster month; the enrolled month is floored to this when seeding.
+function seedMonthISO(enrolled: string): string {
+  const m = monthOf(enrolled || todayISO());
+  return m < "2026-07-01" ? "2026-07-01" : m;
+}
+
+// ─── Roster child add/edit modal (name / DOB / dates / initial room & program /
+//     planning tags / notes). "Initial" room & program edit only the earliest
+//     change-point — later per-month changes are left intact. ──────────────────
 function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManageRooms, onManagePrograms, onClose, onSaved }: {
   entry?: RosterEntry; campusId: string; myUserId: string | null;
   rooms: Room[]; programs: Program[];
@@ -717,12 +726,44 @@ function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManage
   const [dob, setDob] = useState(entry?.date_of_birth ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
   const [enrolled, setEnrolled] = useState(entry?.enrolled_date ?? (mode === "create" ? todayISO() : ""));
-  const [startRoom, setStartRoom] = useState<string>("");
-  const [startProgram, setStartProgram] = useState<string>("");
+  const [initRoom, setInitRoom] = useState<string>("");
+  const [initProgram, setInitProgram] = useState<string>("");
   const [notes, setNotes] = useState(entry?.notes ?? "");
+  const [tags, setTags] = useState<TagItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const agePreview = ageYearsMonths(dob, todayISO());
+
+  // Edit mode: load the earliest room/program change-point (the "initial" values)
+  // and existing planning tags so the admin can adjust them here.
+  const [loaded, setLoaded] = useState<{
+    room: string; roomMonth: string; program: string; programMonth: string; tags: TagItem[];
+  }>({ room: "", roomMonth: "", program: "", programMonth: "", tags: [] });
+  useEffect(() => {
+    if (mode !== "edit" || !entry) return;
+    let cancelled = false;
+    (async () => {
+      const [rc, pc, mn] = await Promise.all([
+        supabase.from("hr_admissions_room_changes").select("effective_month, room_id").eq("roster_entry_id", entry.id).order("effective_month").limit(1),
+        supabase.from("hr_admissions_program_changes").select("effective_month, program_id").eq("roster_entry_id", entry.id).order("effective_month").limit(1),
+        supabase.from("hr_admissions_month_notes").select("id, month, kind, note_date").eq("roster_entry_id", entry.id).order("month"),
+      ]);
+      if (cancelled) return;
+      const seed = seedMonthISO(entry.enrolled_date ?? "");
+      const firstRoom = (rc.data ?? [])[0] as { effective_month: string; room_id: string | null } | undefined;
+      const firstProg = (pc.data ?? [])[0] as { effective_month: string; program_id: string | null } | undefined;
+      const loadedTags: TagItem[] = (mn.data ?? []).map((n: any) => ({ id: n.id, kind: n.kind, date: n.note_date ?? n.month, month: n.month }));
+      setInitRoom(firstRoom?.room_id ?? "");
+      setInitProgram(firstProg?.program_id ?? "");
+      setTags(loadedTags);
+      setLoaded({
+        room: firstRoom?.room_id ?? "", roomMonth: firstRoom?.effective_month ?? seed,
+        program: firstProg?.program_id ?? "", programMonth: firstProg?.effective_month ?? seed,
+        tags: loadedTags,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [mode, entry]);
 
   async function save() {
     if (!firstName.trim() || !lastName.trim()) { setErr("First and last name are required."); return; }
@@ -734,30 +775,49 @@ function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManage
       updated_at: new Date().toISOString(), updated_by: myUserId,
     };
     try {
+      let entryId: string;
       if (mode === "create") {
         const { data, error } = await supabase.from("hr_roster_entries")
-          .insert({ ...payload, status: "enrolled", room_id: startRoom || null, program_id: startProgram || null, created_by: myUserId })
+          .insert({ ...payload, status: "enrolled", room_id: initRoom || null, program_id: initProgram || null, created_by: myUserId })
           .select("id").single();
         if (error) throw error;
-        const newId = (data as { id: string }).id;
-        // Seed the STARTING room/program as change-points from the enrolled month (floored at the
-        // first real roster month). They're not permanent — change them per-month in the grid later.
-        const startMonth = monthOf(enrolled || todayISO());
-        const seedMonth = startMonth < "2026-07-01" ? "2026-07-01" : startMonth;
-        if (startRoom) {
+        entryId = (data as { id: string }).id;
+        // Seed the initial room/program as change-points from the enrolled month
+        // (floored at the first real roster month). Editable per-month later.
+        const seedMonth = seedMonthISO(enrolled);
+        if (initRoom) {
           const { error: rErr } = await supabase.from("hr_admissions_room_changes")
-            .insert({ campus_id: campusId, roster_entry_id: newId, effective_month: seedMonth, room_id: startRoom, created_by: myUserId });
+            .insert({ campus_id: campusId, roster_entry_id: entryId, effective_month: seedMonth, room_id: initRoom, created_by: myUserId });
           if (rErr) throw rErr;
         }
-        if (startProgram) {
+        if (initProgram) {
           const { error: pErr } = await supabase.from("hr_admissions_program_changes")
-            .insert({ campus_id: campusId, roster_entry_id: newId, effective_month: seedMonth, program_id: startProgram, created_by: myUserId });
+            .insert({ campus_id: campusId, roster_entry_id: entryId, effective_month: seedMonth, program_id: initProgram, created_by: myUserId });
           if (pErr) throw pErr;
         }
-      } else if (entry) {
-        const { error } = await supabase.from("hr_roster_entries").update(payload).eq("id", entry.id);
+      } else {
+        entryId = entry!.id;
+        const { error } = await supabase.from("hr_roster_entries").update(payload).eq("id", entryId);
         if (error) throw error;
+        // Update ONLY the initial (earliest) room change-point — later changes untouched.
+        if (initRoom !== loaded.room) {
+          await supabase.from("hr_admissions_room_changes").delete().eq("roster_entry_id", entryId).eq("effective_month", loaded.roomMonth);
+          if (initRoom) {
+            const { error: rErr } = await supabase.from("hr_admissions_room_changes")
+              .insert({ campus_id: campusId, roster_entry_id: entryId, effective_month: loaded.roomMonth, room_id: initRoom, created_by: myUserId });
+            if (rErr) throw rErr;
+          }
+        }
+        if (initProgram !== loaded.program) {
+          await supabase.from("hr_admissions_program_changes").delete().eq("roster_entry_id", entryId).eq("effective_month", loaded.programMonth);
+          if (initProgram) {
+            const { error: pErr } = await supabase.from("hr_admissions_program_changes")
+              .insert({ campus_id: campusId, roster_entry_id: entryId, effective_month: loaded.programMonth, program_id: initProgram, created_by: myUserId });
+            if (pErr) throw pErr;
+          }
+        }
       }
+      await saveMonthNoteTags(campusId, entryId, tags, loaded.tags, myUserId);
       onSaved();
     } catch (e: any) { setErr(e?.message ?? "Could not save"); setSaving(false); }
   }
@@ -783,36 +843,38 @@ function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManage
           <div style={{ flex: "1 1 200px" }}><Field label="Customer preferred start" optional><input className="input" type="date" value={prefStart} onChange={(e) => setPrefStart(e.target.value)} /></Field></div>
           <div style={{ flex: "1 1 200px" }}><Field label="Enrolled date" optional><input className="input" type="date" value={enrolled} onChange={(e) => setEnrolled(e.target.value)} /></Field></div>
         </div>
-        {mode === "create" && (
-          <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 200px" }}>
-              <Field label="Starting room" hint="Just the enrolled month — change per-month in the grid." optional>
-                <div className="row" style={{ gap: 6 }}>
-                  <select className="select" value={startRoom} onChange={(e) => setStartRoom(e.target.value)} style={{ flex: 1 }}>
-                    <option value="">Unassigned</option>
-                    {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
-                  </select>
-                  <button className="btn" type="button" onClick={onManageRooms} title="Add / edit rooms">✎</button>
-                </div>
-              </Field>
-            </div>
-            <div style={{ flex: "1 1 200px" }}>
-              <Field label="Starting program" hint="Just the enrolled month — change per-month in the grid." optional>
-                <div className="row" style={{ gap: 6 }}>
-                  <select className="select" value={startProgram} onChange={(e) => setStartProgram(e.target.value)} style={{ flex: 1 }}>
-                    <option value="">— None —</option>
-                    {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <button className="btn" type="button" onClick={onManagePrograms} title="Add / edit programs">✎</button>
-                </div>
-              </Field>
-            </div>
+        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 200px" }}>
+            <Field label={mode === "create" ? "Starting room" : "Initial room"}
+              hint={mode === "create" ? "Seeds the enrolled month — change per-month in the grid." : "The first room. Editing this changes only the initial placement, not later per-month changes."} optional>
+              <div className="row" style={{ gap: 6 }}>
+                <select className="select" value={initRoom} onChange={(e) => setInitRoom(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">Unassigned</option>
+                  {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
+                </select>
+                <button className="btn" type="button" onClick={onManageRooms} title="Add / edit rooms">✎</button>
+              </div>
+            </Field>
           </div>
-        )}
+          <div style={{ flex: "1 1 200px" }}>
+            <Field label={mode === "create" ? "Starting program" : "Initial program"}
+              hint={mode === "create" ? "Seeds the enrolled month — change per-month in the grid." : "The first program. Editing this changes only the initial placement, not later per-month changes."} optional>
+              <div className="row" style={{ gap: 6 }}>
+                <select className="select" value={initProgram} onChange={(e) => setInitProgram(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">— None —</option>
+                  {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <button className="btn" type="button" onClick={onManagePrograms} title="Add / edit programs">✎</button>
+              </div>
+            </Field>
+          </div>
+        </div>
+        <Field label="Planning tags" hint="Pick a date and the Admit / Promote / Withdraw tag auto-lands in that month's cell.">
+          <TagListEditor tags={tags} onChange={setTags} />
+        </Field>
         <Field label="Notes" optional>
           <textarea className="input" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} style={{ resize: "vertical", minHeight: 54, padding: "8px 12px" }} />
         </Field>
-        {mode === "edit" && <div className="subtle" style={{ fontSize: 12 }}>Room &amp; program are set per-month in the grid — click a month cell.</div>}
       </div>
     </Modal>
   );

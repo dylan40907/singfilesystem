@@ -8,8 +8,9 @@ import {
   fetchWaitlist, fetchOffers, fetchPrograms, fetchRooms, admitWaitlistEntry,
   ageYearsMonths, ageInMonths, waitlistCompletionDate, fmtDate, siblingLabel, fullName,
   SortState, nextSort, compareForSort, todayISO, APPLICATION_FEE,
+  TagItem, saveMonthNoteTags,
 } from "@/lib/admissions";
-import { Modal, Field, Pill, SortTh, th, td } from "@/components/hr/admissions/shared";
+import { Modal, Field, Pill, SortTh, TagListEditor, th, td } from "@/components/hr/admissions/shared";
 import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
 
@@ -337,6 +338,8 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           entry={admitFor}
           rooms={rooms}
           programs={programs}
+          campusId={campusId}
+          myUserId={myUserId}
           onClose={() => setAdmitFor(null)}
           onAdmitted={() => { setAdmitFor(null); void reload(); }}
         />
@@ -767,23 +770,27 @@ function OffersModal({
 // Pick the child's STARTING room (applied to the admit month only — later months
 // are planned in the roster grid). Then create the roster entry.
 export function AdmitModal({
-  entry, rooms, programs, onClose, onAdmitted,
+  entry, rooms, programs, campusId, myUserId, onClose, onAdmitted,
 }: {
   entry: WaitlistEntry;
   rooms: Room[];
   programs: Program[];
+  campusId: string;
+  myUserId: string | null;
   onClose: () => void;
   onAdmitted: () => void;
 }) {
   const [roomId, setRoomId] = useState<string>("");
   const [programId, setProgramId] = useState<string>(entry.program_id ?? "");
+  const [tags, setTags] = useState<TagItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   async function admit() {
     setBusy(true); setErr("");
     try {
-      await admitWaitlistEntry(entry.id, roomId || null, programId || null);
+      const rosterId = await admitWaitlistEntry(entry.id, roomId || null, programId || null);
+      if (tags.length) await saveMonthNoteTags(campusId, rosterId, tags, [], myUserId);
       onAdmitted();
     } catch (e: any) {
       setErr(e?.message ?? "Could not admit");
@@ -827,6 +834,9 @@ export function AdmitModal({
               {programs.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
+        </Field>
+        <Field label="Planning tags" hint="Pick a date and the Admit / Promote / Withdraw tag auto-lands in that month's cell.">
+          <TagListEditor tags={tags} onChange={setTags} />
         </Field>
         <div className="subtle" style={{ fontSize: 12 }}>
           Admitting stamps today ({fmtDate(todayISO())}) as the date admitted.

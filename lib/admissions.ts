@@ -280,6 +280,45 @@ export async function fetchMonthNotes(campusId: string): Promise<MonthNote[]> {
   return (data ?? []) as MonthNote[];
 }
 
+// A planning tag being staged in an entry modal. `date` is the exact date the
+// user picked; the tag lands in the month cell for `monthOf(date)`.
+export type TagItem = { id?: string; kind: MonthNoteKind; date: string; month?: string };
+
+/**
+ * Reconcile a roster entry's planning tags (admit/promote/withdraw notes) from
+ * an entry modal. Deletes tags removed since load, and writes newly-added ones —
+ * one note per targeted month (the new placement replaces any existing note in
+ * that cell). Unchanged tags at other months are left untouched.
+ */
+export async function saveMonthNoteTags(
+  campusId: string,
+  rosterEntryId: string,
+  tags: TagItem[],
+  loaded: TagItem[],
+  myUserId: string | null,
+): Promise<void> {
+  const keptIds = new Set(tags.filter((t) => t.id).map((t) => t.id));
+  const deletedIds = loaded.filter((t) => t.id && !keptIds.has(t.id)).map((t) => t.id as string);
+  if (deletedIds.length) {
+    const { error } = await supabase.from("hr_admissions_month_notes").delete().in("id", deletedIds);
+    if (error) throw error;
+  }
+  // New tags land one-per-month (last wins), replacing whatever note was in that cell.
+  const addedByMonth = new Map<string, TagItem>();
+  for (const t of tags) if (!t.id) addedByMonth.set(monthOf(t.date), t);
+  const months = [...addedByMonth.keys()];
+  if (months.length) {
+    const { error: delErr } = await supabase.from("hr_admissions_month_notes")
+      .delete().eq("roster_entry_id", rosterEntryId).in("month", months);
+    if (delErr) throw delErr;
+    const rows = [...addedByMonth.entries()].map(([month, t]) => ({
+      campus_id: campusId, roster_entry_id: rosterEntryId, month, note_date: t.date, kind: t.kind, created_by: myUserId,
+    }));
+    const { error: insErr } = await supabase.from("hr_admissions_month_notes").insert(rows);
+    if (insErr) throw insErr;
+  }
+}
+
 /** Whole age in months between a DOB and a reference date. Null if either is missing. */
 export function ageInMonths(dob: string | null | undefined, at: string | null | undefined): number | null {
   const birth = parseDateOnly(dob);
