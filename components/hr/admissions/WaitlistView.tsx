@@ -5,10 +5,10 @@ import { supabase } from "@/lib/supabaseClient";
 import { useDialog } from "@/components/ui/useDialog";
 import {
   WaitlistEntry, WaitlistOffer, OfferDraft, Program, Room, OfferStatus, OFFER_STATUS_LABEL, offerCounts,
-  fetchWaitlist, fetchOffers, fetchPrograms, fetchRooms, admitWaitlistEntry,
+  fetchWaitlist, fetchOffers, fetchPrograms, fetchRooms, fetchSplitMonths, admitWaitlistEntry,
   ageYearsMonths, ageInMonths, waitlistCompletionDate, fmtDate, siblingLabel, fullName,
   SortState, nextSort, compareForSort, todayISO, APPLICATION_FEE,
-  TagItem, saveMonthNoteTags,
+  TagItem, saveMonthNoteTags, syncPlannedStartAdmitTag,
 } from "@/lib/admissions";
 import { Modal, Field, Pill, SortTh, TagListEditor, th, td } from "@/components/hr/admissions/shared";
 import ProgramsModal from "@/components/hr/admissions/ProgramsModal";
@@ -28,6 +28,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [programs, setPrograms] = useState<Program[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [splitMonths, setSplitMonths] = useState<{ month: string; day: number }[]>([]);
   const [offers, setOffers] = useState<Record<string, WaitlistOffer[]>>({});
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
@@ -56,10 +57,11 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [ent, prog, rms] = await Promise.all([fetchWaitlist(campusId), fetchPrograms(campusId), fetchRooms(campusId)]);
+      const [ent, prog, rms, splits] = await Promise.all([fetchWaitlist(campusId), fetchPrograms(campusId), fetchRooms(campusId), fetchSplitMonths(campusId)]);
       setEntries(ent);
       setPrograms(prog);
       setRooms(rms);
+      setSplitMonths(splits);
       setOffers(await fetchOffers(ent.map((e) => e.id)));
       setStatus("");
     } catch (e: any) {
@@ -338,6 +340,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           entry={admitFor}
           rooms={rooms}
           programs={programs}
+          splitMonths={splitMonths}
           campusId={campusId}
           myUserId={myUserId}
           onClose={() => setAdmitFor(null)}
@@ -471,6 +474,17 @@ export function EntryModal({
     setOffers((prev) => prev.filter((x) => (o.id ? x.id !== o.id : x !== o)));
   }
 
+  async function editOffer(o: OfferDraft, note: string) {
+    const noteVal = note.trim() || null;
+    if (mode === "edit" && o.id) {
+      const { error } = await supabase.from("hr_waitlist_offers").update({ note: noteVal }).eq("id", o.id);
+      if (error) { setErr(error.message); return; }
+      setOffers((prev) => prev.map((x) => (x.id === o.id ? { ...x, note: noteVal } : x)));
+    } else {
+      setOffers((prev) => prev.map((x) => (x === o ? { ...x, note: noteVal } : x)));
+    }
+  }
+
   const agePreview = ageYearsMonths(dob, plannedStart);
 
   async function save() {
@@ -494,6 +508,7 @@ export function EntryModal({
       updated_by: myUserId,
     };
     try {
+      let entryId: string;
       if (mode === "create") {
         const { data, error } = await supabase
           .from("hr_waitlist_entries")
@@ -501,17 +516,23 @@ export function EntryModal({
           .select("id")
           .single();
         if (error) throw error;
-        const newId = (data as { id: string }).id;
+        entryId = (data as { id: string }).id;
         if (offers.length > 0) {
           const { error: offErr } = await supabase.from("hr_waitlist_offers").insert(
-            offers.map((o) => ({ waitlist_entry_id: newId, offer_date: o.offer_date, status: o.status, note: o.note, created_by: myUserId }))
+            offers.map((o) => ({ waitlist_entry_id: entryId, offer_date: o.offer_date, status: o.status, note: o.note, created_by: myUserId }))
           );
           if (offErr) throw offErr;
         }
       } else if (entry) {
-        const { error } = await supabase.from("hr_waitlist_entries").update(payload).eq("id", entry.id);
+        entryId = entry.id;
+        const { error } = await supabase.from("hr_waitlist_entries").update(payload).eq("id", entryId);
         if (error) throw error;
+      } else {
+        return;
       }
+      // Keep the auto "admit" tag in sync with the planned start date (moves the
+      // tag in the roster grid; carries over when the child is admitted).
+      await syncPlannedStartAdmitTag(campusId, entryId, plannedStart || null, myUserId);
       onSaved();
     } catch (e: any) {
       setErr(e?.message ?? "Could not save");
@@ -620,7 +641,7 @@ export function EntryModal({
           <div className="subtle" style={{ fontSize: 12 }}>
             Log an offer when you send it, then add another entry when it&apos;s accepted or denied.
           </div>
-          <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} busy={saving} />
+          <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} onEditNote={editOffer} busy={saving} />
         </div>
       </div>
     </Modal>
@@ -651,35 +672,43 @@ export function OfferCounters({ offers }: { offers: { status: OfferStatus }[] })
 // ─── Offer-log editor (multiple dated offers; each sent/accepted/denied + note) ─
 // Presentational: onAdd/onDelete are supplied by the parent, which decides
 // whether that's a live DB write (existing entry) or a local draft (new entry).
-function OfferRow({ o, onDelete, busy }: { o: OfferDraft; onDelete: (o: OfferDraft) => void | Promise<void>; busy?: boolean }) {
-  const [showNote, setShowNote] = useState(false);
+function OfferRow({ o, onDelete, onEditNote, busy }: {
+  o: OfferDraft;
+  onDelete: (o: OfferDraft) => void | Promise<void>;
+  onEditNote: (o: OfferDraft, note: string) => void | Promise<void>;
+  busy?: boolean;
+}) {
+  const [note, setNote] = useState(o.note ?? "");
+  useEffect(() => { setNote(o.note ?? ""); }, [o.note]);
   return (
     <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: "8px 12px" }}>
       <div className="row-between" style={{ alignItems: "center" }}>
         <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontWeight: 700, fontSize: 13 }}>{fmtDate(o.offer_date)}</span>
           <Pill label={OFFER_STATUS_LABEL[o.status]} {...OFFER_PILL[o.status]} />
-          {o.note ? (
-            <button className="btn" style={{ padding: "1px 8px", fontSize: 11 }} onClick={() => setShowNote((s) => !s)}>
-              📝 {showNote ? "Hide note" : "Note"}
-            </button>
-          ) : null}
         </div>
         <button className="btn" style={{ padding: "3px 9px", fontSize: 12, color: "#b91c1c" }} onClick={() => void onDelete(o)} disabled={busy}>Delete</button>
       </div>
-      {showNote && o.note ? (
-        <div className="subtle" style={{ marginTop: 8, fontSize: 13, whiteSpace: "pre-wrap" }}>{o.note}</div>
-      ) : null}
+      <input
+        className="input"
+        value={note}
+        placeholder="Add a note…"
+        disabled={busy}
+        onChange={(e) => setNote(e.target.value)}
+        onBlur={() => { if ((o.note ?? "") !== note) void onEditNote(o, note); }}
+        style={{ marginTop: 8, fontSize: 13, padding: "6px 10px" }}
+      />
     </div>
   );
 }
 
 function OfferLogEditor({
-  offers, onAdd, onDelete, busy,
+  offers, onAdd, onDelete, onEditNote, busy,
 }: {
   offers: OfferDraft[];
   onAdd: (date: string, status: OfferStatus, note: string) => void | Promise<void>;
   onDelete: (o: OfferDraft) => void | Promise<void>;
+  onEditNote: (o: OfferDraft, note: string) => void | Promise<void>;
   busy?: boolean;
 }) {
   const [date, setDate] = useState(todayISO());
@@ -698,7 +727,7 @@ function OfferLogEditor({
         {offers.length === 0 ? (
           <div className="subtle">No offers logged yet.</div>
         ) : (
-          offers.map((o, i) => <OfferRow key={o.id ?? `draft-${i}`} o={o} onDelete={onDelete} busy={busy} />)
+          offers.map((o, i) => <OfferRow key={o.id ?? `draft-${i}`} o={o} onDelete={onDelete} onEditNote={onEditNote} busy={busy} />)
         )}
       </div>
 
@@ -751,6 +780,15 @@ function OffersModal({
     await onChanged();
   }
 
+  async function editOffer(o: OfferDraft, note: string) {
+    if (!o.id) return;
+    setBusy(true);
+    const { error } = await supabase.from("hr_waitlist_offers").update({ note: note.trim() || null }).eq("id", o.id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await onChanged();
+  }
+
   return (
     <Modal title="Offer Log" subtitle={fullName(entry)} onClose={onClose} width={480}>
       {dialog}
@@ -759,7 +797,7 @@ function OffersModal({
           <span className="subtle" style={{ fontSize: 12, fontWeight: 700 }}>Summary</span>
           <OfferCounters offers={offers} />
         </div>
-        <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} busy={busy} />
+        <OfferLogEditor offers={offers} onAdd={addOffer} onDelete={deleteOffer} onEditNote={editOffer} busy={busy} />
         {err ? <div style={{ color: "#b91c1c", fontSize: 12, fontWeight: 600 }}>{err}</div> : null}
       </div>
     </Modal>
@@ -770,11 +808,12 @@ function OffersModal({
 // Pick the child's STARTING room (applied to the admit month only — later months
 // are planned in the roster grid). Then create the roster entry.
 export function AdmitModal({
-  entry, rooms, programs, campusId, myUserId, onClose, onAdmitted,
+  entry, rooms, programs, splitMonths, campusId, myUserId, onClose, onAdmitted,
 }: {
   entry: WaitlistEntry;
   rooms: Room[];
   programs: Program[];
+  splitMonths: { month: string; day: number }[];
   campusId: string;
   myUserId: string | null;
   onClose: () => void;
@@ -790,7 +829,7 @@ export function AdmitModal({
     setBusy(true); setErr("");
     try {
       const rosterId = await admitWaitlistEntry(entry.id, roomId || null, programId || null);
-      if (tags.length) await saveMonthNoteTags(campusId, rosterId, tags, [], myUserId);
+      if (tags.length) await saveMonthNoteTags(campusId, rosterId, tags, [], myUserId, { splitMonths, orderedRoomIds: rooms.map((r) => r.id) });
       onAdmitted();
     } catch (e: any) {
       setErr(e?.message ?? "Could not admit");

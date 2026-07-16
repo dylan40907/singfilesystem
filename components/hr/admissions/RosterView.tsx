@@ -12,7 +12,7 @@ import {
   buildMonths, monthLabelShort, monthLabelLong, ageShort, resolveSeries, currentMonthISO, currentLAMonthISO,
   ageYearsMonths, fmtDate, fullName, todayISO,
   SortState, nextSort, compareForSort,
-  TagItem, saveMonthNoteTags,
+  TagItem, saveMonthNoteTags, applyPromoteAutoRoom, unadmitRosterEntry,
 } from "@/lib/admissions";
 import { Modal, Field, SortTh, RoomDot, TagListEditor, th, td } from "@/components/hr/admissions/shared";
 import RoomsModal from "@/components/hr/admissions/RoomsModal";
@@ -118,18 +118,20 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     for (const c of roomChanges) { const k = c.roster_entry_id ?? c.waitlist_entry_id!; (roomByE.get(k) ?? roomByE.set(k, []).get(k)!).push(c); }
     const progByE = new Map<string, ProgramChange[]>();
     for (const c of programChanges) { const k = c.roster_entry_id ?? c.waitlist_entry_id!; (progByE.get(k) ?? progByE.set(k, []).get(k)!).push(c); }
-    const noteByE = new Map<string, Map<string, MonthNote>>();
-    for (const n of monthNotes) { const k = n.roster_entry_id ?? n.waitlist_entry_id!; const m = noteByE.get(k) ?? noteByE.set(k, new Map()).get(k)!; m.set(n.month, n); }
+    // Multiple notes can share a cell (e.g. admit + withdraw in one month), so
+    // each month key maps to a list — at most one of each kind.
+    const noteByE = new Map<string, Map<string, MonthNote[]>>();
+    for (const n of monthNotes) { const k = n.roster_entry_id ?? n.waitlist_entry_id!; const m = noteByE.get(k) ?? noteByE.set(k, new Map()).get(k)!; (m.get(n.month) ?? m.set(n.month, []).get(n.month)!).push(n); }
 
-    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote>; withdrawFrom: string | null; admitFrom: string | null }>();
+    const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote[]>; withdrawFrom: string | null; admitFrom: string | null }>();
     const ids = [...entries.map((e) => e.id), ...wlEntries.map((e) => e.id)];
     for (const id of ids) {
       const room = resolveSeries((roomByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.room_id })), columns);
       const program = resolveSeries((progByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.program_id })), columns);
-      const notes = noteByE.get(id) ?? new Map<string, MonthNote>();
+      const notes = noteByE.get(id) ?? new Map<string, MonthNote[]>();
       let withdrawFrom: string | null = null;
       let admitFrom: string | null = null;
-      for (const [mo, n] of notes) {
+      for (const [mo, arr] of notes) for (const n of arr) {
         if (n.kind === "withdraw" && (!withdrawFrom || mo < withdrawFrom)) withdrawFrom = mo;
         if (n.kind === "admit" && (!admitFrom || mo < admitFrom)) admitFrom = mo;
       }
@@ -213,15 +215,20 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     await supabase.from("hr_admissions_program_changes").delete().eq(subjCol(r), r.entry.id).eq("effective_month", monthIso);
     await reloadTimelines();
   }
+  // Add/replace a single note KIND in a cell (other kinds in the cell are kept).
+  // Adding a promote auto-bumps the cell's room to the next in the hierarchy.
   async function setNote(r: Row, monthIso: string, kind: MonthNoteKind, noteDate: string) {
     const col = subjCol(r);
-    await supabase.from("hr_admissions_month_notes").delete().eq(col, r.entry.id).eq("month", monthIso);
+    await supabase.from("hr_admissions_month_notes").delete().eq(col, r.entry.id).eq("month", monthIso).eq("kind", kind);
     const { error } = await supabase.from("hr_admissions_month_notes").insert({ campus_id: campusId, [col]: r.entry.id, month: monthIso, kind, note_date: noteDate || null, created_by: myUserId });
     if (error) { setStatus("Error: " + error.message); return; }
+    if (kind === "promote" && r.kind === "roster") {
+      await applyPromoteAutoRoom(campusId, r.entry.id, monthIso, rooms.map((rm) => rm.id), myUserId);
+    }
     await reloadTimelines();
   }
-  async function clearNote(r: Row, monthIso: string) {
-    await supabase.from("hr_admissions_month_notes").delete().eq(subjCol(r), r.entry.id).eq("month", monthIso);
+  async function clearNoteKind(r: Row, monthIso: string, kind: MonthNoteKind) {
+    await supabase.from("hr_admissions_month_notes").delete().eq(subjCol(r), r.entry.id).eq("month", monthIso).eq("kind", kind);
     await reloadTimelines();
   }
 
@@ -242,6 +249,16 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     }).eq("id", e.id);
     if (error) { setStatus("Error: " + error.message); return; }
     setWithdrawFor(null);
+    await reload();
+  }
+  async function moveToWaitlist(e: RosterEntry) {
+    const ok = await confirm(
+      `Move ${fullName(e)} back to the waitlist? They'll leave the roster and reappear as a prospective waitlist entry. Their planned rooms, programs and tags carry back over.`,
+      { title: "Move back to waitlist", confirmLabel: "Move to waitlist", danger: true }
+    );
+    if (!ok) return;
+    try { await unadmitRosterEntry(e.id); } catch (err: any) { setStatus("Error: " + (err?.message ?? "unknown")); return; }
+    setEntryModal(null);
     await reload();
   }
   async function restore(e: RosterEntry) {
@@ -285,7 +302,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     return {
       roomId: s?.room[mi] ?? null,
       programId: s?.program[mi] ?? null,
-      note: s?.notes.get(cell.monthIso) ?? null,
+      notes: s?.notes.get(cell.monthIso) ?? [],
     };
   }, [cell, seriesByEntry, months]);
 
@@ -429,20 +446,26 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                       const roomId = s?.room[mi] ?? null;
                       const roomColor = roomById[roomId ?? ""]?.color;
                       const progName = programById[s?.program[mi] ?? ""]?.name;
-                      const note = s?.notes.get(m);
+                      const notes = s?.notes.get(m) ?? [];
+                      const hasPromote = notes.some((n) => n.kind === "promote");
                       const age = ageShort(r.entry.date_of_birth, m);
                       return (
                         <td
                           key={m}
                           onClick={() => setCell({ row: r, monthIso: m })}
-                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: cellBackground(roomColor, faded, note?.kind === "promote"), verticalAlign: "top", padding: "6px 7px" }}
+                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: cellBackground(roomColor, faded, hasPromote), verticalAlign: "top", padding: "6px 7px" }}
                         >
                           <div className="row" style={{ gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
                             <RoomDot color={roomColor} />
                             <span style={{ fontSize: 12, fontWeight: 600, color: "#374151", whiteSpace: "nowrap" }}>{age || "—"}</span>
                             {progName && <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 6, background: "#eef2ff", color: "#3730a3", whiteSpace: "nowrap", flexShrink: 0 }}>{progName}</span>}
                           </div>
-                          {note && <div style={{ marginTop: 3 }}><NoteTag kind={note.kind} date={note.note_date} /></div>}
+                          {(faded || notes.length > 0) && (
+                            <div className="stack" style={{ gap: 3, marginTop: 3, alignItems: "flex-start" }}>
+                              {faded && <NotAdmittedTag />}
+                              {notes.map((n) => <NoteTag key={n.kind} kind={n.kind} date={n.note_date} />)}
+                            </div>
+                          )}
                         </td>
                       );
                     })}
@@ -457,8 +480,9 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
       {entryModal && (
         <RosterEntryModal entry={entryModal.entry} campusId={campusId} myUserId={myUserId}
-          rooms={rooms} programs={programs}
+          rooms={rooms} programs={programs} splitMonths={splitMonths}
           onManageRooms={() => setRoomsOpen(true)} onManagePrograms={() => setProgramsOpen(true)}
+          onMoveToWaitlist={entryModal.entry ? () => moveToWaitlist(entryModal.entry!) : undefined}
           onClose={() => setEntryModal(null)} onSaved={() => { setEntryModal(null); void reload(); }} />
       )}
 
@@ -471,14 +495,15 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       {cell && cellCtx && (
         <CellEditor
           name={fullName(cell.row.entry)} monthIso={cell.monthIso}
+          splitDay={splitMonths.get(monthOf(cell.monthIso))}
           rooms={rooms} programs={programs}
-          roomId={cellCtx.roomId} programId={cellCtx.programId} note={cellCtx.note}
+          roomId={cellCtx.roomId} programId={cellCtx.programId} notes={cellCtx.notes}
           onSetRoom={(id) => setRoom(cell.row, cell.monthIso, id)}
           onClearRoom={() => clearRoomChange(cell.row, cell.monthIso)}
           onSetProgram={(id) => setProgram(cell.row, cell.monthIso, id)}
           onClearProgram={() => clearProgramChange(cell.row, cell.monthIso)}
           onSetNote={(kind, d) => setNote(cell.row, cell.monthIso, kind, d)}
-          onClearNote={() => clearNote(cell.row, cell.monthIso)}
+          onClearNote={(kind) => clearNoteKind(cell.row, cell.monthIso, kind)}
           onManageRooms={() => setRoomsOpen(true)} onManagePrograms={() => setProgramsOpen(true)}
           onClose={() => setCell(null)}
         />
@@ -532,6 +557,16 @@ function NoteTag({ kind, date }: { kind: MonthNoteKind; date: string | null }) {
   );
 }
 
+// Static clarifier shown on every cell of a prospective (waitlist) row — these
+// children aren't on the roster yet. Not addable or removable.
+function NotAdmittedTag() {
+  return (
+    <span style={{ fontSize: 10, fontWeight: 800, padding: "1px 6px", borderRadius: 6, color: "#6b7280", background: "#eef1f4", border: "1px solid #d1d5db" }}>
+      Not admitted
+    </span>
+  );
+}
+
 function SubTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button onClick={onClick} style={{
@@ -542,26 +577,42 @@ function SubTab({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-// ─── Cell editor (room / program for this month onward + planning note) ───────
+// Inclusive [min, max] date range (YYYY-MM-DD) covered by a cell's column,
+// honoring split months so tag dates stay inside the half you clicked.
+function cellDateRange(monthIso: string, splitDay?: number): { min: string; max: string } {
+  const m = monthOf(monthIso);
+  const [y, mo] = m.split("-").map(Number);
+  const lastDay = new Date(y, mo, 0).getDate();
+  const dd = (d: number) => `${m.slice(0, 8)}${String(d).padStart(2, "0")}`;
+  if (splitDay == null) return { min: m, max: dd(lastDay) };
+  return isSecondHalf(monthIso) ? { min: dd(splitDay), max: dd(lastDay) } : { min: m, max: dd(splitDay - 1) };
+}
+
+// ─── Cell editor (room / program for this month onward + planning notes) ───────
 function CellEditor({
-  name, monthIso, rooms, programs, roomId, programId, note,
+  name, monthIso, splitDay, rooms, programs, roomId, programId, notes,
   onSetRoom, onClearRoom, onSetProgram, onClearProgram, onSetNote, onClearNote, onManageRooms, onManagePrograms, onClose,
 }: {
-  name: string; monthIso: string;
+  name: string; monthIso: string; splitDay?: number;
   rooms: Room[]; programs: Program[];
-  roomId: string | null; programId: string | null; note: MonthNote | null;
+  roomId: string | null; programId: string | null; notes: MonthNote[];
   onSetRoom: (id: string | null) => void | Promise<void>;
   onClearRoom: () => void | Promise<void>;
   onSetProgram: (id: string | null) => void | Promise<void>;
   onClearProgram: () => void | Promise<void>;
   onSetNote: (kind: MonthNoteKind, date: string) => void | Promise<void>;
-  onClearNote: () => void | Promise<void>;
+  onClearNote: (kind: MonthNoteKind) => void | Promise<void>;
   onManageRooms: () => void; onManagePrograms: () => void;
   onClose: () => void;
 }) {
-  const [noteDate, setNoteDate] = useState(note?.note_date ?? monthIso);
+  const range = cellDateRange(monthIso, splitDay);
+  const byKind = new Map(notes.map((n) => [n.kind, n]));
+  // Draft date for a not-yet-added kind; defaults to the start of the cell's range.
+  const [draftDate, setDraftDate] = useState<Record<MonthNoteKind, string>>({ admit: range.min, promote: range.min, withdraw: range.min });
+  const clampInRange = (d: string) => (d < range.min ? range.min : d > range.max ? range.max : d);
+
   return (
-    <Modal title={name} subtitle={`${monthLabelLong(monthOf(monthIso))}${isSecondHalf(monthIso) ? ` · 2nd half (${dayOf(monthIso)}+)` : ""} — applies from this point onward`} onClose={onClose} width={460}>
+    <Modal title={name} subtitle={`${monthLabelLong(monthOf(monthIso))}${isSecondHalf(monthIso) ? ` · 2nd half (${dayOf(monthIso)}+)` : splitDay != null ? ` · 1st half (–${splitDay - 1})` : ""} — applies from this point onward`} onClose={onClose} width={460}>
       <div className="stack" style={{ gap: 16 }}>
         {/* Room */}
         <div className="stack" style={{ gap: 8 }}>
@@ -597,26 +648,33 @@ function CellEditor({
 
         <div className="hr" />
 
-        {/* Note */}
-        <div className="stack" style={{ gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 13 }}>Note <span className="subtle" style={{ fontWeight: 400 }}>(a plan to flag — visual only)</span></span>
-          <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {(["admit", "promote", "withdraw"] as MonthNoteKind[]).map((k) => {
-              const s = NOTE_STYLE[k];
-              const active = note?.kind === k;
-              return (
-                <button key={k} onClick={() => onSetNote(k, noteDate)}
-                  style={{ padding: "5px 12px", borderRadius: 8, cursor: "pointer", fontWeight: 800, fontSize: 12,
-                    color: active ? "#fff" : s.color, background: active ? s.color : s.bg, border: `1.5px solid ${s.border}` }}>
-                  {s.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="row" style={{ gap: 8, alignItems: "center" }}>
-            <span className="subtle" style={{ fontSize: 12 }}>On</span>
-            <input className="input" type="date" value={noteDate} onChange={(e) => setNoteDate(e.target.value)} style={{ maxWidth: 170 }} />
-            {note && <button className="btn" style={{ padding: "3px 10px", fontSize: 12, color: "#b91c1c" }} onClick={onClearNote}>Clear note</button>}
+        {/* Notes — up to one of each kind can coexist in this cell */}
+        <div className="stack" style={{ gap: 10 }}>
+          <span style={{ fontWeight: 800, fontSize: 13 }}>Notes <span className="subtle" style={{ fontWeight: 400 }}>(plans to flag — visual only)</span></span>
+          {(["admit", "promote", "withdraw"] as MonthNoteKind[]).map((k) => {
+            const s = NOTE_STYLE[k];
+            const existing = byKind.get(k);
+            const date = existing?.note_date ?? draftDate[k];
+            return (
+              <div key={k} className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ minWidth: 78, fontSize: 12, fontWeight: 800, padding: "3px 8px", borderRadius: 6, textAlign: "center",
+                  color: existing ? "#fff" : s.color, background: existing ? s.color : s.bg, border: `1.5px solid ${s.border}` }}>{s.label}</span>
+                <input className="input" type="date" value={date} min={range.min} max={range.max}
+                  onChange={(e) => {
+                    const v = clampInRange(e.target.value);
+                    if (existing) void onSetNote(k, v); else setDraftDate((prev) => ({ ...prev, [k]: v }));
+                  }}
+                  style={{ maxWidth: 160 }} />
+                {existing ? (
+                  <button className="btn" style={{ padding: "3px 10px", fontSize: 12, color: "#b91c1c" }} onClick={() => onClearNote(k)}>Remove</button>
+                ) : (
+                  <button className="btn btn-primary" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => onSetNote(k, clampInRange(draftDate[k]))}>Add</button>
+                )}
+              </div>
+            );
+          })}
+          <div className="subtle" style={{ fontSize: 11 }}>
+            Dates are limited to this cell&apos;s range ({fmtDate(range.min)} – {fmtDate(range.max)}).
           </div>
         </div>
       </div>
@@ -714,12 +772,15 @@ function seedMonthISO(enrolled: string): string {
 // ─── Roster child add/edit modal (name / DOB / dates / initial room & program /
 //     planning tags / notes). "Initial" room & program edit only the earliest
 //     change-point — later per-month changes are left intact. ──────────────────
-function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManageRooms, onManagePrograms, onClose, onSaved }: {
+function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, splitMonths, onManageRooms, onManagePrograms, onMoveToWaitlist, onClose, onSaved }: {
   entry?: RosterEntry; campusId: string; myUserId: string | null;
-  rooms: Room[]; programs: Program[];
+  rooms: Room[]; programs: Program[]; splitMonths: Map<string, number>;
   onManageRooms: () => void; onManagePrograms: () => void;
+  onMoveToWaitlist?: () => void | Promise<void>;
   onClose: () => void; onSaved: () => void;
 }) {
+  const splitList = useMemo(() => [...splitMonths.entries()].map(([month, day]) => ({ month, day })), [splitMonths]);
+  const orderedRoomIds = useMemo(() => rooms.map((r) => r.id), [rooms]);
   const mode = entry ? "edit" : "create";
   const [firstName, setFirstName] = useState(entry?.first_name ?? "");
   const [lastName, setLastName] = useState(entry?.last_name ?? "");
@@ -817,7 +878,7 @@ function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManage
           }
         }
       }
-      await saveMonthNoteTags(campusId, entryId, tags, loaded.tags, myUserId);
+      await saveMonthNoteTags(campusId, entryId, tags, loaded.tags, myUserId, { splitMonths: splitList, orderedRoomIds });
       onSaved();
     } catch (e: any) { setErr(e?.message ?? "Could not save"); setSaving(false); }
   }
@@ -825,7 +886,12 @@ function RosterEntryModal({ entry, campusId, myUserId, rooms, programs, onManage
   return (
     <Modal title={mode === "create" ? "Add student to roster" : `Edit ${fullName(entry!)}`} onClose={onClose} width={560}
       footer={<>
-        {err ? <span style={{ color: "#b91c1c", fontSize: 13, fontWeight: 600 }}>{err}</span> : <span />}
+        <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          {mode === "edit" && onMoveToWaitlist && (
+            <button className="btn" style={{ color: "#b45309" }} onClick={() => void onMoveToWaitlist()} disabled={saving}>↩ Move back to waitlist</button>
+          )}
+          {err ? <span style={{ color: "#b91c1c", fontSize: 13, fontWeight: 600 }}>{err}</span> : null}
+        </div>
         <div className="row" style={{ gap: 8 }}>
           <button className="btn" onClick={onClose} disabled={saving}>Cancel</button>
           <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : mode === "create" ? "Add student" : "Save changes"}</button>
