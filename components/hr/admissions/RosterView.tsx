@@ -124,11 +124,22 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     const noteByE = new Map<string, Map<string, MonthNote[]>>();
     for (const n of monthNotes) { const k = n.roster_entry_id ?? n.waitlist_entry_id!; const m = noteByE.get(k) ?? noteByE.set(k, new Map()).get(k)!; (m.get(n.month) ?? m.set(n.month, []).get(n.month)!).push(n); }
 
+    // Prospective (waitlist) entries show their starting room/program (the
+    // hr_waitlist_entries columns) across every cell until a real per-month
+    // change-point is set, which then takes over from its month onward.
+    const wlById = new Map(wlEntries.map((e) => [e.id, e]));
     const map = new Map<string, { room: (string | null)[]; program: (string | null)[]; notes: Map<string, MonthNote[]>; withdrawFrom: string | null; admitFrom: string | null }>();
     const ids = [...entries.map((e) => e.id), ...wlEntries.map((e) => e.id)];
     for (const id of ids) {
-      const room = resolveSeries((roomByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.room_id })), columns);
-      const program = resolveSeries((progByE.get(id) ?? []).map((c) => ({ effective_month: c.effective_month, value: c.program_id })), columns);
+      const wl = wlById.get(id);
+      const roomChg = roomByE.get(id) ?? [];
+      const progChg = progByE.get(id) ?? [];
+      const room = roomChg.length === 0 && wl?.prospective_room_id
+        ? columns.map(() => wl.prospective_room_id)
+        : resolveSeries(roomChg.map((c) => ({ effective_month: c.effective_month, value: c.room_id })), columns);
+      const program = progChg.length === 0 && wl?.program_id
+        ? columns.map(() => wl.program_id)
+        : resolveSeries(progChg.map((c) => ({ effective_month: c.effective_month, value: c.program_id })), columns);
       const notes = noteByE.get(id) ?? new Map<string, MonthNote[]>();
       let withdrawFrom: string | null = null;
       let admitFrom: string | null = null;
@@ -489,7 +500,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
       {wlEntryModal && (
         <WaitlistEntryModal mode="edit" entry={wlEntryModal.entry} campusId={campusId} myUserId={myUserId}
-          programs={programs} onManagePrograms={() => setProgramsOpen(true)}
+          programs={programs} rooms={rooms}
+          onManagePrograms={() => setProgramsOpen(true)} onManageRooms={() => setRoomsOpen(true)}
           onClose={() => { setWlEntryModal(null); void reload(); }} onSaved={() => { setWlEntryModal(null); void reload(); }} />
       )}
 

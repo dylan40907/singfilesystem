@@ -46,6 +46,8 @@ type LeaveBalanceRow = {
 
 type EditField = "sick" | "pto" | "unpaid" | "hours_worked" | "sick_accrued" | "pto_accrued";
 
+type LogRow = { date: string; activity: string; change: number; hoursWorked: number | null; description: string };
+
 type ManualAdjRow = {
   id: string;
   field: EditField;
@@ -202,6 +204,23 @@ function errMessage(e: unknown): string {
   }
   if (typeof e === "string") return e;
   return "Unknown error";
+}
+
+function clockEntryHours(e: ClockEntryRow): number {
+  if (!e.clocked_in_at || !e.clocked_out_at) return 0;
+  const inMs = new Date(e.clocked_in_at).getTime();
+  const outMs = new Date(e.clocked_out_at).getTime();
+  if (!Number.isFinite(inMs) || !Number.isFinite(outMs) || outMs <= inMs) return 0;
+  return (outMs - inMs) / 3_600_000;
+}
+
+// Monday of the week containing `ymd` (YYYY-MM-DD).
+function weekStartYmd(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = (dt.getUTCDay() + 6) % 7; // 0 = Monday
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
 }
 
 function sumClockedHours(entries: ClockEntryRow[], startYmd: string, endYmd: string): number {
@@ -398,6 +417,10 @@ export default function LeavePage() {
   // Escape closes the manual-balance edit modal (unless a save is in flight).
   useEscapeKey(() => setEditField(null), !!editField && !editBusy);
 
+  // Balance log (accrual/usage/adjustment activity feed)
+  const [balLogType, setBalLogType] = useState<"sick" | "pto">("sick");
+  const [allAdjustments, setAllAdjustments] = useState<ManualAdjRow[]>([]);
+
   // Settings (config)
   const [cfgPtoActive, setCfgPtoActive] = useState(false);
   const [cfgPtoPlan, setCfgPtoPlan] = useState<number>(0);
@@ -514,15 +537,17 @@ export default function LeavePage() {
       try {
         const yearStart = `${year}-01-01`;
         const yearEnd = `${year}-12-31`;
-        const [balRes, entriesRes, clockRes] = await Promise.all([
+        const [balRes, entriesRes, clockRes, adjRes] = await Promise.all([
           supabase.from("hr_leave_balances").select("*").eq("employee_id", selectedEmployeeId).eq("year", year).maybeSingle(),
           supabase.from("hr_leave_entries").select("*").eq("employee_id", selectedEmployeeId).gte("start_date", yearStart).lte("start_date", yearEnd).order("start_date", { ascending: false }),
           supabase.from("clock_entries").select("employee_id, session_date, clocked_in_at, clocked_out_at").eq("employee_id", selectedEmployeeId).gte("session_date", yearStart).lte("session_date", yearEnd),
+          supabase.from("hr_leave_manual_adjustments").select("*, user_profiles(full_name)").eq("employee_id", selectedEmployeeId).eq("year", year).order("changed_at", { ascending: false }),
         ]);
         if (cancelled) return;
         if (balRes.error) throw balRes.error;
         if (entriesRes.error) throw entriesRes.error;
         if (clockRes.error) throw clockRes.error;
+        setAllAdjustments((adjRes.data ?? []) as ManualAdjRow[]);
 
         let b = (balRes.data as LeaveBalanceRow | null);
 
@@ -605,6 +630,72 @@ export default function LeavePage() {
   const ptoCalc = useMemo(() => computePtoBalance(balance, hoursWorkedYtd, entries), [balance, hoursWorkedYtd, entries]);
   const unpaidUsedRaw = useMemo(() => entries.filter((e) => e.entry_type === "unpaid").reduce((s, e) => s + Number(e.hours), 0), [entries]);
   const unpaidUsed = unpaidUsedRaw + (balance?.unpaid_override ?? 0);
+
+  // ── Balance log (accrual / usage / adjustment activity feed for the year) ────
+  const balanceLog = useMemo<LogRow[]>(() => {
+    if (!balance) return [];
+    const isSick = balLogType === "sick";
+    const cap = isSick ? (balance.sick_annual_cap ?? 40) : ptoCalc.plan;
+    const accruedAt = isSick
+      ? (h: number) => computeSickBalance(balance, h, []).accrued
+      : (h: number) => computePtoBalance(balance, h, []).accrued;
+    const rows: LogRow[] = [];
+
+    // Opening balance (carryover + initial) at the start of the year.
+    const carry = isSick ? sickCalc.carryover : ptoCalc.carryover;
+    const initial = isSick ? sickCalc.initial : ptoCalc.initial;
+    if (carry + initial !== 0) {
+      rows.push({
+        date: `${year}-01-01`, activity: "Opening", change: carry + initial, hoursWorked: null,
+        description: carry > 0 ? `Carryover ${fmtHours(carry)}${initial !== 0 ? ` + initial ${fmtHours(initial)}` : ""}` : "Starting balance",
+      });
+    }
+
+    // Accrual — frontloaded sick is a single upfront grant; otherwise weekly from the timesheet.
+    const frontloadedSick = isSick && balance.sick_frontloaded && !isOverrideActive(balance.sick_accrual_amount, balance.sick_accrual_per);
+    if (frontloadedSick) {
+      rows.push({ date: `${year}-01-01`, activity: "Frontloaded", change: cap, hoursWorked: null, description: `${fmtHours(cap)} granted upfront` });
+    } else if (isSick || ptoCalc.active) {
+      const byWeek = new Map<string, number>();
+      for (const c of clockEntries) {
+        const h = clockEntryHours(c);
+        if (h <= 0) continue;
+        const ws = weekStartYmd(c.session_date);
+        byWeek.set(ws, (byWeek.get(ws) ?? 0) + h);
+      }
+      let cum = 0;
+      for (const ws of [...byWeek.keys()].sort()) {
+        const wh = byWeek.get(ws)!;
+        const before = accruedAt(cum);
+        cum += wh;
+        rows.push({ date: ws, activity: "Accrual", change: accruedAt(cum) - before, hoursWorked: wh, description: `Week of ${fmtYmd(ws)}` });
+      }
+    }
+
+    // Usage + adjustment entries of this type.
+    const usedType = isSick ? "sick_paid" : "pto";
+    const adjType = isSick ? "sick_adjustment" : "pto_adjustment";
+    for (const e of entries) {
+      if (e.entry_type === usedType) rows.push({ date: e.start_date, activity: "Used", change: -Number(e.hours), hoursWorked: null, description: e.notes || "Leave taken" });
+      else if (e.entry_type === adjType) rows.push({ date: e.start_date, activity: "Adjustment", change: Number(e.hours), hoursWorked: null, description: e.notes || "Manual adjustment" });
+    }
+
+    // Manual balance / accrued-YTD edits.
+    const fields = isSick ? ["sick", "sick_accrued"] : ["pto", "pto_accrued"];
+    for (const a of allAdjustments) {
+      if (!fields.includes(a.field)) continue;
+      const who = a.user_profiles?.full_name ? ` by ${a.user_profiles.full_name}` : "";
+      rows.push({
+        date: a.changed_at.slice(0, 10),
+        activity: a.field.endsWith("_accrued") ? "Accrued YTD set" : "Balance set",
+        change: Number(a.new_value) - Number(a.old_value), hoursWorked: null,
+        description: `${fmtHours(Number(a.old_value))} → ${fmtHours(Number(a.new_value))}${who}${a.notes ? ` · ${a.notes}` : ""}`,
+      });
+    }
+
+    rows.sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0)); // newest first
+    return rows;
+  }, [balance, balLogType, year, clockEntries, entries, allAdjustments, sickCalc, ptoCalc]);
 
   // Enrich pending requests with employee names
   const enrichedPending = useMemo(() =>
@@ -1366,6 +1457,58 @@ export default function LeavePage() {
             </Card>
           </div>
 
+          {/* Balance log */}
+          <div style={{ marginBottom: 16 }}>
+            <Card title={`Balance log — ${year}`}>
+              <div className="row" style={{ gap: 8, marginBottom: 12, alignItems: "center" }}>
+                <div className="row" style={{ gap: 4, background: "#f3f4f6", padding: 4, borderRadius: 10 }}>
+                  {(["sick", "pto"] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setBalLogType(t)}
+                      style={{
+                        padding: "6px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontWeight: 800, fontSize: 13,
+                        background: balLogType === t ? "white" : "transparent", color: balLogType === t ? "#e6178d" : "#6b7280",
+                        boxShadow: balLogType === t ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
+                      }}
+                    >
+                      {t === "sick" ? "Sick" : "PTO"}
+                    </button>
+                  ))}
+                </div>
+                <span className="subtle" style={{ fontSize: 12 }}>Accruals, usage and adjustments. The balance card above is the source of truth.</span>
+              </div>
+              {loading ? <div className="subtle">Loading…</div>
+                : balanceLog.length === 0 ? <div className="subtle">No {balLogType === "sick" ? "sick" : "PTO"} activity for {year}.</div>
+                : (
+                  <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb" }}>
+                          <Th>Date</Th><Th>Activity</Th><Th align="right">Change</Th><Th align="right">Hours worked</Th><Th>Description</Th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {balanceLog.map((r, i) => (
+                          <tr key={i} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                            <Td>{fmtYmd(r.date)}</Td>
+                            <Td><LogActivityPill activity={r.activity} /></Td>
+                            <Td align="right">
+                              <span style={{ fontWeight: 700, color: r.change > 0 ? "#16a34a" : r.change < 0 ? "#b91c1c" : "#6b7280" }}>
+                                {r.change > 0 ? "+" : r.change < 0 ? "−" : ""}{fmtHours(Math.abs(r.change))}
+                              </span>
+                            </Td>
+                            <Td align="right" subtle>{r.hoursWorked != null ? fmtHours(r.hoursWorked) : "—"}</Td>
+                            <Td>{r.description || <span className="subtle">—</span>}</Td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+            </Card>
+          </div>
+
           {/* Entries table */}
           <Card title={`Entries — ${year}`}>
             {loading ? <div className="subtle">Loading…</div>
@@ -1538,6 +1681,25 @@ function TypePill({ type }: { type: LeaveEntryType | RequestType }) {
   return (
     <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 999, background: c.bg, color: c.fg, fontSize: 12, fontWeight: 700 }}>
       {c.label}
+    </span>
+  );
+}
+
+function LogActivityPill({ activity }: { activity: string }) {
+  const cfg: Record<string, { bg: string; fg: string }> = {
+    Accrual: { bg: "#ecfdf5", fg: "#15803d" },
+    Used: { bg: "rgba(230,23,141,0.08)", fg: "#e6178d" },
+    Adjustment: { bg: "#fef3c7", fg: "#b45309" },
+    "Manual edit": { bg: "#eef2ff", fg: "#3730a3" },
+    "Accrued YTD set": { bg: "#eef2ff", fg: "#3730a3" },
+    "Balance set": { bg: "#eef2ff", fg: "#3730a3" },
+    Opening: { bg: "#f3f4f6", fg: "#374151" },
+    Frontloaded: { bg: "#ecfdf5", fg: "#15803d" },
+  };
+  const c = cfg[activity] ?? { bg: "#f3f4f6", fg: "#374151" };
+  return (
+    <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 999, background: c.bg, color: c.fg, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
+      {activity}
     </span>
   );
 }

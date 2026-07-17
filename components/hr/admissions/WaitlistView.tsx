@@ -102,6 +102,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
       case "child": return fullName(e).toLowerCase();
       case "completion": return waitlistCompletionDate(e.application_received_date, e.application_fee_paid_date);
       case "program": return (programById[e.program_id ?? ""]?.name ?? "").toLowerCase();
+      case "starting_room": return (roomById[e.prospective_room_id ?? ""]?.name ?? "").toLowerCase();
       case "dob": return e.date_of_birth;
       case "customer_preferred": return e.customer_preferred_start_date;
       case "age_customer": return ageInMonths(e.date_of_birth, e.customer_preferred_start_date);
@@ -187,11 +188,21 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
               <tr>
                 <SortTh label="Child" sortKey="child" sort={sort} onSort={onSort} style={{ left: 0, zIndex: 2, boxShadow: "2px 0 5px -2px rgba(0,0,0,0.12)", position: "sticky" }} />
                 <SortTh label="Waitlist Completion" sortKey="completion" sort={sort} onSort={onSort} />
-                <SortTh label="Program" sortKey="program" sort={sort} onSort={onSort}>
+                <SortTh label="Starting Program" sortKey="program" sort={sort} onSort={onSort}>
                   <button
                     className="btn"
                     title="Add / edit programs"
                     onClick={(ev) => { ev.stopPropagation(); setProgramsOpen(true); }}
+                    style={{ padding: "1px 7px", fontSize: 11 }}
+                  >
+                    ✎ Edit
+                  </button>
+                </SortTh>
+                <SortTh label="Starting Room" sortKey="starting_room" sort={sort} onSort={onSort}>
+                  <button
+                    className="btn"
+                    title="Add / edit rooms"
+                    onClick={(ev) => { ev.stopPropagation(); setRoomsOpen(true); }}
                     style={{ padding: "1px 7px", fontSize: 11 }}
                   >
                     ✎ Edit
@@ -249,6 +260,21 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                         </select>
                       ) : (
                         programById[e.program_id ?? ""]?.name ?? "—"
+                      )}
+                    </td>
+                    <td style={td}>
+                      {isActive ? (
+                        <select
+                          className="select"
+                          value={e.prospective_room_id ?? ""}
+                          onChange={(ev) => void patchEntry(e.id, { prospective_room_id: ev.target.value || null })}
+                          style={{ fontSize: 12, padding: "4px 6px", maxWidth: 170 }}
+                        >
+                          <option value="">Unassigned</option>
+                          {rooms.map((rm) => <option key={rm.id} value={rm.id}>{rm.name}</option>)}
+                        </select>
+                      ) : (
+                        roomById[e.prospective_room_id ?? ""]?.name ?? "—"
                       )}
                     </td>
                     <td style={td}>{fmtDate(e.date_of_birth)}</td>
@@ -319,7 +345,9 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           campusId={campusId}
           myUserId={myUserId}
           programs={programs}
+          rooms={rooms}
           onManagePrograms={() => setProgramsOpen(true)}
+          onManageRooms={() => setRoomsOpen(true)}
           onClose={async () => { setEntryModal(null); setOffers(await fetchOffers(entries.map((e) => e.id))); }}
           onSaved={() => { setEntryModal(null); void reload(); }}
         />
@@ -414,14 +442,16 @@ function SubTab({ active, onClick, children }: { active: boolean; onClick: () =>
 
 // ─── Add / edit waitlist entry ───────────────────────────────────────────────
 export function EntryModal({
-  mode, entry, campusId, myUserId, programs, onManagePrograms, onClose, onSaved,
+  mode, entry, campusId, myUserId, programs, rooms, onManagePrograms, onManageRooms, onClose, onSaved,
 }: {
   mode: "create" | "edit";
   entry?: WaitlistEntry;
   campusId: string;
   myUserId: string | null;
   programs: Program[];
+  rooms: Room[];
   onManagePrograms: () => void;
+  onManageRooms: () => void;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -430,6 +460,7 @@ export function EntryModal({
   const [lastName, setLastName] = useState(entry?.last_name ?? "");
   const [dob, setDob] = useState(entry?.date_of_birth ?? "");
   const [programId, setProgramId] = useState(entry?.program_id ?? "");
+  const [roomId, setRoomId] = useState(entry?.prospective_room_id ?? "");
   const [prefStart, setPrefStart] = useState(entry?.customer_preferred_start_date ?? "");
   const [plannedStart, setPlannedStart] = useState(entry?.planned_start_date ?? "");
   const [siblingHas, setSiblingHas] = useState<boolean>(!!(entry?.sibling_name && entry.sibling_name.trim()));
@@ -498,6 +529,7 @@ export function EntryModal({
       last_name: lastName.trim(),
       date_of_birth: dob,
       program_id: programId || null,
+      prospective_room_id: roomId || null,
       customer_preferred_start_date: prefStart || null,
       planned_start_date: plannedStart || null,
       sibling_name: siblingHas ? sibling.trim() : null,
@@ -575,7 +607,7 @@ export function EntryModal({
             </Field>
           </div>
           <div style={{ flex: "1 1 220px" }}>
-            <Field label="Program" optional>
+            <Field label="Starting program" hint="Carries over as the starting program when admitted." optional>
               <div className="row" style={{ gap: 6 }}>
                 <select className="select" value={programId} onChange={(e) => setProgramId(e.target.value)} style={{ flex: 1 }}>
                   <option value="">— None —</option>
@@ -585,6 +617,21 @@ export function EntryModal({
               </div>
             </Field>
           </div>
+        </div>
+
+        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 220px" }}>
+            <Field label="Starting room" hint="Shown on the roster grid and prefilled when admitted." optional>
+              <div className="row" style={{ gap: 6 }}>
+                <select className="select" value={roomId} onChange={(e) => setRoomId(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">Unassigned</option>
+                  {rooms.map((r) => <option key={r.id} value={r.id}>{r.name}{r.capacity != null ? ` (cap ${r.capacity})` : ""}</option>)}
+                </select>
+                <button className="btn" type="button" onClick={onManageRooms} title="Add / edit rooms">✎</button>
+              </div>
+            </Field>
+          </div>
+          <div style={{ flex: "1 1 220px" }} />
         </div>
 
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
@@ -819,7 +866,7 @@ export function AdmitModal({
   onClose: () => void;
   onAdmitted: () => void;
 }) {
-  const [roomId, setRoomId] = useState<string>("");
+  const [roomId, setRoomId] = useState<string>(entry.prospective_room_id ?? "");
   const [programId, setProgramId] = useState<string>(entry.program_id ?? "");
   const [tags, setTags] = useState<TagItem[]>([]);
   const [loadedTags, setLoadedTags] = useState<TagItem[]>([]);
