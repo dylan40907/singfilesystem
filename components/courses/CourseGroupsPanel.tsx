@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useDialog } from "@/components/ui/useDialog";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import {
   CourseGroup, createGroup, deleteGroup, fetchGroupMembers, fetchGroups, renameGroup, setGroupMembers,
 } from "@/lib/courses";
@@ -138,6 +139,7 @@ export default function CourseGroupsPanel() {
 }
 
 function ModalShell({ title, onClose, tall, children }: { title: string; onClose: () => void; tall?: boolean; children: React.ReactNode }) {
+  useEscapeKey(onClose);
   return (
     <div onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 250, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>

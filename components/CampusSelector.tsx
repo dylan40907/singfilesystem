@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { Campus, useCampusFilter } from "@/lib/CampusContext";
 import { useDialog } from "@/components/ui/useDialog";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 /**
  * Campus selector button + dropdown for the HR navbar.
@@ -20,6 +21,7 @@ export default function CampusSelector() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  useEscapeKey(() => setOpen(false), open);
 
   // Close on outside click
   useEffect(() => {

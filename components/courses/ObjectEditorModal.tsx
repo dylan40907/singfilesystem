@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ObjectType, QuizQuestion, uploadCourseMedia } from "@/lib/courses";
 import RichTextEditor from "./RichTextEditor";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 export type ObjectDraft = {
   type: ObjectType;
@@ -27,6 +28,7 @@ export default function ObjectEditorModal({
   const [settings, setSettings] = useState<Record<string, any>>(draft.settings ?? {});
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEscapeKey(onCancel);
 
   function patchContent(p: Record<string, any>) { setContent((c) => ({ ...c, ...p })); }
   function patchSettings(p: Record<string, any>) { setSettings((s) => ({ ...s, ...p })); }

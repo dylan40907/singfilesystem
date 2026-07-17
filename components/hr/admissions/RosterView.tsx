@@ -53,11 +53,12 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
   const [sub, setSub] = useState<SubFilter>("enrolled");
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortState>({ key: "dob", dir: "asc" });
+  // Default view: youngest first (DOB descending = most recent birth date on top).
+  const [sort, setSort] = useState<SortState>({ key: "dob", dir: "desc" });
   const onSort = (key: string) => setSort((prev) => nextSort(prev, key));
   // Remembers the last frozen-column sort so a room-by-month sort keeps it as the
   // secondary sort within each room (e.g. sort by DOB, then group by room).
-  const [baseSort, setBaseSort] = useState<SortState>({ key: "dob", dir: "asc" });
+  const [baseSort, setBaseSort] = useState<SortState>({ key: "dob", dir: "desc" });
   useEffect(() => { if (!sort.key.startsWith("room:")) setBaseSort(sort); }, [sort]);
   const [showPast, setShowPast] = useState(false);
 

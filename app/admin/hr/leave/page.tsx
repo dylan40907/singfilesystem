@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -394,6 +395,8 @@ export default function LeavePage() {
   const [editHistory, setEditHistory] = useState<ManualAdjRow[]>([]);
   const [editHistoryLoading, setEditHistoryLoading] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
+  // Escape closes the manual-balance edit modal (unless a save is in flight).
+  useEscapeKey(() => setEditField(null), !!editField && !editBusy);
 
   // Settings (config)
   const [cfgPtoActive, setCfgPtoActive] = useState(false);

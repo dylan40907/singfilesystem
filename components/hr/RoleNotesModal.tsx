@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 type ReviewType = "monthly" | "annual";
 type JobLevel = { id: string; name: string };
@@ -21,6 +22,7 @@ export default function RoleNotesModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  useEscapeKey(onClose);
 
   useEffect(() => {
     (async () => {

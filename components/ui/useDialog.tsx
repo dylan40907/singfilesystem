@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 type DialogState = {
   type: "confirm" | "alert";
@@ -53,6 +54,9 @@ export function useDialog() {
     state?.resolve(value);
     setState(null);
   }
+
+  // Escape dismisses the dialog (cancels a confirm, closes an alert).
+  useEscapeKey(() => close(false), !!state);
 
   const modal = state ? (
     <>

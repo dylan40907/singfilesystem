@@ -2,6 +2,7 @@
 
 import { ReactNode, useState } from "react";
 import { SortState, TagItem, MonthNoteKind, NOTE_STYLE, monthOf, monthLabelLong, fmtDate } from "@/lib/admissions";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 export const modalBackdrop: React.CSSProperties = {
   position: "fixed",
@@ -30,6 +31,7 @@ export function Modal({
   width?: number;
   footer?: ReactNode;
 }) {
+  useEscapeKey(onClose);
   return (
     <div style={modalBackdrop} onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}>
       <div

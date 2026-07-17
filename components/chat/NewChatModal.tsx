@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChatUserLite, createConversation, fetchPickableUsers, userDisplayName } from "@/lib/chat";
 import { fetchMyProfile } from "@/lib/teachers";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 export default function NewChatModal({
   myId,
@@ -22,6 +23,7 @@ export default function NewChatModal({
   const [error, setError] = useState<string | null>(null);
   // Only supervisors / app-supervisors / admins can create group chats.
   const [canCreateGroups, setCanCreateGroups] = useState(false);
+  useEscapeKey(onClose, !creating);
 
   useEffect(() => {
     (async () => {

@@ -822,14 +822,31 @@ export function AdmitModal({
   const [roomId, setRoomId] = useState<string>("");
   const [programId, setProgramId] = useState<string>(entry.program_id ?? "");
   const [tags, setTags] = useState<TagItem[]>([]);
+  const [loadedTags, setLoadedTags] = useState<TagItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // Preload the waitlist entry's existing planning tags (e.g. the auto Admit tag
+  // from its planned start) so they show up — and carry over — when admitting.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from("hr_admissions_month_notes")
+        .select("id, month, kind, note_date").eq("waitlist_entry_id", entry.id).order("month");
+      if (cancelled) return;
+      const loaded: TagItem[] = (data ?? []).map((n: any) => ({ id: n.id, kind: n.kind, date: n.note_date ?? n.month, month: n.month }));
+      setTags(loaded); setLoadedTags(loaded);
+    })();
+    return () => { cancelled = true; };
+  }, [entry.id]);
 
   async function admit() {
     setBusy(true); setErr("");
     try {
       const rosterId = await admitWaitlistEntry(entry.id, roomId || null, programId || null);
-      if (tags.length) await saveMonthNoteTags(campusId, rosterId, tags, [], myUserId, { splitMonths, orderedRoomIds: rooms.map((r) => r.id) });
+      // The admit RPC migrates the waitlist entry's notes onto the roster row (same
+      // ids), so reconcile against those to honor any tags the admin added/removed here.
+      await saveMonthNoteTags(campusId, rosterId, tags, loadedTags, myUserId, { splitMonths, orderedRoomIds: rooms.map((r) => r.id) });
       onAdmitted();
     } catch (e: any) {
       setErr(e?.message ?? "Could not admit");

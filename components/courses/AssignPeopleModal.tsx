@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { CourseGroup, fetchGroups, fetchGroupMembersMap } from "@/lib/courses";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 type PickUser = { id: string; full_name: string | null; username: string | null; email: string | null; role: string | null };
 
@@ -29,6 +30,7 @@ export default function AssignPeopleModal({
   const [membersByGroup, setMembersByGroup] = useState<Map<string, string[]>>(new Map());
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
+  useEscapeKey(onClose, !busy);
 
   useEffect(() => {
     (async () => {

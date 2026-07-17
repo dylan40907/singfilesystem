@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 // Notification bell shared by both navbars. Reads the same public.hr_notifications
 // table the mobile app uses, so the in-app and web notification logs are in sync.
@@ -35,6 +36,7 @@ const META: Record<string, { icon: string; tint: string }> = {
   leave_request: { icon: "🌴", tint: "#2563eb" },
   leave_approved: { icon: "✅", tint: "#16a34a" },
   leave_rejected: { icon: "⚠️", tint: "#dc2626" },
+  waitlist_reminder: { icon: "⏳", tint: "#d97706" },
   chat: { icon: "💬", tint: "#2563eb" },
 };
 
@@ -72,6 +74,7 @@ export default function NotificationsBell() {
   }, [load]);
 
   const unread = useMemo(() => notifs.filter((n) => !n.read_at).length, [notifs]);
+  useEscapeKey(() => setOpen(false), open);
 
   const feed = useMemo<FeedItem[]>(() => {
     const chatGroups = new Map<string, Notif[]>();
@@ -133,6 +136,7 @@ export default function NotificationsBell() {
     else if (n.type.startsWith("timesheet")) router.push("/hr");
     else if (n.type === "leave_request") router.push("/admin/hr/leave");
     else if (n.type.startsWith("leave")) router.push("/hr");
+    else if (n.type === "waitlist_reminder") router.push("/admin/hr/admissions");
     void load();
   }
 
