@@ -214,13 +214,18 @@ function clockEntryHours(e: ClockEntryRow): number {
   return (outMs - inMs) / 3_600_000;
 }
 
-// Monday of the week containing `ymd` (YYYY-MM-DD).
-function weekStartYmd(ymd: string): string {
+// Biweekly pay periods — mirrors the timesheets page (14-day cycle anchored at
+// 2026-03-30). Returns the "M/D – M/D" label of the period containing `ymd`.
+const PP_ANCHOR_MS = Date.UTC(2026, 2, 30);
+const PP_MS = 14 * 86_400_000;
+function payPeriodLabel(ymd: string): string {
   const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  const dow = (dt.getUTCDay() + 6) % 7; // 0 = Monday
-  dt.setUTCDate(dt.getUTCDate() - dow);
-  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+  const utc = Date.UTC(y, m - 1, d);
+  const idx = Math.floor((utc - PP_ANCHOR_MS) / PP_MS);
+  const start = new Date(PP_ANCHOR_MS + idx * PP_MS);
+  const end = new Date(start.getTime() + 13 * 86_400_000);
+  const fmt = (dt: Date) => dt.toLocaleDateString("en-US", { month: "numeric", day: "numeric", timeZone: "UTC" });
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 function sumClockedHours(entries: ClockEntryRow[], startYmd: string, endYmd: string): number {
@@ -636,9 +641,15 @@ export default function LeavePage() {
     if (!balance) return [];
     const isSick = balLogType === "sick";
     const cap = isSick ? (balance.sick_annual_cap ?? 40) : ptoCalc.plan;
-    const accruedAt = isSick
-      ? (h: number) => computeSickBalance(balance, h, []).accrued
-      : (h: number) => computePtoBalance(balance, h, []).accrued;
+    // Accrual for the log: each worked day earns hours/rate, running from the
+    // anchor baseline (a manually-set Accrued YTD is the new starting point, NOT
+    // a reconciliation target), and stops at the annual cap. This intentionally
+    // does NOT re-flatten to the anchored total — the balance card does that.
+    const anchorBaseline = Number(isSick ? balance.sick_accrual_anchor_accrued ?? 0 : balance.pto_accrual_anchor_accrued ?? 0);
+    const rate = isSick
+      ? (sickCalc.overrideActive ? sickCalc.overridePer / sickCalc.overrideAmount : DEFAULT_SICK_RATE)
+      : ptoCalc.accrualRate;
+    const accruedAt = (h: number) => (rate > 0 ? Math.min(anchorBaseline + Math.floor(h * 60 / rate) / 60, cap) : anchorBaseline);
     const rows: LogRow[] = [];
 
     // Opening balance (carryover + initial) at the start of the year.
@@ -656,19 +667,20 @@ export default function LeavePage() {
     if (frontloadedSick) {
       rows.push({ date: `${year}-01-01`, activity: "Frontloaded", change: cap, hoursWorked: null, description: `${fmtHours(cap)} granted upfront` });
     } else if (isSick || ptoCalc.active) {
-      const byWeek = new Map<string, number>();
+      // Per worked day: sum the day's hours, then the accrual it earned (the delta
+      // of the running accrued total, so it honors rate / cap / anchor / frontload).
+      const byDay = new Map<string, number>();
       for (const c of clockEntries) {
         const h = clockEntryHours(c);
         if (h <= 0) continue;
-        const ws = weekStartYmd(c.session_date);
-        byWeek.set(ws, (byWeek.get(ws) ?? 0) + h);
+        byDay.set(c.session_date, (byDay.get(c.session_date) ?? 0) + h);
       }
       let cum = 0;
-      for (const ws of [...byWeek.keys()].sort()) {
-        const wh = byWeek.get(ws)!;
+      for (const day of [...byDay.keys()].sort()) {
+        const dh = byDay.get(day)!;
         const before = accruedAt(cum);
-        cum += wh;
-        rows.push({ date: ws, activity: "Accrual", change: accruedAt(cum) - before, hoursWorked: wh, description: `Week of ${fmtYmd(ws)}` });
+        cum += dh;
+        rows.push({ date: day, activity: "Accrual", change: accruedAt(cum) - before, hoursWorked: dh, description: "" });
       }
     }
 
@@ -1485,7 +1497,7 @@ export default function LeavePage() {
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                       <thead>
                         <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb" }}>
-                          <Th>Date</Th><Th>Activity</Th><Th align="right">Change</Th><Th align="right">Hours worked</Th><Th>Description</Th>
+                          <Th>Date</Th><Th>Activity</Th><Th>Pay period</Th><Th align="right">Change</Th><Th align="right">Hours worked</Th><Th>Description</Th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1493,6 +1505,7 @@ export default function LeavePage() {
                           <tr key={i} style={{ borderBottom: "1px solid #f3f4f6" }}>
                             <Td>{fmtYmd(r.date)}</Td>
                             <Td><LogActivityPill activity={r.activity} /></Td>
+                            <Td subtle>{payPeriodLabel(r.date)}</Td>
                             <Td align="right">
                               <span style={{ fontWeight: 700, color: r.change > 0 ? "#16a34a" : r.change < 0 ? "#b91c1c" : "#6b7280" }}>
                                 {r.change > 0 ? "+" : r.change < 0 ? "−" : ""}{fmtHours(Math.abs(r.change))}
