@@ -269,6 +269,20 @@ export default function ChatThread({
           markRead(conversation.id, myId).catch(() => {});
         }
       )
+      .on(
+        // Edits + unsends arrive as UPDATEs — reflect them in place.
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "chat_messages",
+          filter: `conversation_id=eq.${conversation.id}`,
+        },
+        (payload) => {
+          const upd = payload.new as ChatMessage;
+          setMessages((prev) => prev.map((m) => (m.id === upd.id ? upd : m)));
+        }
+      )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
@@ -422,6 +436,25 @@ export default function ChatThread({
             const showSenderName =
               conversation.is_group && !isMine && (!prev || prev.sender_id !== m.sender_id);
 
+            // System note (participant added/removed) — centered, with time.
+            if (m.message_type === "system") {
+              return (
+                <div key={m.id}>
+                  {showDay && (
+                    <div style={{ textAlign: "center", margin: "16px 0 12px", fontSize: 11, color: "#9ca3af", fontWeight: 700 }}>
+                      {formatDay(m.created_at)}
+                    </div>
+                  )}
+                  <div style={{ textAlign: "center", margin: "8px 0" }}>
+                    <span style={{ display: "inline-block", fontSize: 12, color: "#6b7280", background: "#f3f4f6", padding: "4px 12px", borderRadius: 999 }}>
+                      {m.content}
+                    </span>
+                    <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>{formatTime(m.created_at)}</div>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div key={m.id}>
                 {showDay && (
@@ -458,21 +491,37 @@ export default function ChatThread({
                         {sender ? userDisplayName(sender) : "Someone"}
                       </div>
                     )}
-                    <div
-                      style={{
-                        padding: "8px 12px",
-                        borderRadius: 14,
-                        background: isMine ? "#e6178d" : "#f3f4f6",
-                        color: isMine ? "white" : "#111827",
-                        fontSize: 14,
-                        lineHeight: 1.4,
-                        wordBreak: "break-word",
-                        whiteSpace: "pre-wrap",
-                      }}
-                    >
-                      {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
-                      {m.content?.trim() ? m.content : null}
-                    </div>
+                    {m.deleted_at ? (
+                      <div
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 14,
+                          border: "1px dashed #e5e7eb",
+                          background: "#f9fafb",
+                          color: "#9ca3af",
+                          fontSize: 13.5,
+                          fontStyle: "italic",
+                        }}
+                      >
+                        🚫 Message unsent
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 14,
+                          background: isMine ? "#e6178d" : "#f3f4f6",
+                          color: isMine ? "white" : "#111827",
+                          fontSize: 14,
+                          lineHeight: 1.4,
+                          wordBreak: "break-word",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
+                        {m.content?.trim() ? m.content : null}
+                      </div>
+                    )}
                     <div
                       style={{
                         fontSize: 10,
@@ -484,6 +533,7 @@ export default function ChatThread({
                       }}
                     >
                       {formatTime(m.created_at)}
+                      {m.edited_at && !m.deleted_at ? " · edited" : ""}
                     </div>
                   </div>
                 </div>

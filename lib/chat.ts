@@ -29,7 +29,10 @@ export type ChatMessage = {
   attachment_name?: string | null;
   attachment_type?: string | null;
   attachment_size?: number | null;
-  attachment_kind?: "image" | "file" | null;
+  attachment_kind?: "image" | "file" | "video" | null;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  message_type?: "user" | "system";
 };
 
 export type ChatAttachment = {
@@ -41,7 +44,7 @@ export type ChatAttachment = {
 };
 
 const MSG_COLS =
-  "id, conversation_id, sender_id, content, created_at, attachment_path, attachment_name, attachment_type, attachment_size, attachment_kind";
+  "id, conversation_id, sender_id, content, created_at, attachment_path, attachment_name, attachment_type, attachment_size, attachment_kind, edited_at, deleted_at, message_type";
 
 export type ChatUserLite = {
   id: string;
