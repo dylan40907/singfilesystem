@@ -22,6 +22,17 @@ import { EntryModal as WaitlistEntryModal } from "@/components/hr/admissions/Wai
 type SubFilter = "enrolled" | "withdrawn";
 type Row = { kind: "roster"; entry: RosterEntry } | { kind: "prospective"; entry: WaitlistEntry };
 
+// Per-room tallies for a single month column. AM/PM split out; a FULL-day
+// program feeds both (so total ≠ AM + PM by design).
+type RoomCount = {
+  enrolled: number; prospective: number;
+  amEnrolled: number; amProspective: number;
+  pmEnrolled: number; pmProspective: number;
+};
+const emptyRoomCount = (): RoomCount => ({
+  enrolled: 0, prospective: 0, amEnrolled: 0, amProspective: 0, pmEnrolled: 0, pmProspective: 0,
+});
+
 // Frozen left column widths.
 const NAME_W = 156, DOB_W = 94, ENR_W = 100, MONTH_W = 138;
 const PROSPECTIVE_BG = "#c6ccd6"; // distinctly grey so waitlist rows stand out
@@ -179,23 +190,32 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   const rowWithdrawMonth = (r: Row): string | null => (r.kind === "roster" ? (r.entry as RosterEntry).withdrawal_month : null);
   const cellActive = (r: Row, monthIso: string) => { const wd = rowWithdrawMonth(r); return !wd || monthIso <= wd; };
 
+  // Whether any program is designated AM/PM — controls the split display.
+  const hasSessions = useMemo(() => programs.some((p) => p.counts_am || p.counts_pm), [programs]);
+
   // Per-column per-room counts (from visible rows, respecting withdrawal cutoff).
+  // Also split by session: a FULL-day program (counts_am && counts_pm) adds to
+  // both the AM and PM tallies.
   const monthCounts = useMemo(() => {
-    const res = columns.map(() => new Map<string, { enrolled: number; prospective: number }>());
+    const res = columns.map(() => new Map<string, RoomCount>());
     for (const r of rows) {
       const s = seriesByEntry.get(r.entry.id); if (!s) continue;
+      const prospective = r.kind !== "roster";
       columns.forEach((m, mi) => {
         if (!cellActive(r, m)) return;
         if (s.withdrawFrom && m > s.withdrawFrom) return; // planned-withdrawn → not counted after
         if (s.admitFrom && m < s.admitFrom) return; // not yet admitted → not counted before
         const roomId = s.room[mi]; if (!roomId) return;
-        const cur = res[mi].get(roomId) ?? { enrolled: 0, prospective: 0 };
-        if (r.kind === "roster") cur.enrolled++; else cur.prospective++;
+        const cur = res[mi].get(roomId) ?? emptyRoomCount();
+        if (prospective) cur.prospective++; else cur.enrolled++;
+        const prog = programById[s.program[mi] ?? ""];
+        if (prog?.counts_am) { if (prospective) cur.amProspective++; else cur.amEnrolled++; }
+        if (prog?.counts_pm) { if (prospective) cur.pmProspective++; else cur.pmEnrolled++; }
         res[mi].set(roomId, cur);
       });
     }
     return res;
-  }, [rows, seriesByEntry, columns]);
+  }, [rows, seriesByEntry, columns, programById]);
 
   const counts = useMemo(() => ({
     enrolled: entries.filter((e) => e.status === "enrolled").length + wlEntries.length,
@@ -372,7 +392,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                   return (
                     <th key={m} style={{ ...th, minWidth: MONTH_W, width: MONTH_W, verticalAlign: "top" }}>
                       <div className="row-between" style={{ gap: 4, alignItems: "flex-start" }}>
-                        <MonthHeader label={monthLabelShort(m1)} sublabel={sublabel} counts={monthCounts[mi]} rooms={rooms} />
+                        <MonthHeader label={monthLabelShort(m1)} sublabel={sublabel} counts={monthCounts[mi]} rooms={rooms} showSessions={hasSessions} />
                         <div className="stack" style={{ gap: 3, alignItems: "center", flexShrink: 0 }}>
                           <button
                             title="Group students by room for this month"
@@ -537,22 +557,37 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 }
 
 // ─── Month header (label + compact per-room counts) ───────────────────────────
-function MonthHeader({ label, sublabel, counts, rooms }: { label: string; sublabel?: string; counts: Map<string, { enrolled: number; prospective: number }>; rooms: Room[] }) {
+function MonthHeader({ label, sublabel, counts, rooms, showSessions }: { label: string; sublabel?: string; counts: Map<string, RoomCount>; rooms: Room[]; showSessions: boolean }) {
   const shown = rooms.filter((r) => { const c = counts.get(r.id); return c && (c.enrolled > 0 || c.prospective > 0); });
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div style={{ fontWeight: 800, fontSize: 12 }}>{label}</div>
       {sublabel && <div style={{ fontSize: 9.5, fontWeight: 700, color: "#e6178d" }}>{sublabel}</div>}
       {shown.length > 0 && (
-        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        // With AM/PM designations we stack one room per line (room total, then the
+        // AM/PM split underneath); otherwise keep the compact wrapped row.
+        <div className={showSessions ? "stack" : "row"} style={showSessions ? { gap: 5 } : { gap: 8, flexWrap: "wrap" }}>
           {shown.map((r) => {
             const c = counts.get(r.id)!;
+            const ep = (e: number, p: number) => (
+              <>
+                <span style={{ color: r.color }}>{e}</span>
+                <span style={{ color: "#9ca3af" }}>+{p}</span>
+              </>
+            );
             return (
-              <span key={r.id} title={r.name} className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
-                <RoomDot color={r.color} />
-                <span style={{ color: r.color }}>{c.enrolled}</span>
-                <span style={{ color: "#9ca3af" }}>+{c.prospective}</span>
-              </span>
+              <div key={r.id} title={r.name} className="stack" style={{ gap: 1 }}>
+                <span className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
+                  <RoomDot color={r.color} />
+                  {ep(c.enrolled, c.prospective)}
+                </span>
+                {showSessions && (
+                  <span className="row" style={{ gap: 8, paddingLeft: 13, fontSize: 9.5, fontWeight: 700, color: "#6b7280" }}>
+                    <span className="row" style={{ gap: 2 }}>AM {ep(c.amEnrolled, c.amProspective)}</span>
+                    <span className="row" style={{ gap: 2 }}>PM {ep(c.pmEnrolled, c.pmProspective)}</span>
+                  </span>
+                )}
+              </div>
             );
           })}
         </div>

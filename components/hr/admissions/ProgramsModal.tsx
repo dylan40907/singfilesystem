@@ -49,6 +49,14 @@ export default function ProgramsModal({
     await refresh();
   }
 
+  async function setSession(id: string, patch: { counts_am?: boolean; counts_pm?: boolean }) {
+    setBusy(true); setErr("");
+    const { error } = await supabase.from("hr_admissions_programs").update(patch).eq("id", id);
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    await refresh();
+  }
+
   async function remove(p: Program) {
     const ok = await confirm(
       `Delete “${p.name}”? Waitlist/roster entries using it will keep their other details but show no program.`,
@@ -74,13 +82,17 @@ export default function ProgramsModal({
   }
 
   return (
-    <Modal title="Programs" subtitle="Options for the Program column (this campus only)" onClose={onClose} width={460}>
+    <Modal title="Programs" subtitle="Options for the Program column (this campus only)" onClose={onClose} width={520}>
       {dialog}
       <div className="stack" style={{ gap: 10 }}>
+        <div className="subtle" style={{ fontSize: 12 }}>
+          Tick <b>AM</b> and/or <b>PM</b> so the roster can split each room&apos;s counts by session. A full-day program ticks <b>both</b> (it counts toward the AM and PM totals).
+        </div>
         {list.length === 0 && <div className="subtle">No programs yet — add one below.</div>}
         {list.map((p, i) => (
           <ProgramRow key={p.id} program={p} disabled={busy}
             onRename={(name) => rename(p.id, name)} onDelete={() => remove(p)}
+            onSetSession={(patch) => setSession(p.id, patch)}
             onUp={() => move(i, -1)} onDown={() => move(i, 1)}
             isFirst={i === 0} isLast={i === list.length - 1} />
         ))}
@@ -98,12 +110,13 @@ export default function ProgramsModal({
 }
 
 function ProgramRow({
-  program, disabled, onRename, onDelete, onUp, onDown, isFirst, isLast,
+  program, disabled, onRename, onDelete, onSetSession, onUp, onDown, isFirst, isLast,
 }: {
   program: Program;
   disabled: boolean;
   onRename: (name: string) => void;
   onDelete: () => void;
+  onSetSession: (patch: { counts_am?: boolean; counts_pm?: boolean }) => void;
   onUp: () => void;
   onDown: () => void;
   isFirst: boolean;
@@ -119,7 +132,26 @@ function ProgramRow({
       <input className="input" value={name} onChange={(e) => setName(e.target.value)}
         onBlur={() => { if (name.trim() && name !== program.name) onRename(name.trim()); }}
         disabled={disabled} style={{ flex: 1 }} />
+      <SessionToggle label="AM" on={program.counts_am} disabled={disabled} onClick={() => onSetSession({ counts_am: !program.counts_am })} />
+      <SessionToggle label="PM" on={program.counts_pm} disabled={disabled} onClick={() => onSetSession({ counts_pm: !program.counts_pm })} />
       <button className="btn" style={{ color: "#b91c1c" }} disabled={disabled} onClick={onDelete}>Delete</button>
     </div>
+  );
+}
+
+function SessionToggle({ label, on, disabled, onClick }: { label: string; on: boolean; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={`Counts toward the ${label} total`}
+      style={{
+        padding: "5px 10px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: disabled ? "default" : "pointer",
+        border: `1.5px solid ${on ? "rgba(230,23,141,0.5)" : "#e5e7eb"}`,
+        background: on ? "#e6178d" : "white", color: on ? "white" : "#9ca3af",
+      }}
+    >
+      {label}
+    </button>
   );
 }

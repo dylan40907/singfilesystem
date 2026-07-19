@@ -8,6 +8,10 @@ export type Program = {
   name: string;
   order_index: number;
   created_at: string;
+  // Which session(s) this program occupies, for AM/PM roster counts. A FULL-day
+  // program sets both true (so it counts toward both the AM and PM totals).
+  counts_am: boolean;
+  counts_pm: boolean;
 };
 
 export type Room = {
