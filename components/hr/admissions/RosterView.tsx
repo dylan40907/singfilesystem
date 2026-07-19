@@ -171,8 +171,19 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
     if (q) all = all.filter((r) => fullName(r.entry).toLowerCase().includes(q));
     const sortValue = (r: Row, key: string): string | number => {
       if (key.startsWith("room:")) {
-        const mi = colIndex.get(key.slice(5));
-        const roomId = (mi != null ? seriesByEntry.get(r.entry.id)?.room[mi] : null) ?? null;
+        const mKey = key.slice(5);
+        const mi = colIndex.get(mKey);
+        const s = seriesByEntry.get(r.entry.id);
+        if (mi == null || !s) return 9999;
+        // A cell that isn't a real occupied room this month has no room to sort
+        // by — it sorts last with the unassigned rows. This covers: withdrawn
+        // roster months (after the cutoff), months before a planned "Admit"
+        // tag (not admitted yet), and months after a planned "Withdraw" tag.
+        const wd = r.kind === "roster" ? (r.entry as RosterEntry).withdrawal_month : null;
+        if (wd && mKey > wd) return 9999;
+        if (s.admitFrom && mKey < s.admitFrom) return 9999;
+        if (s.withdrawFrom && mKey > s.withdrawFrom) return 9999;
+        const roomId = s.room[mi] ?? null;
         return roomId ? (roomOrder.get(roomId) ?? 9998) : 9999; // no room sorts last
       }
       if (key === "name") return fullName(r.entry).toLowerCase();
@@ -556,42 +567,88 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   );
 }
 
-// ─── Month header (label + compact per-room counts) ───────────────────────────
+// ─── Month header (label + per-room counts) ───────────────────────────────────
+// Default view is just the room colour dots. Hover a dot for a clean tooltip of
+// that room's totals; click anywhere on the dots to toggle the full inline
+// counts (room total + AM/PM). AM/PM only appear when programs are designated.
+const ep = (color: string | undefined, e: number, p: number) => (
+  <>
+    <span style={{ color: color ?? "#374151" }}>{e}</span>
+    <span style={{ color: "#9ca3af" }}>+{p}</span>
+  </>
+);
+
 function MonthHeader({ label, sublabel, counts, rooms, showSessions }: { label: string; sublabel?: string; counts: Map<string, RoomCount>; rooms: Room[]; showSessions: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const [hoverRoom, setHoverRoom] = useState<string | null>(null);
   const shown = rooms.filter((r) => { const c = counts.get(r.id); return c && (c.enrolled > 0 || c.prospective > 0); });
+
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div style={{ fontWeight: 800, fontSize: 12 }}>{label}</div>
       {sublabel && <div style={{ fontSize: 9.5, fontWeight: 700, color: "#e6178d" }}>{sublabel}</div>}
-      {shown.length > 0 && (
-        // With AM/PM designations we stack one room per line (room total, then the
-        // AM/PM split underneath); otherwise keep the compact wrapped row.
-        <div className={showSessions ? "stack" : "row"} style={showSessions ? { gap: 5 } : { gap: 8, flexWrap: "wrap" }}>
+
+      {shown.length > 0 && (expanded ? (
+        // Full inline counts — one room per line; click to collapse back to dots.
+        <div className="stack" style={{ gap: 5, cursor: "pointer" }} onClick={() => setExpanded(false)} title="Click to collapse">
           {shown.map((r) => {
             const c = counts.get(r.id)!;
-            const ep = (e: number, p: number) => (
-              <>
-                <span style={{ color: r.color }}>{e}</span>
-                <span style={{ color: "#9ca3af" }}>+{p}</span>
-              </>
-            );
             return (
-              <div key={r.id} title={r.name} className="stack" style={{ gap: 1 }}>
+              <div key={r.id} className="stack" style={{ gap: 1 }}>
                 <span className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
-                  <RoomDot color={r.color} />
-                  {ep(c.enrolled, c.prospective)}
+                  <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
                 </span>
                 {showSessions && (
-                  <span className="row" style={{ gap: 8, paddingLeft: 13, fontSize: 9.5, fontWeight: 700, color: "#6b7280" }}>
-                    <span className="row" style={{ gap: 2 }}>AM {ep(c.amEnrolled, c.amProspective)}</span>
-                    <span className="row" style={{ gap: 2 }}>PM {ep(c.pmEnrolled, c.pmProspective)}</span>
+                  <span className="row" style={{ gap: 8, paddingLeft: 13, fontSize: 11, fontWeight: 700, color: "#6b7280" }}>
+                    <span className="row" style={{ gap: 2 }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</span>
+                    <span className="row" style={{ gap: 2 }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</span>
                   </span>
                 )}
               </div>
             );
           })}
         </div>
-      )}
+      ) : (
+        // Collapsed — just dots. Hover shows a tooltip; click expands.
+        <div style={{ position: "relative" }}>
+          <div className="row" style={{ gap: 7, flexWrap: "wrap", cursor: "pointer" }} onClick={() => setExpanded(true)} title="Click to show counts">
+            {shown.map((r) => (
+              <span
+                key={r.id}
+                onMouseEnter={() => setHoverRoom(r.id)}
+                onMouseLeave={() => setHoverRoom((cur) => (cur === r.id ? null : cur))}
+                style={{ display: "inline-flex", padding: 1 }}
+              >
+                <RoomDot color={r.color} />
+              </span>
+            ))}
+          </div>
+          {hoverRoom && counts.get(hoverRoom) && (() => {
+            const r = rooms.find((x) => x.id === hoverRoom)!;
+            const c = counts.get(hoverRoom)!;
+            return (
+              <div style={{
+                position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, pointerEvents: "none",
+                background: "white", border: "1px solid #e5e7eb", borderRadius: 10,
+                boxShadow: "0 6px 20px rgba(0,0,0,0.14)", padding: "8px 11px", whiteSpace: "nowrap",
+              }}>
+                <div className="row" style={{ gap: 6, alignItems: "center", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>
+                  <RoomDot color={r.color} /> {r.name}
+                </div>
+                <div className="stack" style={{ gap: 2, fontSize: 11.5, fontWeight: 700 }}>
+                  <div><span style={{ color: "#9ca3af", fontWeight: 800 }}>Total </span>{ep(r.color, c.enrolled, c.prospective)}</div>
+                  {showSessions && (
+                    <>
+                      <div style={{ color: "#6b7280" }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</div>
+                      <div style={{ color: "#6b7280" }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      ))}
     </div>
   );
 }

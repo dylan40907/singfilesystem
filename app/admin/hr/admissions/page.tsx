@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useCampusFilter } from "@/lib/CampusContext";
 import WaitlistView from "@/components/hr/admissions/WaitlistView";
@@ -15,12 +16,16 @@ export default function AdmissionsPage() {
   const { loading, campuses, isCampusAdmin, isTrueAdmin, lockedCampusId } = useCampusFilter();
 
   const [me, setMe] = useState<TeacherProfile | null>(null);
-  const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
+  const isSupervisor = me?.role === "supervisor";
+  const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin" || me.role === "supervisor");
 
   const [tab, setTab] = useState<Tab>("roster");
 
   // Local, tab-scoped campus selection (independent of the top-bar picker).
   const [selectedCampusId, setSelectedCampusId] = useState<string | null>(null);
+  // Supervisors are locked to the campus on their HR record.
+  const [supCampusId, setSupCampusId] = useState<string | null>(null);
+  const [supLoaded, setSupLoaded] = useState(false);
 
   useEffect(() => {
     (async () => setMe(await fetchMyProfile()))();
@@ -31,17 +36,30 @@ export default function AdmissionsPage() {
     if (isCampusAdmin && lockedCampusId) setSelectedCampusId(lockedCampusId);
   }, [isCampusAdmin, lockedCampusId]);
 
-  const activeCampusId = isCampusAdmin ? lockedCampusId : selectedCampusId;
+  // Supervisors: resolve their campus from HR (via a security-definer RPC, so it
+  // works regardless of hr_employees row-level access).
+  useEffect(() => {
+    if (me?.role !== "supervisor") return;
+    (async () => {
+      const { data } = await supabase.rpc("current_supervisor_campus");
+      setSupCampusId((data as string | null) ?? null);
+      setSupLoaded(true);
+    })();
+  }, [me?.role]);
+
+  const activeCampusId = isCampusAdmin ? lockedCampusId : isSupervisor ? supCampusId : selectedCampusId;
   const activeCampus = campuses.find((c) => c.id === activeCampusId) ?? null;
   // Admins with more than one campus get an in-tab "Change campus" control.
   const canSwitch = isTrueAdmin && campuses.length > 1;
+  // Wait for the supervisor's campus lookup before deciding what to show.
+  const stillLoading = loading || (isSupervisor && !supLoaded);
 
   if (me && !canUse) {
     return (
       <main className="stack">
         <h1 className="h1">Admissions</h1>
         <div className="card"><div style={{ fontWeight: 800 }}>Not authorized</div>
-          <div className="subtle" style={{ marginTop: 6 }}>Only admins and campus admins can manage the waitlist and roster.</div>
+          <div className="subtle" style={{ marginTop: 6 }}>Only admins, campus admins and supervisors can view the waitlist and roster.</div>
         </div>
       </main>
     );
@@ -56,10 +74,18 @@ export default function AdmissionsPage() {
         </div>
       </div>
 
-      {loading ? (
+      {stillLoading ? (
         <div className="subtle" style={{ padding: 20 }}>Loading…</div>
+      ) : isSupervisor && !activeCampusId ? (
+        // Supervisor without a campus on their HR record can't view anything yet.
+        <div className="card">
+          <div style={{ fontWeight: 800 }}>No campus assigned</div>
+          <div className="subtle" style={{ marginTop: 6 }}>
+            You&apos;re not assigned to a campus yet, so there&apos;s no waitlist or roster to show. Ask an admin to set your campus on your HR record.
+          </div>
+        </div>
       ) : !activeCampusId ? (
-        // Admin hasn't picked a campus yet (campus admins never reach this).
+        // Admin hasn't picked a campus yet (campus admins / supervisors never reach this).
         <div className="card">
           <div style={{ fontWeight: 800 }}>Choose a campus</div>
           <div className="subtle" style={{ marginTop: 6, marginBottom: 14 }}>

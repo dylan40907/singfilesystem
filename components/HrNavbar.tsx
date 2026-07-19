@@ -176,6 +176,7 @@ export default function HrNavbar() {
     ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
   ] : canUseHr && isSupervisor ? [
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
+    { href: "/admin/hr/admissions", label: "Admissions", tab: "admissions" },
   ] : [];
 
   return (
