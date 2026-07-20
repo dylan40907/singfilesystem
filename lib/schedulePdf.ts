@@ -250,26 +250,31 @@ export async function downloadSchedulePdf(opts: {
     doc.rect(gridLeft, gridTop, gridW, gridH, "S");
 
     // ── Blocks ──────────────────────────────────────────────────────────────
-    for (const b of dayBlocks) {
+    // Geometry first, so we can draw every card before any label. Two passes
+    // keep short blocks' overflowing text on top of their neighbours' boxes.
+    const laidOut = dayBlocks.flatMap((b) => {
       const pos = roomX.get(b.room_id);
-      if (!pos) continue;
+      if (!pos) return [];
       const colIdx = Math.min(Math.max(0, b.column_index ?? 0), pos.subs - 1);
       const x = pos.x + colIdx * subW;
       const y0 = yFor(timeToMinutes(b.start_time));
       const y1 = yFor(timeToMinutes(b.end_time));
-      const h = Math.max(10, y1 - y0);
+      return [{ b, x, y0, h: Math.max(3, y1 - y0) }];
+    });
 
+    // Pass 1 — cards.
+    for (const { b, x, y0, h } of laidOut) {
       const accent = isPlan ? PLAN_ACCENT : (ACCENT[b.block_type] ?? ACCENT.shift);
-
-      // Card on top of the painted background, mirroring the on-screen look:
-      // white body with a thick coloured left edge.
       doc.setFillColor(255, 255, 255);
       doc.setDrawColor(203, 213, 225);
       doc.setLineWidth(0.6);
-      doc.roundedRect(x + 1.5, y0 + 0.75, subW - 3, h - 1.5, 2.5, 2.5, "FD");
+      doc.roundedRect(x + 1.5, y0 + 0.5, subW - 3, Math.max(1.4, h - 1), 2.5, 2.5, "FD");
       doc.setFillColor(accent[0], accent[1], accent[2]);
-      doc.rect(x + 1.5, y0 + 0.75, 2.6, h - 1.5, "F");
+      doc.rect(x + 1.5, y0 + 0.5, 2.6, Math.max(1.4, h - 1), "F");
+    }
 
+    // Pass 2 — labels.
+    for (const { b, x, y0, h } of laidOut) {
       const emp = b.employee_id ? empById.get(b.employee_id) : null;
       const innerW = subW - 11;
       const primary = isPlan
@@ -280,8 +285,17 @@ export async function downloadSchedulePdf(opts: {
 
       doc.setTextColor(15, 23, 42);
       doc.setFont("helvetica", "bold");
-      doc.setFontSize(8.5);
-      if (h >= 12) doc.text(fit(doc, primary, innerW), x + 7, y0 + 10);
+
+      if (h >= 12) {
+        doc.setFontSize(8.5);
+        doc.text(fit(doc, primary, innerW), x + 7, y0 + 10);
+      } else {
+        // A 5–10 minute slot is only a few points tall, so the name can't fit
+        // inside. Draw it anyway — smaller, vertically centred, and allowed to
+        // spill past the card — rather than leaving an unreadable empty sliver.
+        doc.setFontSize(6.8);
+        doc.text(fit(doc, primary, subW - 6), x + 6, y0 + h / 2 + 2.3);
+      }
 
       if (h >= 22) {
         doc.setFont("helvetica", "normal");
