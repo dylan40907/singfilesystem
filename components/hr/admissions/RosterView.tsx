@@ -626,9 +626,13 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
               })}
             </div>
           ) : (
-            // Default — the plain per-room totals, always visible. Hovering one
-            // reveals its AM/PM breakdown; clicking expands every month column.
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }} {...rowProps}>
+            // Default — the plain per-room totals, always visible. Laid out two
+            // per row so a campus with several rooms doesn't stretch the column.
+            // Hovering one reveals its AM/PM breakdown; clicking expands every month.
+            <div
+              style={{ display: "grid", gridTemplateColumns: "repeat(2, max-content)", columnGap: 10, rowGap: 4 }}
+              {...rowProps}
+            >
               {shown.map((r) => {
                 const c = counts.get(r.id)!;
                 return (
@@ -637,36 +641,33 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
                     title={r.name}
                     onMouseEnter={() => interactive && setHoverRoom(r.id)}
                     onMouseLeave={() => setHoverRoom((cur) => (cur === r.id ? null : cur))}
-                    className="row"
-                    style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}
+                    // Anchor the tooltip to this cell so it follows the room's row.
+                    style={{ position: "relative", display: "inline-flex" }}
                   >
-                    <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
+                    <span className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
+                      <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
+                    </span>
+                    {showSessions && hoverRoom === r.id && (
+                      <div style={{
+                        position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, pointerEvents: "none",
+                        background: "white", border: "1px solid #e5e7eb", borderRadius: 10,
+                        boxShadow: "0 6px 20px rgba(0,0,0,0.14)", padding: "8px 11px", whiteSpace: "nowrap",
+                      }}>
+                        <div className="row" style={{ gap: 6, alignItems: "center", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>
+                          <RoomDot color={r.color} /> {r.name}
+                        </div>
+                        <div className="stack" style={{ gap: 2, fontSize: 11.5, fontWeight: 700 }}>
+                          <div><span style={{ color: "#9ca3af", fontWeight: 800 }}>Total </span>{ep(r.color, c.enrolled, c.prospective)}</div>
+                          <div style={{ color: "#6b7280" }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</div>
+                          <div style={{ color: "#6b7280" }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</div>
+                        </div>
+                      </div>
+                    )}
                   </span>
                 );
               })}
             </div>
           )}
-
-          {!expanded && showSessions && hoverRoom && counts.get(hoverRoom) && (() => {
-            const r = rooms.find((x) => x.id === hoverRoom)!;
-            const c = counts.get(hoverRoom)!;
-            return (
-              <div style={{
-                position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, pointerEvents: "none",
-                background: "white", border: "1px solid #e5e7eb", borderRadius: 10,
-                boxShadow: "0 6px 20px rgba(0,0,0,0.14)", padding: "8px 11px", whiteSpace: "nowrap",
-              }}>
-                <div className="row" style={{ gap: 6, alignItems: "center", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>
-                  <RoomDot color={r.color} /> {r.name}
-                </div>
-                <div className="stack" style={{ gap: 2, fontSize: 11.5, fontWeight: 700 }}>
-                  <div><span style={{ color: "#9ca3af", fontWeight: 800 }}>Total </span>{ep(r.color, c.enrolled, c.prospective)}</div>
-                  <div style={{ color: "#6b7280" }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</div>
-                  <div style={{ color: "#6b7280" }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</div>
-                </div>
-              </div>
-            );
-          })()}
         </div>
       )}
     </div>
