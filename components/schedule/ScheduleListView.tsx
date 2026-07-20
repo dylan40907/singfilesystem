@@ -4,10 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   Schedule,
+  scheduleTitle,
   formatWeekRange,
   getMonday,
   formatDateLocal,
 } from "@/lib/scheduleUtils";
+import PlansSection from "./PlansSection";
 import WeekPicker from "./WeekPicker";
 import TeacherScheduleView from "./TeacherScheduleView";
 import { useCampusFilter, applyCampusFilterToQuery } from "@/lib/CampusContext";
@@ -54,7 +56,8 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
 
   async function fetchSchedules() {
     setLoading(true);
-    let q = supabase.from("schedules").select("*");
+    // Plans are listed separately (PlansSection) — this list is weekly only.
+    let q = supabase.from("schedules").select("*").eq("kind", "week");
     q = applyCampusFilterToQuery(q, campusFilter);
     const { data, error: err } = await q.order("week_start", { ascending: false });
     if (err) {
@@ -158,6 +161,16 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
 
   return (
     <div style={{ padding: "24px 0" }}>
+      {/* Plans sit above the weekly list — they're general, always-relevant
+          references rather than one-week-at-a-time staffing. */}
+      <PlansSection
+        onSelectSchedule={onSelectSchedule}
+        campuses={campuses}
+        campusFilter={campusFilter}
+        defaultCampusId={defaultCreateCampusId}
+        isCampusAdmin={isCampusAdmin}
+      />
+
       <div
         style={{
           display: "flex",
@@ -166,7 +179,7 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
           marginBottom: 20,
         }}
       >
-        <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Schedules</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>Weekly Schedules</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn" onClick={openMySchedule}>
             My Schedule
@@ -273,7 +286,7 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
             >
               <div>
                 <div style={{ fontWeight: 800, fontSize: 15 }}>
-                  {formatWeekRange(s.week_start)}
+                  {scheduleTitle(s)}
                 </div>
                 <div className="subtle" style={{ fontSize: 13, marginTop: 2 }}>
                   {s.week_start}

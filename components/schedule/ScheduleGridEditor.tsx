@@ -10,6 +10,7 @@ import {
   EmployeeLite,
   BlockType,
   formatWeekRange,
+  scheduleTitle,
   formatEmployeeName,
   formatTime,
   getDisplayName,
@@ -114,6 +115,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   const [rooms, setRooms] = useState<ScheduleRoom[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlockType[]>([]);
   const [employees, setEmployees] = useState<EmployeeLite[]>([]);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [leaveReqs, setLeaveReqs] = useState<LeaveReqRow[]>([]);
   const [leavePanelOpen, setLeavePanelOpen] = useState(true);
@@ -1202,6 +1204,16 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       return;
     }
 
+    // Plans have a single block kind, so skip the shift/lunch/break picker.
+    if (schedule?.kind === "plan") {
+      setBlockForm({ x: clientX, y: clientY, roomId, columnIndex, day, time, blockType: "shift" });
+      setBlockFormEmployeeId(null);
+      setBlockFormEmployeeSearch("");
+      setBlockFormNotes("");
+      setBlockFormEmpOpen(false);
+      return;
+    }
+
     setTypePicker({ x: clientX, y: clientY, roomId, columnIndex, day, time });
   }
 
@@ -1249,7 +1261,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       if (blockForm.blockType === "lunch_break") label = "Lunch Break";
       else if (blockForm.blockType === "break") label = "Break";
       else label = blockFormNotes.trim() || (empId === null ? "Unassigned" : null);
-      await updateBlock(blockForm.editBlockId, empId, label);
+      if (schedule?.kind === "plan") {
+        await updateBlock(blockForm.editBlockId, null, blockFormNotes.trim() || null);
+      } else {
+        await updateBlock(blockForm.editBlockId, empId, label);
+      }
     } else {
       const endMins = timeToMinutes(blockForm.time) + 10; // 10-minute default
       const endTime = minutesToTime(Math.min(endMins, END_MINUTES));
@@ -1257,7 +1273,11 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       if (blockForm.blockType === "lunch_break") label = "Lunch Break";
       else if (blockForm.blockType === "break") label = "Break";
       else label = blockFormNotes.trim() || (empId === null ? "Unassigned" : null);
-      await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, empId, label, blockForm.blockType);
+      if (schedule?.kind === "plan") {
+        await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, null, blockFormNotes.trim() || null, "shift");
+      } else {
+        await createBlock(blockForm.roomId, blockForm.columnIndex, blockForm.day, blockForm.time, endTime, empId, label, blockForm.blockType);
+      }
     }
 
     setBlockForm(null);
@@ -1323,7 +1343,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     const rows = (data ?? []) as { id: string; week_start: string; status: string }[];
     setCopyPickerSchedules(rows);
     // Default to most recent before current week
-    const prev = rows.find((s) => s.week_start < schedule.week_start);
+    const prev = schedule.week_start ? rows.find((s) => s.week_start < schedule.week_start!) : undefined;
     setCopyPickerSelected(prev?.id ?? (rows[0]?.id ?? null));
     setCopyPickerLoading(false);
   }
@@ -1473,6 +1493,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     );
   }
 
+  // Plans are freeform: no employees, no shift/break types, no week to copy
+  // from. Blocks are just labelled text sitting in a room.
+  const isPlan = schedule.kind === "plan";
+
   const blockTypeLabel = (t: BlockType) =>
     t === "lunch_break" ? "Lunch Break" : t === "break" ? "Break" : "Shift";
 
@@ -1483,6 +1507,24 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     setHighlightedBlockId(gap.prevBlockId);
     highlightTimeoutRef.current = setTimeout(() => setHighlightedBlockId(null), 3000);
   };
+
+  async function handleDownloadPdf() {
+    if (!schedule) return;
+    setPdfBusy(true);
+    try {
+      const { downloadSchedulePdf } = await import("@/lib/schedulePdf");
+      let campusName: string | null = null;
+      if (schedule.campus_id) {
+        const { data } = await supabase.from("hr_campuses").select("name").eq("id", schedule.campus_id).maybeSingle();
+        campusName = (data as { name: string } | null)?.name ?? null;
+      }
+      await downloadSchedulePdf({ schedule, rooms, blocks, employees, campusName });
+    } catch (e: any) {
+      setWarning(e?.message ?? "Could not build the PDF.");
+    } finally {
+      setPdfBusy(false);
+    }
+  }
 
   // Smart popup position: offset from cursor, clamped
   function popupPos(x: number, y: number, w = 260, h = 200) {
@@ -1497,7 +1539,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 0", flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn" onClick={onBack} style={{ padding: "6px 14px", fontSize: 13 }}>&larr; Back</button>
-          <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>{formatWeekRange(schedule.week_start)}</h2>
+          <h2 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>{scheduleTitle(schedule)}</h2>
           <span style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 700, background: schedule.status === "published" ? "#dcfce7" : "#fef3c7", color: schedule.status === "published" ? "#16a34a" : "#d97706" }}>
             {schedule.status === "published" ? "Published" : "Draft"}
           </span>
@@ -1506,7 +1548,10 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {!readOnly && (
             <>
-              <button className="btn" onClick={openCopyPicker} disabled={saving}>Copy Week</button>
+              <button className="btn" onClick={() => void handleDownloadPdf()} disabled={pdfBusy}>
+            {pdfBusy ? "Preparing…" : "⬇ PDF"}
+          </button>
+          {!isPlan && <button className="btn" onClick={openCopyPicker} disabled={saving}>Copy Week</button>}
               <button className="btn" onClick={addRoom}>+ Add Room</button>
             </>
           )}
@@ -2001,7 +2046,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
           <div
             style={{
               position: "fixed",
-              ...popupPos(blockForm.x, blockForm.y, 280, blockForm.blockType === "shift" ? 260 : 200),
+              ...popupPos(blockForm.x, blockForm.y, 280, isPlan ? 170 : blockForm.blockType === "shift" ? 260 : 200),
               zIndex: 10001,
               background: "white",
               border: "1.5px solid #e5e7eb",
@@ -2012,12 +2057,12 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 12, color: blockForm.blockType === "lunch_break" ? "#f97316" : blockForm.blockType === "break" ? "#22c55e" : "#6366f1" }}>
-              {blockForm.editBlockId ? "Edit" : "Add"} {blockTypeLabel(blockForm.blockType)}
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 12, color: isPlan ? "#7c3aed" : blockForm.blockType === "lunch_break" ? "#f97316" : blockForm.blockType === "break" ? "#22c55e" : "#6366f1" }}>
+              {blockForm.editBlockId ? "Edit" : "Add"} {isPlan ? "Block" : blockTypeLabel(blockForm.blockType)}
             </div>
 
-            {/* Employee search */}
-            <div style={{ marginBottom: 10, position: "relative" }}>
+            {/* Employee search — plans have no people attached */}
+            <div style={{ marginBottom: 10, position: "relative", display: isPlan ? "none" : undefined }}>
               <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Employee</label>
               <input
                 type="text"
@@ -2068,15 +2113,18 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
               )}
             </div>
 
-            {/* Notes field (shift only) */}
+            {/* Notes field (shift only). For plans this IS the block. */}
             {blockForm.blockType === "shift" && (
               <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>Notes / Label (optional)</label>
+                <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>
+                  {isPlan ? "Block text" : "Notes / Label (optional)"}
+                </label>
                 <input
                   type="text"
-                  placeholder="e.g., Front desk, Tutoring…"
+                  placeholder={isPlan ? "e.g., Circle Time, Math Rotation…" : "e.g., Front desk, Tutoring…"}
                   value={blockFormNotes}
                   onChange={(e) => setBlockFormNotes(e.target.value)}
+                  autoFocus={isPlan}
                   onKeyDown={(e) => { if (e.key === "Enter") handleBlockFormSubmit(); if (e.key === "Escape") setBlockForm(null); }}
                   style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }}
                 />

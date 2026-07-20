@@ -2,12 +2,31 @@
 
 export type ScheduleStatus = "draft" | "published";
 
+/**
+ * "week"  — the normal weekly staffing schedule (assigned employees, feeds
+ *           timesheets/leave).
+ * "plan"  — a freeform general plan: named by hand, no week, no employees, and
+ *           never linked to hours. Blocks are just labelled text in a room.
+ */
+export type ScheduleKind = "week" | "plan";
+
 export interface Schedule {
   id: string;
-  week_start: string; // YYYY-MM-DD (always a Monday)
+  /** Null for plans. */
+  week_start: string | null; // YYYY-MM-DD (always a Monday)
+  /** Set for plans; null for weekly schedules. */
+  name: string | null;
+  kind: ScheduleKind;
   status: ScheduleStatus;
+  campus_id?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Display title: the typed name for plans, the week range for weekly ones. */
+export function scheduleTitle(s: Pick<Schedule, "kind" | "name" | "week_start">): string {
+  if (s.kind === "plan") return (s.name ?? "").trim() || "Untitled plan";
+  return s.week_start ? formatWeekRange(s.week_start) : "Schedule";
 }
 
 export interface ScheduleRoom {
