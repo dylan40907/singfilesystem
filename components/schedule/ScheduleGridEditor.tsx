@@ -1520,7 +1520,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
         const { data } = await supabase.from("hr_campuses").select("name").eq("id", schedule.campus_id).maybeSingle();
         campusName = (data as { name: string } | null)?.name ?? null;
       }
-      await downloadSchedulePdf({ schedule, rooms, blocks, employees, campusName });
+      await downloadSchedulePdf({ schedule, rooms, blocks, employees, campusName, cellColors });
     } catch (e: any) {
       setWarning(e?.message ?? "Could not build the PDF.");
     } finally {
