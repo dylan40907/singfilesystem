@@ -203,6 +203,8 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
 
   // Whether any program is designated AM/PM — controls the split display.
   const hasSessions = useMemo(() => programs.some((p) => p.counts_am || p.counts_pm), [programs]);
+  // Shared across every month column, so toggling one toggles them all.
+  const [countsExpanded, setCountsExpanded] = useState(false);
 
   // Per-column per-room counts (from visible rows, respecting withdrawal cutoff).
   // Also split by session: a FULL-day program (counts_am && counts_pm) adds to
@@ -402,7 +404,15 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                   return (
                     <th key={m} style={{ ...th, minWidth: MONTH_W, width: MONTH_W, verticalAlign: "top" }}>
                       <div className="row-between" style={{ gap: 4, alignItems: "flex-start" }}>
-                        <MonthHeader label={monthLabelShort(m1)} sublabel={sublabel} counts={monthCounts[mi]} rooms={rooms} showSessions={hasSessions} />
+                        <MonthHeader
+                          label={monthLabelShort(m1)}
+                          sublabel={sublabel}
+                          counts={monthCounts[mi]}
+                          rooms={rooms}
+                          showSessions={hasSessions}
+                          expanded={countsExpanded}
+                          onToggle={() => setCountsExpanded((v) => !v)}
+                        />
                         <div className="stack" style={{ gap: 3, alignItems: "center", flexShrink: 0 }}>
                           <button
                             title="Group students by room for this month"
@@ -577,52 +587,67 @@ const ep = (color: string | undefined, e: number, p: number) => (
   </>
 );
 
-function MonthHeader({ label, sublabel, counts, rooms, showSessions }: { label: string; sublabel?: string; counts: Map<string, RoomCount>; rooms: Room[]; showSessions: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, onToggle }: {
+  label: string; sublabel?: string; counts: Map<string, RoomCount>; rooms: Room[];
+  showSessions: boolean; expanded: boolean; onToggle: () => void;
+}) {
   const [hoverRoom, setHoverRoom] = useState<string | null>(null);
   const shown = rooms.filter((r) => { const c = counts.get(r.id); return c && (c.enrolled > 0 || c.prospective > 0); });
+
+  // Only interactive when there's an AM/PM split to reveal.
+  const interactive = showSessions;
+  const rowProps = interactive
+    ? { onClick: onToggle, style: { cursor: "pointer" as const }, title: expanded ? "Click to hide AM/PM" : "Hover or click for AM/PM" }
+    : {};
 
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div style={{ fontWeight: 800, fontSize: 12 }}>{label}</div>
       {sublabel && <div style={{ fontSize: 9.5, fontWeight: 700, color: "#e6178d" }}>{sublabel}</div>}
 
-      {shown.length > 0 && (expanded ? (
-        // Full inline counts — one room per line; click to collapse back to dots.
-        <div className="stack" style={{ gap: 5, cursor: "pointer" }} onClick={() => setExpanded(false)} title="Click to collapse">
-          {shown.map((r) => {
-            const c = counts.get(r.id)!;
-            return (
-              <div key={r.id} className="stack" style={{ gap: 1 }}>
-                <span className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
-                  <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
-                </span>
-                {showSessions && (
-                  <span className="row" style={{ gap: 8, paddingLeft: 13, fontSize: 11, fontWeight: 700, color: "#6b7280" }}>
-                    <span className="row" style={{ gap: 2 }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</span>
-                    <span className="row" style={{ gap: 2 }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</span>
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        // Collapsed — just dots. Hover shows a tooltip; click expands.
+      {shown.length > 0 && (
         <div style={{ position: "relative" }}>
-          <div className="row" style={{ gap: 7, flexWrap: "wrap", cursor: "pointer" }} onClick={() => setExpanded(true)} title="Click to show counts">
-            {shown.map((r) => (
-              <span
-                key={r.id}
-                onMouseEnter={() => setHoverRoom(r.id)}
-                onMouseLeave={() => setHoverRoom((cur) => (cur === r.id ? null : cur))}
-                style={{ display: "inline-flex", padding: 1 }}
-              >
-                <RoomDot color={r.color} />
-              </span>
-            ))}
-          </div>
-          {hoverRoom && counts.get(hoverRoom) && (() => {
+          {expanded && showSessions ? (
+            // Expanded — room total with the AM/PM split underneath, one per line.
+            <div className="stack" style={{ gap: 5 }} {...rowProps}>
+              {shown.map((r) => {
+                const c = counts.get(r.id)!;
+                return (
+                  <div key={r.id} className="stack" style={{ gap: 1 }}>
+                    <span className="row" style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}>
+                      <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
+                    </span>
+                    <span className="row" style={{ gap: 8, paddingLeft: 13, fontSize: 11, fontWeight: 700, color: "#6b7280" }}>
+                      <span className="row" style={{ gap: 2 }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</span>
+                      <span className="row" style={{ gap: 2 }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            // Default — the plain per-room totals, always visible. Hovering one
+            // reveals its AM/PM breakdown; clicking expands every month column.
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }} {...rowProps}>
+              {shown.map((r) => {
+                const c = counts.get(r.id)!;
+                return (
+                  <span
+                    key={r.id}
+                    title={r.name}
+                    onMouseEnter={() => interactive && setHoverRoom(r.id)}
+                    onMouseLeave={() => setHoverRoom((cur) => (cur === r.id ? null : cur))}
+                    className="row"
+                    style={{ gap: 3, alignItems: "center", fontWeight: 700, fontSize: 11 }}
+                  >
+                    <RoomDot color={r.color} />{ep(r.color, c.enrolled, c.prospective)}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {!expanded && showSessions && hoverRoom && counts.get(hoverRoom) && (() => {
             const r = rooms.find((x) => x.id === hoverRoom)!;
             const c = counts.get(hoverRoom)!;
             return (
@@ -636,18 +661,14 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions }: { label: 
                 </div>
                 <div className="stack" style={{ gap: 2, fontSize: 11.5, fontWeight: 700 }}>
                   <div><span style={{ color: "#9ca3af", fontWeight: 800 }}>Total </span>{ep(r.color, c.enrolled, c.prospective)}</div>
-                  {showSessions && (
-                    <>
-                      <div style={{ color: "#6b7280" }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</div>
-                      <div style={{ color: "#6b7280" }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</div>
-                    </>
-                  )}
+                  <div style={{ color: "#6b7280" }}>AM {ep(r.color, c.amEnrolled, c.amProspective)}</div>
+                  <div style={{ color: "#6b7280" }}>PM {ep(r.color, c.pmEnrolled, c.pmProspective)}</div>
                 </div>
               </div>
             );
           })()}
         </div>
-      ))}
+      )}
     </div>
   );
 }
