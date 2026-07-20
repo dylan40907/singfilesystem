@@ -604,8 +604,14 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
 
   return (
     <div className="stack" style={{ gap: 4 }}>
-      <div style={{ fontWeight: 800, fontSize: 12 }}>{label}</div>
-      {sublabel && <div style={{ fontSize: 9.5, fontWeight: 700, color: "#e6178d" }}>{sublabel}</div>}
+      {/* Split-month half ("1–15" / "16+") sits inline beside the month so it
+          uses the empty space before the sort/split controls. */}
+      <div className="row" style={{ gap: 6, alignItems: "baseline" }}>
+        <span style={{ fontWeight: 800, fontSize: 12, whiteSpace: "nowrap" }}>{label}</span>
+        {sublabel && (
+          <span style={{ fontSize: 9.5, fontWeight: 700, color: "#e6178d", whiteSpace: "nowrap" }}>{sublabel}</span>
+        )}
+      </div>
 
       {shown.length > 0 && (
         <div style={{ position: "relative" }}>
