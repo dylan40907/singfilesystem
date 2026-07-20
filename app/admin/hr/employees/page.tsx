@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
-import { roleLabel, roleBadgeStyle } from "@/lib/roles";
+import { roleLabel, roleBadgeStyle, roleRank } from "@/lib/roles";
 import AddUserModal from "@/components/hr/AddUserModal";
 
 type CampusRow = { id: string; name: string };
@@ -57,11 +57,12 @@ export default function EmployeesPage() {
   const [exportMonth, setExportMonth] = useState<number>(new Date().getMonth() + 1);
   const [exportBusy, setExportBusy] = useState(false);
 
-  type SortKey = "name" | "campus" | "jobLevel" | "active";
+  type SortKey = "name" | "campus" | "jobLevel" | "role" | "active";
   const defaultDirForKey: Record<SortKey, "asc" | "desc"> = {
     name: "asc",
     campus: "asc",
     jobLevel: "asc",
+    role: "asc",
     active: "desc",
   };
 
@@ -418,6 +419,10 @@ export default function EmployeesPage() {
       if (key === "name") return displayName(e).toLowerCase();
       if (key === "campus") return (e.campus?.name ?? "").toLowerCase();
       if (key === "jobLevel") return (e.job_level?.name ?? "").toLowerCase();
+      if (key === "role") {
+        const meta = e.profile_id ? profileMeta.get(e.profile_id) : undefined;
+        return roleRank(meta?.role, meta?.can_manage_learning);
+      }
       // active
       return e.is_active ? 1 : 0;
     };
@@ -434,7 +439,7 @@ export default function EmployeesPage() {
     });
 
     return arr;
-  }, [filtered, sortState]);
+  }, [filtered, sortState, profileMeta]);
 
   if (loading) {
     return <div style={{ padding: 20 }}>Loading…</div>;
@@ -487,7 +492,7 @@ export default function EmployeesPage() {
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("name")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Name" + sortIndicator("name")}</button></th>
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("campus")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Campus" + sortIndicator("campus")}</button></th>
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("jobLevel")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Job level" + sortIndicator("jobLevel")}</button></th>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Role</th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("role")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Role" + sortIndicator("role")}</button></th>
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("active")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Status" + sortIndicator("active")}</button></th>
               <th style={{ padding: 10 }} />
             </tr>

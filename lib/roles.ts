@@ -20,6 +20,24 @@ export function roleLabel(role: string | null | undefined, canManageLearning?: b
   }
 }
 
+/** Sort order for the employee directory — most senior first. */
+export function roleRank(role: string | null | undefined, canManageLearning?: boolean | null): number {
+  switch (role) {
+    case "admin":
+      return 0;
+    case "campus_admin":
+      return 1;
+    case "supervisor":
+      return canManageLearning ? 2 : 3; // App Supervisor sits just above Supervisor
+    case "teacher":
+      return 4;
+    case "hours_manager":
+      return 5;
+    default:
+      return 6; // no portal account
+  }
+}
+
 export function roleBadgeStyle(role: string | null | undefined): { background: string; color: string; border: string } {
   switch (role) {
     case "admin":
