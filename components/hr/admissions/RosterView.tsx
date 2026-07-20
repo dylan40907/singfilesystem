@@ -594,11 +594,13 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
   const [hoverRoom, setHoverRoom] = useState<string | null>(null);
   const shown = rooms.filter((r) => { const c = counts.get(r.id); return c && (c.enrolled > 0 || c.prospective > 0); });
 
-  // Only interactive when there's an AM/PM split to reveal.
+  // Only interactive when there's an AM/PM split to reveal. Keep handlers and
+  // style separate — spreading a `style` here would clobber the layout styles.
   const interactive = showSessions;
-  const rowProps = interactive
-    ? { onClick: onToggle, style: { cursor: "pointer" as const }, title: expanded ? "Click to hide AM/PM" : "Hover or click for AM/PM" }
+  const handlers = interactive
+    ? { onClick: onToggle, title: expanded ? "Click to hide AM/PM" : "Hover or click for AM/PM" }
     : {};
+  const cursorStyle: React.CSSProperties = interactive ? { cursor: "pointer" } : {};
 
   return (
     <div className="stack" style={{ gap: 4 }}>
@@ -609,7 +611,7 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
         <div style={{ position: "relative" }}>
           {expanded && showSessions ? (
             // Expanded — room total with the AM/PM split underneath, one per line.
-            <div className="stack" style={{ gap: 5 }} {...rowProps}>
+            <div className="stack" style={{ gap: 5, ...cursorStyle }} {...handlers}>
               {shown.map((r) => {
                 const c = counts.get(r.id)!;
                 return (
@@ -630,8 +632,8 @@ function MonthHeader({ label, sublabel, counts, rooms, showSessions, expanded, o
             // per row so a campus with several rooms doesn't stretch the column.
             // Hovering one reveals its AM/PM breakdown; clicking expands every month.
             <div
-              style={{ display: "grid", gridTemplateColumns: "repeat(2, max-content)", columnGap: 10, rowGap: 4 }}
-              {...rowProps}
+              style={{ display: "grid", gridTemplateColumns: "repeat(2, max-content)", columnGap: 12, rowGap: 4, ...cursorStyle }}
+              {...handlers}
             >
               {shown.map((r) => {
                 const c = counts.get(r.id)!;
