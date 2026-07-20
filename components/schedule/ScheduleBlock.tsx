@@ -27,6 +27,8 @@ interface ScheduleBlockProps {
   onDragCancel: () => void;
   warnings?: string[];
   highlighted?: boolean;
+  /** Plan schedules: no employees, so no "unassigned" state — the label is the block. */
+  planMode?: boolean;
 }
 
 export default function ScheduleBlock({
@@ -41,23 +43,29 @@ export default function ScheduleBlock({
   onDragCancel,
   warnings,
   highlighted,
+  planMode,
 }: ScheduleBlockProps) {
   const elRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const didInteractRef = useRef(false);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
 
-  const isUnassigned = !block.employee_id;
-  const isLabelWithEmployee = !!block.employee_id && !!block.label;
-  const displayName = isUnassigned
-    ? "Unassigned"
-    : employee
-      ? getFirstName(employee)
-      : "Unknown";
-  const unassignedNote = isUnassigned && block.label && block.label !== "Unassigned" ? block.label : null;
+  // Plans never have people, so the "unassigned" warning treatment doesn't
+  // apply — the typed label is the block's identity and there's no note line.
+  const isUnassigned = !planMode && !block.employee_id;
+  const isLabelWithEmployee = !planMode && !!block.employee_id && !!block.label;
+  const displayName = planMode
+    ? (block.label ?? "").trim() || "Block"
+    : isUnassigned
+      ? "Unassigned"
+      : employee
+        ? getFirstName(employee)
+        : "Unknown";
+  const unassignedNote = !planMode && isUnassigned && block.label && block.label !== "Unassigned" ? block.label : null;
 
-  const leftBorderColor =
-    block.block_type === "lunch_break"
+  const leftBorderColor = planMode
+    ? "#7c3aed"
+    : block.block_type === "lunch_break"
       ? "#f97316"
       : block.block_type === "break"
       ? "#22c55e"
@@ -67,11 +75,13 @@ export default function ScheduleBlock({
   const timeEnd = formatTime(block.end_time);
 
   // Build tooltip text: warnings first (if any), then full details
-  const fullName = isUnassigned
-    ? "Unassigned"
-    : employee
-      ? getDisplayName(employee)
-      : "Unknown";
+  const fullName = planMode
+    ? (block.label ?? "").trim() || "Block"
+    : isUnassigned
+      ? "Unassigned"
+      : employee
+        ? getDisplayName(employee)
+        : "Unknown";
   const tooltipLines: string[] = [];
   if (warnings && warnings.length > 0) {
     tooltipLines.push(warnings.join("\n"));

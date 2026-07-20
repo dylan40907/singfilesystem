@@ -608,6 +608,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
   // employee on a given day, only the overtime warning is shown (5h / break warnings suppressed).
   const blockWarnings = useMemo((): Map<string, string[]> => {
     const warnings = new Map<string, string[]>();
+    // Plans have no people, so none of the staffing warnings apply.
+    if (schedule?.kind === "plan") return warnings;
     const fmt = (m: number) => {
       const h = Math.floor(m / 60);
       const min = m % 60;
@@ -1555,33 +1557,39 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
               <button className="btn" onClick={addRoom}>+ Add Room</button>
             </>
           )}
-          <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>
-          <button
-            className="btn"
-            onClick={() => {
-              setIndivTeacherOpen(true);
-              setIndivTeacherDay(activeDay);
-              const firstGapped = teachersInSchedule.find((t) => t.hasGap);
-              setIndivTeacherId(firstGapped?.id ?? teachersInSchedule[0]?.id ?? null);
-            }}
-            style={anyTeacherHasGap ? { background: "#fef3c7", borderColor: "#fbbf24", color: "#92400e" } : {}}
-          >
-            {anyTeacherHasGap ? "⚠ " : ""}👤 Teachers
-          </button>
+          {!isPlan && <button className="btn" onClick={() => setShowHoursView(true)}>⏱ Hours</button>}
+          {!isPlan && (
+            <button
+              className="btn"
+              onClick={() => {
+                setIndivTeacherOpen(true);
+                setIndivTeacherDay(activeDay);
+                const firstGapped = teachersInSchedule.find((t) => t.hasGap);
+                setIndivTeacherId(firstGapped?.id ?? teachersInSchedule[0]?.id ?? null);
+              }}
+              style={anyTeacherHasGap ? { background: "#fef3c7", borderColor: "#fbbf24", color: "#92400e" } : {}}
+            >
+              {anyTeacherHasGap ? "⚠ " : ""}👤 Teachers
+            </button>
+          )}
           {!readOnly && (
             <>
-              <button
-                className="btn"
-                onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), fillStart: "07:20", fillEnd: "18:00" })}
-              >
-                ↓ Fill Gaps
-              </button>
-              <button
-                className="btn"
-                onClick={() => setClearUnassigned({ selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), clearStart: "07:20", clearEnd: "18:00" })}
-              >
-                ✕ Clear Unassigned
-              </button>
+              {!isPlan && (
+                <button
+                  className="btn"
+                  onClick={() => setFillGaps({ open: true, selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), fillStart: "07:20", fillEnd: "18:00" })}
+                >
+                  ↓ Fill Gaps
+                </button>
+              )}
+              {!isPlan && (
+                <button
+                  className="btn"
+                  onClick={() => setClearUnassigned({ selectedRoomIds: new Set(), selectedDays: new Set([activeDay]), clearStart: "07:20", clearEnd: "18:00" })}
+                >
+                  ✕ Clear Unassigned
+                </button>
+              )}
               <button
                 className="btn"
                 onClick={handleUndo}
@@ -1875,6 +1883,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
                 blocks={blocks}
                 employees={employees}
                 day={activeDay}
+                planMode={isPlan}
                 readOnly={readOnly}
                 onCellClick={handleCellClick}
                 onBlockContextMenu={(blockId, x, y) => { if (!readOnly) setContextMenu({ blockId, x, y }); }}
@@ -1920,6 +1929,7 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
           blocks={blocks}
           employees={employees}
           day={activeDay}
+          planMode={isPlan}
           readOnly={readOnly}
           onCellClick={handleCellClick}
           onBlockContextMenu={(blockId, x, y) => { if (!readOnly) setContextMenu({ blockId, x, y }); }}

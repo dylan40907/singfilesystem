@@ -34,6 +34,8 @@ interface ScheduleGridProps {
   onPaintCells?: (cellKeys: string[]) => void;
   blockWarnings?: Map<string, string[]>;
   highlightedBlockId?: string | null;
+  /** Plan schedules render blocks as plain labelled text. */
+  planMode?: boolean;
 }
 
 // Shared flag: when a block drag/resize ends, suppress the next cell click
@@ -45,6 +47,7 @@ export default function ScheduleGrid({
   employees,
   day,
   readOnly,
+  planMode,
   onCellClick,
   onBlockContextMenu,
   onBlockResize,
@@ -391,6 +394,7 @@ export default function ScheduleGrid({
                     heightPx={heightPx}
                     readOnly={readOnly || paintMode}
                     warnings={blockWarnings.get(block.id)}
+                    planMode={planMode}
                     highlighted={highlightedBlockId === block.id}
                     onContextMenu={onBlockContextMenu}
                     onResizeEnd={(blockId, s, e) => {
