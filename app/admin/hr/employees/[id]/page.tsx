@@ -94,6 +94,9 @@ type EmployeeTimeOffDayRequestRow = {
 
 type EmployeeRow = {
   id: string;
+  /** Linked portal account (user_profiles.id), null when they have none. */
+  profile_id: string | null;
+  hours_pin: string | null;
   legal_first_name: string;
   legal_middle_name: string | null;
   legal_last_name: string;
@@ -507,6 +510,10 @@ function normalizeForFortune(doc: any, fallback: any[]) {
 function normalizeEmployee(raw: any): EmployeeRow {
   return {
     id: raw.id,
+    // Carried through so the header can resolve the linked account (role badge,
+    // account actions) and the Hours PIN reveal.
+    profile_id: raw.profile_id ?? null,
+    hours_pin: raw.hours_pin ?? null,
     legal_first_name: raw.legal_first_name,
     legal_middle_name: raw.legal_middle_name ?? null,
     legal_last_name: raw.legal_last_name,
@@ -3304,7 +3311,7 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   type LinkedProfile = { id: string; role: string | null; is_active: boolean; can_manage_learning: boolean | null };
   const [linkedProfile, setLinkedProfile] = useState<LinkedProfile | null>(null);
 
-  const linkedProfileId = ((employee as any)?.profile_id ?? null) as string | null;
+  const linkedProfileId = employee?.profile_id ?? null;
 
   const reloadLinkedProfile = useCallback(async () => {
     if (!linkedProfileId) { setLinkedProfile(null); return; }
@@ -5137,11 +5144,11 @@ async function resetTimeOffHoursToDefault() {
               • Attendance score: <span style={{ fontWeight: 900, color: scoreColor(attPoints) }}>{attPoints}</span>
             </span>
             {meetingStatus ? <span style={{ marginLeft: 10 }}>• <span style={{ fontWeight: 800 }}>{meetingStatus}</span></span> : null}
-            {(employee as any)?.hours_pin && (
+            {employee?.hours_pin && (
               <span style={{ marginLeft: 10, display: "inline-flex", alignItems: "center", gap: 6 }}>
                 • Hours PIN:{" "}
                 <span style={{ fontWeight: 900, letterSpacing: 3, fontVariantNumeric: "tabular-nums" }}>
-                  {pinRevealed ? (employee as any).hours_pin : "••••"}
+                  {pinRevealed ? employee.hours_pin : "••••"}
                 </span>
                 <button
                   onClick={() => setPinRevealed((v) => !v)}
