@@ -5,6 +5,9 @@ import { useParams, useRouter } from "next/navigation";
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
+import { roleLabel, roleBadgeStyle } from "@/lib/roles";
+import EmployeeAccountActions from "@/components/hr/EmployeeAccountActions";
+import SupervisorAssignees from "@/components/hr/SupervisorAssignees";
 import "@fortune-sheet/react/dist/index.css";
 import {
   PreviewMode,
@@ -562,6 +565,7 @@ async function fetchEmployeeData(employeeId: string) {
     .select(
       `
       id,
+      profile_id,
       legal_first_name,
       legal_middle_name,
       legal_last_name,
@@ -3293,8 +3297,31 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
 
   // left-nav (sections)
   const [activeTab, setActiveTab] =
-  useState<"general" | "milestones" | "attendance" | "meetings" | "reviews" | "documents">("general");
+  useState<"general" | "milestones" | "attendance" | "meetings" | "reviews" | "documents" | "assignees">("general");
   const [pinRevealed, setPinRevealed] = useState(false);
+
+  // ── Linked portal account (role badge + account actions + assignees) ────────
+  type LinkedProfile = { id: string; role: string | null; is_active: boolean; can_manage_learning: boolean | null };
+  const [linkedProfile, setLinkedProfile] = useState<LinkedProfile | null>(null);
+
+  const linkedProfileId = ((employee as any)?.profile_id ?? null) as string | null;
+
+  const reloadLinkedProfile = useCallback(async () => {
+    if (!linkedProfileId) { setLinkedProfile(null); return; }
+    const { data } = await supabase
+      .from("user_profiles")
+      .select("id, role, is_active, can_manage_learning")
+      .eq("id", linkedProfileId)
+      .maybeSingle();
+    setLinkedProfile((data as LinkedProfile) ?? null);
+  }, [linkedProfileId]);
+
+  useEffect(() => { void reloadLinkedProfile(); }, [reloadLinkedProfile]);
+
+  // Admins manage anyone; campus admins manage everyone below campus-admin level.
+  const canManageAccount =
+    viewerRole === "admin" ||
+    (viewerRole === "campus_admin" && linkedProfile?.role !== "admin" && linkedProfile?.role !== "campus_admin");
   // form state (mirrors your modal)
   const [legalFirst, setLegalFirst] = useState("");
   const [legalMiddle, setLegalMiddle] = useState("");
@@ -5087,7 +5114,23 @@ async function resetTimeOffHoursToDefault() {
               ← Employees
             </Link>
           </div>
-          <h1 style={{ margin: 0 }}>{titleName}</h1>
+          <div className="row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <h1 style={{ margin: 0 }}>{titleName}</h1>
+            <span
+              title={linkedProfileId ? "Portal role" : "This employee has no portal account"}
+              style={{
+                ...roleBadgeStyle(linkedProfile?.role),
+                padding: "4px 12px", borderRadius: 999, fontWeight: 900, fontSize: 13, whiteSpace: "nowrap",
+              }}
+            >
+              {roleLabel(linkedProfile?.role, linkedProfile?.can_manage_learning)}
+            </span>
+            {linkedProfile && !linkedProfile.is_active ? (
+              <span style={{ padding: "4px 12px", borderRadius: 999, fontWeight: 900, fontSize: 13, background: "#fee2e2", color: "#991b1b", border: "1.5px solid #fca5a5" }}>
+                Deactivated
+              </span>
+            ) : null}
+          </div>
           <div className="subtle" style={{ marginTop: 6 }}>
             Employee ID: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{employeeId}</span>
             <span style={{ marginLeft: 10 }}>
@@ -5112,10 +5155,15 @@ async function resetTimeOffHoursToDefault() {
           </div>
         </div>
 
-        <div className="row" style={{ gap: 10 }}>
-          <button className="btn" onClick={() => router.refresh()} disabled={loading}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <EmployeeAccountActions
+            profileId={linkedProfileId}
+            role={linkedProfile?.role ?? null}
+            isActive={!!linkedProfile?.is_active}
+            displayName={titleName}
+            canManage={canManageAccount}
+            onChanged={async () => { await reloadLinkedProfile(); }}
+          />
           <button className="btn btn-primary" onClick={() => void saveChanges()} disabled={loading}>
             Save
           </button>
@@ -5210,6 +5258,25 @@ async function resetTimeOffHoursToDefault() {
           >
             Meetings
           </button>
+
+          {linkedProfile?.role === "supervisor" && linkedProfileId ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setActiveTab("assignees")}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                padding: 12,
+                border: "none",
+                borderRadius: 0,
+                background: activeTab === "assignees" ? "rgba(0,0,0,0.04)" : "transparent",
+                fontWeight: 900,
+              }}
+            >
+              Assignees
+            </button>
+          ) : null}
 
           <button
             type="button"
@@ -5527,14 +5594,6 @@ async function resetTimeOffHoursToDefault() {
                               {ptoSavingId === "new" ? "Saving…" : "Add entry"}
                             </button>
 
-                            <button
-                              type="button"
-                              className="btn-ghost"
-                              onClick={() => void loadPtoSchedules(employeeId)}
-                              disabled={ptoSchedulesLoading}
-                            >
-                              Refresh
-                            </button>
 
                             {ptoScheduleStatus ? <span className="subtle">{ptoScheduleStatus}</span> : null}
                           </div>
@@ -5861,9 +5920,6 @@ async function resetTimeOffHoursToDefault() {
                     </div>
 
                     <div className="row" style={{ gap: 10 }}>
-                      <button className="btn" type="button" onClick={() => void loadEmployeeAttendance(employeeId)} disabled={empAttendanceLoading}>
-                        {empAttendanceLoading ? "Loading..." : "Refresh records"}
-                      </button>
                       <button className="btn" type="button" onClick={() => void resetAttendancePointsToDefault()}>
                         Reset points
                       </button>
@@ -5998,9 +6054,6 @@ async function resetTimeOffHoursToDefault() {
       </div>
 
       <div className="row" style={{ gap: 10 }}>
-        <button className="btn" type="button" onClick={() => void loadTimeOffRecords(employeeId)} disabled={timeOffLoading}>
-          {timeOffLoading ? "Loading..." : "Refresh records"}
-        </button>
         <button className="btn" type="button" onClick={() => void resetTimeOffHoursToDefault()}>
           Reset hours
         </button>
@@ -6121,9 +6174,6 @@ async function resetTimeOffHoursToDefault() {
       </div>
 
       <div className="row" style={{ gap: 10 }}>
-        <button className="btn" type="button" onClick={() => void loadTimeOffDayRecords(employeeId)} disabled={timeOffDayLoading}>
-          {timeOffDayLoading ? "Loading..." : "Refresh records"}
-        </button>
         <button className="btn" type="button" onClick={() => void resetTimeOffDaysToDefault()}>
           Reset days
         </button>
@@ -6223,6 +6273,11 @@ async function resetTimeOffHoursToDefault() {
   </div>
                 </div>
               )}
+              {activeTab === "assignees" && linkedProfileId && (
+                <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 14 }}>
+                  <SupervisorAssignees supervisorProfileId={linkedProfileId} />
+                </div>
+              )}
               {activeTab === "reviews" && (
                   <EmployeePerformanceReviewsTab
                     employeeId={employeeId}
@@ -6235,9 +6290,6 @@ async function resetTimeOffHoursToDefault() {
                     <div style={{ fontWeight: 900 }}>Meetings</div>
 
                     <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                      <button className="btn" type="button" onClick={() => void loadEmployeeMeetings(employeeId)}>
-                        Refresh
-                      </button>
                       <button className="btn btn-primary" type="button" onClick={() => void addMeeting()}>
                         Add meeting
                       </button>

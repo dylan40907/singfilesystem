@@ -232,7 +232,6 @@ export default function HrRolesPage() {
                 onChange={(e) => setSearch(e.target.value)}
                 style={{ width: 240 }}
               />
-              <button className="btn" onClick={() => void reload()}>Refresh</button>
             </div>
           </div>
 

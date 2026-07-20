@@ -1418,9 +1418,6 @@ export default function HrOrgChartPage() {
 
                     <div className="row-between" style={{ gap: 10, marginBottom: 8 }}>
                       <div style={{ fontWeight: 800 }}>Existing job levels ({jobLevels.length})</div>
-                      <button className="btn" onClick={() => void loadJobLevels()} disabled={jobLevelsLoading}>
-                        {jobLevelsLoading ? "Loading..." : "Refresh"}
-                      </button>
                     </div>
 
                     {jobLevelsLoading ? (

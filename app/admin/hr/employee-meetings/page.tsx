@@ -1006,9 +1006,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 
                 <div style={{ marginTop: 12 }} className="row-between">
                   <div style={{ fontWeight: 900 }}>History</div>
-                  <button className="btn" type="button" onClick={() => void loadMyAttendance()} disabled={attendanceLoading}>
-                    {attendanceLoading ? "Loading…" : "Refresh"}
-                  </button>
                 </div>
 
                 <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
@@ -1168,9 +1165,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                   <div style={{ fontWeight: 950, fontSize: 18 }}>Meetings</div>
 
                   <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-                    <button className="btn" type="button" onClick={() => void loadAttendeeMeetings(employee.id)}>
-                      Refresh
-                    </button>
                   </div>
                 </div>
 

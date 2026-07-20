@@ -9,6 +9,7 @@ import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import CampusSelector from "@/components/CampusSelector";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
 import NotificationsBell from "@/components/NotificationsBell";
+import ModeSwitcher from "@/components/ModeSwitcher";
 
 function NavLink({
   href,
@@ -39,22 +40,6 @@ function NavLink({
     </Link>
   );
 }
-
-// Distinct pill that signals switching to the *other* portal (vs. a normal tab).
-const portalSwitchBtn: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "8px 14px",
-  borderRadius: 999,
-  border: "1.5px solid rgba(230,23,141,0.45)",
-  background: "rgba(230,23,141,0.06)",
-  color: "#e6178d",
-  fontWeight: 800,
-  fontSize: 13.5,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
 
 export default function HrNavbar() {
   const pathname = usePathname();
@@ -134,7 +119,6 @@ export default function HrNavbar() {
     if (pathname === "/admin/hr/settings" || pathname.startsWith("/admin/hr/settings/")) return "settings";
     if (pathname === "/admin/hr/attendance" || pathname.startsWith("/admin/hr/attendance/")) return "attendance";
     if (pathname === "/admin/hr/employees" || pathname.startsWith("/admin/hr/employees/")) return "employees";
-    if (pathname === "/admin/hr/admissions" || pathname.startsWith("/admin/hr/admissions/")) return "admissions";
     if (pathname === "/admin/hr/documents" || pathname.startsWith("/admin/hr/documents/")) return "documents";
     if (pathname === "/admin/hr/employee-meetings" || pathname.startsWith("/admin/hr/employee-meetings/"))
       return "employee-meetings";
@@ -163,7 +147,6 @@ export default function HrNavbar() {
 
   const adminLinks = canUseHr && hasAdminAccess ? [
     { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
-    { href: "/admin/hr/admissions", label: "Admissions", tab: "admissions" },
     { href: "/admin/hr/documents", label: "Documents", tab: "documents" },
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
     { href: "/admin/hr/org-chart", label: "Org Chart", tab: "org-chart" },
@@ -176,7 +159,6 @@ export default function HrNavbar() {
     ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
   ] : canUseHr && isSupervisor ? [
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
-    { href: "/admin/hr/admissions", label: "Admissions", tab: "admissions" },
   ] : [];
 
   return (
@@ -208,9 +190,7 @@ export default function HrNavbar() {
                 Chat <ChatNavBadge />
               </button>
             )}
-            <button onClick={() => router.push("/")} title="Switch to the main portal" style={portalSwitchBtn}>
-              ⇆ Curriculum
-            </button>
+            <ModeSwitcher profile={profile} current="hr" />
             {sessionEmail ? (
               <>
                 <span className="badge badge-pink">{displayName}</span>
@@ -270,9 +250,7 @@ export default function HrNavbar() {
               ) : (
                 <span className="subtle">Not signed in</span>
               )}
-              <button className="btn" onClick={() => { setMenuOpen(false); router.push("/"); }} style={{ ...portalSwitchBtn, flexShrink: 0 }}>
-                ⇆ Curriculum
-              </button>
+              <ModeSwitcher profile={profile} current="hr" onNavigate={() => setMenuOpen(false)} />
             </div>
             {sessionEmail && (
               <div style={{ padding: "10px 8px 0" }}>

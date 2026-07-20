@@ -366,7 +366,6 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
           {pastCount > 0 && (
             <button className="btn" onClick={() => setShowPast((p) => !p)}>{showPast ? "Hide past" : `Show past · ${pastCount}`}</button>
           )}
-          <button className="btn" onClick={() => void reload()}>Refresh</button>
           <button className="btn btn-primary" onClick={() => setEntryModal({})}>+ Add student</button>
         </div>
       </div>

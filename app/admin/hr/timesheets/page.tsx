@@ -1187,13 +1187,11 @@ function EditRequestsModal({
   onClose,
   onUpdate,
   onGoTo,
-  onRefresh,
 }: {
   requests: ClockEditRequest[];
   onClose: () => void;
   onUpdate: (reqId: string, entryId?: string, field?: string, newValue?: string) => void;
   onGoTo: (sessionDate: string) => void;
-  onRefresh: () => void;
 }) {
   const [requests, setRequests] = useState(initialRequests);
   const [busy, setBusy] = useState<Set<string>>(new Set());
@@ -1244,12 +1242,6 @@ function EditRequestsModal({
         <div style={{ padding: "16px 20px", borderBottom: "1px solid #e5e7eb", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>Employee Clock Edit Requests</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              onClick={onRefresh}
-              style={{ padding: "4px 12px", borderRadius: 8, border: "1.5px solid #e5e7eb", background: "white", cursor: "pointer", fontSize: 13, color: "#6b7280", fontWeight: 600 }}
-            >
-              Refresh
-            </button>
             <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#9ca3af", padding: 4, lineHeight: 1 }}>✕</button>
           </div>
         </div>
@@ -1862,7 +1854,6 @@ export default function TimesheetsPage() {
         <EditRequestsModal
           requests={editRequests}
           onClose={() => setEditRequestsOpen(false)}
-          onRefresh={() => fetchEditRequests()}
           onGoTo={(sessionDate) => {
             const d = new Date(sessionDate + "T12:00:00");
             setPeriodIndex(getPeriodIndex(d));

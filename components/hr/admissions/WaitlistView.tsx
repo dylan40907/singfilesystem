@@ -157,7 +157,6 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
             style={{ width: 150 }}
           />
           <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Manage rooms</button>
-          <button className="btn" onClick={() => void reload()}>Refresh</button>
           <button className="btn btn-primary" onClick={() => setEntryModal({ mode: "create" })}>+ Add to waitlist</button>
         </div>
       </div>

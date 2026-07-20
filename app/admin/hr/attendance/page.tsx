@@ -468,9 +468,6 @@ export default function AttendancePage() {
             Show inactive
           </label>
 
-          <button className="btn" onClick={() => void loadEmployeesAndTypes()} disabled={loading}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
           <button className="btn" onClick={() => setShowManageAttendanceTypes(true)}>
             Manage Types
           </button>

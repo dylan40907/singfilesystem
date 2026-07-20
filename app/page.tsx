@@ -18,6 +18,7 @@ import {
   parseCsv,
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
+import FolderPermissionsModal from "@/components/FolderPermissionsModal";
 import MfaModal from "@/components/MfaModal";
 
 async function readJsonSafely(res: Response) {
@@ -270,6 +271,9 @@ export default function Home() {
 
   // Profile
   const [myProfile, setMyProfile] = useState<TeacherProfile | null>(null);
+
+  // Teacher folder-permissions viewer (moved here from the old /teachers page)
+  const [permsOpen, setPermsOpen] = useState(false);
 
   // Data
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -2227,6 +2231,18 @@ export default function Home() {
                         </div>
                       )}
                     </div>
+
+                    {isAdminOrSupervisor ? (
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => setPermsOpen(true)}
+                        style={{ alignSelf: "flex-start" }}
+                        title="See which folders a teacher has been shared on"
+                      >
+                        👤 Teacher folder permissions
+                      </button>
+                    ) : null}
                   </>
                 ) : (
                   <div className="subtle"></div>
@@ -2544,6 +2560,9 @@ export default function Home() {
             onLinkCopyFailed={() => setStatus("Copy failed.")}
           />
 
+          {/* TEACHER FOLDER PERMISSIONS */}
+          {permsOpen ? <FolderPermissionsModal onClose={() => setPermsOpen(false)} /> : null}
+
           {/* SHARE MODAL */}
           {shareModalOpen && shareTarget ? (
             <div
@@ -2665,13 +2684,6 @@ export default function Home() {
                       <div>
                         <div style={{ fontWeight: 900 }}>Access (direct grants)</div>
                       </div>
-                      <button
-                        className="btn"
-                        onClick={() => refreshPermissions({ resourceType: shareTarget.resourceType, resourceId: shareTarget.resourceId })}
-                        disabled={permsLoading}
-                      >
-                        Refresh
-                      </button>
                     </div>
 
                     <div className="hr" />

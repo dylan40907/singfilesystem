@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
 import NotificationsBell from "@/components/NotificationsBell";
+import ModeSwitcher from "@/components/ModeSwitcher";
 
 function NavLink({
   href,
@@ -35,22 +36,6 @@ function NavLink({
     </Link>
   );
 }
-
-// Distinct pill that signals switching to the *other* portal (vs. a normal tab).
-const portalSwitchBtn: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "8px 14px",
-  borderRadius: 999,
-  border: "1.5px solid rgba(230,23,141,0.45)",
-  background: "rgba(230,23,141,0.06)",
-  color: "#e6178d",
-  fontWeight: 800,
-  fontSize: 13.5,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-};
 
 function hardClearSupabaseAuthStorage() {
   try {
@@ -85,15 +70,9 @@ export default function Navbar() {
 
   const isActive = !!profile?.is_active;
 
-  const isAdminOrSupervisor =
-    !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
-
-  const showTeachers = !!sessionEmail && isAdminOrSupervisor;
-
   const isSupervisor = !!profile?.is_active && profile.role === "supervisor";
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
-  const showSupervisors = !!sessionEmail && (isAdmin || isCampusAdmin);
   const showSchedules = !!sessionEmail && isSupervisor;
   // App (learning) page: full admins, campus admins, + "App Supervisors" (the flag).
   const showApp = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || !!profile?.can_manage_learning);
@@ -192,11 +171,9 @@ export default function Navbar() {
   }, []);
 
   const activeTab = useMemo(() => {
-    if (pathname.startsWith("/admin/supervisors")) return "supervisors";
     if (pathname.startsWith("/schedules")) return "schedules";
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname.startsWith("/admin/learning")) return "learning";
-    if (pathname === "/teachers") return "teachers";
     if (pathname === "/chat" || pathname.startsWith("/chat/")) return "chat";
     return "home";
   }, [pathname]);
@@ -223,8 +200,6 @@ export default function Navbar() {
             {/* Desktop nav links */}
             <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
               <NavLink href="/" label="Home" active={activeTab === "home"} />
-              {showTeachers && <NavLink href="/teachers" label="Teachers" active={activeTab === "teachers"} />}
-              {showSupervisors && <NavLink href="/admin/supervisors" label="Supervisors" active={activeTab === "supervisors"} />}
               {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && !(isAdmin || isCampusAdmin) && <NavLink href="/hr" label="HR" active={activeTab === "hr"} />}
               {showApp && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
@@ -244,11 +219,7 @@ export default function Navbar() {
                 Chat <ChatNavBadge />
               </button>
             )}
-            {showHr && (isAdmin || isCampusAdmin) && (
-              <button onClick={() => router.push("/admin/hr")} title="Switch to the HR Portal" style={portalSwitchBtn}>
-                ⇆ HR Portal
-              </button>
-            )}
+            <ModeSwitcher profile={profile} current="curriculum" />
             {sessionEmail ? (
               <>
                 <span className="badge badge-pink">{displayName}</span>
@@ -277,11 +248,8 @@ export default function Navbar() {
         {menuOpen && (
           <div className="nav-mobile-panel hide-desktop">
             <Link href="/" className={`nav-mobile-link${activeTab === "home" ? " active" : ""}`}>Home</Link>
-            {showTeachers && <Link href="/teachers" className={`nav-mobile-link${activeTab === "teachers" ? " active" : ""}`}>Teachers</Link>}
-            {showSupervisors && <Link href="/admin/supervisors" className={`nav-mobile-link${activeTab === "supervisors" ? " active" : ""}`}>Supervisors</Link>}
             {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && !(isAdmin || isCampusAdmin) && <Link href="/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
-            {showHr && (isAdmin || isCampusAdmin) && <Link href="/admin/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>⇆ HR Portal</Link>}
             {showApp && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
             {showChat && (
               <Link
@@ -296,6 +264,7 @@ export default function Navbar() {
             {sessionEmail ? (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 8px 0" }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>
+                <ModeSwitcher profile={profile} current="curriculum" onNavigate={() => setMenuOpen(false)} />
                 <button className="btn btn-primary" onClick={signOut} disabled={signingOut} style={{ flexShrink: 0, marginLeft: 12 }}>
                   {signingOut ? "Signing out..." : "Sign out"}
                 </button>

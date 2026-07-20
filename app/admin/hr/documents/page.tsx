@@ -553,7 +553,6 @@ export default function HrDocumentsPage() {
               )}
             </div>
           )}
-          <button className="btn" onClick={() => void reload()}>Refresh</button>
         </div>
       </div>
 

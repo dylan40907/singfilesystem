@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
-import { applyCampusFilterToQuery, hideRegularAdminsForCampusAdmin, useCampusFilter } from "@/lib/CampusContext";
+import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { roleLabel, roleBadgeStyle } from "@/lib/roles";
+import AddUserModal from "@/components/hr/AddUserModal";
 
 type CampusRow = { id: string; name: string };
 type JobLevelRow = { id: string; name: string };
@@ -18,7 +20,11 @@ type EmployeeListRow = {
   campus: CampusRow | null;
   job_level: JobLevelRow | null;
   updated_at: string | null;
+  profile_id: string | null;
 };
+
+/** Linked portal-account info, keyed by user_profiles.id. */
+type ProfileMeta = { role: string | null; is_active: boolean; can_manage_learning: boolean | null };
 
 function employeeHref(id: string) {
   return `/admin/hr/employees/${id}`;
@@ -37,7 +43,9 @@ export default function EmployeesPage() {
   const [loading, setLoading] = useState(true);
 
   const [rows, setRows] = useState<EmployeeListRow[]>([]);
+  const [profileMeta, setProfileMeta] = useState<Map<string, ProfileMeta>>(new Map());
   const [error, setError] = useState<string>("");
+  const [addOpen, setAddOpen] = useState(false);
 
   const [q, setQ] = useState("");
 
@@ -328,9 +336,37 @@ export default function EmployeesPage() {
         .order("legal_first_name", { ascending: true });
 
       if (error) throw error;
-      // Campus admins never see regular-admin accounts.
-      const visible = await hideRegularAdminsForCampusAdmin((data || []) as any[], isCampusAdmin ? "campus_admin" : null);
-      setRows(visible as any);
+      let list = (data || []) as any as EmployeeListRow[];
+
+      // Pull the linked portal accounts so we can show role + deactivated state
+      // (and apply the campus-admin visibility rules).
+      const profIds = list.map((r) => r.profile_id).filter((v): v is string => !!v);
+      const metaById = new Map<string, ProfileMeta>();
+      if (profIds.length) {
+        const { data: profs } = await supabase
+          .from("user_profiles")
+          .select("id, role, is_active, can_manage_learning")
+          .in("id", profIds);
+        for (const p of (profs ?? []) as any[]) {
+          metaById.set(p.id as string, {
+            role: p.role ?? null,
+            is_active: !!p.is_active,
+            can_manage_learning: p.can_manage_learning ?? null,
+          });
+        }
+      }
+
+      // Campus admins are peers of other campus admins and below full admins —
+      // they must not see (or be able to manage) either.
+      if (isCampusAdmin) {
+        list = list.filter((r) => {
+          const role = r.profile_id ? metaById.get(r.profile_id)?.role : null;
+          return role !== "admin" && role !== "campus_admin";
+        });
+      }
+
+      setProfileMeta(metaById);
+      setRows(list);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load employees");
     }
@@ -416,8 +452,8 @@ export default function EmployeesPage() {
           <button type="button" className="btn" onClick={() => void openExportModal()}>
             Export by Job Role by Month
           </button>
-          <button type="button" className="btn" onClick={() => void loadEmployees()}>
-            Refresh
+          <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
+            + Add user
           </button>
         </div>
       </div>
@@ -451,7 +487,8 @@ export default function EmployeesPage() {
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("name")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Name" + sortIndicator("name")}</button></th>
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("campus")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Campus" + sortIndicator("campus")}</button></th>
               <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("jobLevel")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Job level" + sortIndicator("jobLevel")}</button></th>
-              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("active")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Active" + sortIndicator("active")}</button></th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}>Role</th>
+              <th style={{ textAlign: "left", padding: 10, fontSize: 12, color: "#6b7280" }}><button type="button" onClick={() => toggleSort("active")} style={{ background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}>{"Status" + sortIndicator("active")}</button></th>
               <th style={{ padding: 10 }} />
             </tr>
           </thead>
@@ -465,7 +502,35 @@ export default function EmployeesPage() {
                 </td>
                 <td style={{ padding: 10, color: "#374151" }}>{e.campus?.name || "—"}</td>
                 <td style={{ padding: 10, color: "#374151" }}>{e.job_level?.name || "—"}</td>
-                <td style={{ padding: 10, color: "#374151" }}>{e.is_active ? "Yes" : "No"}</td>
+                <td style={{ padding: 10 }}>
+                  {(() => {
+                    const meta = e.profile_id ? profileMeta.get(e.profile_id) : undefined;
+                    if (!meta) return <span style={{ color: "#9ca3af" }}>—</span>;
+                    return (
+                      <span style={{ ...roleBadgeStyle(meta.role), padding: "3px 10px", borderRadius: 999, fontWeight: 800, fontSize: 12, whiteSpace: "nowrap" }}>
+                        {roleLabel(meta.role, meta.can_manage_learning)}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td style={{ padding: 10 }}>
+                  {(() => {
+                    const meta = e.profile_id ? profileMeta.get(e.profile_id) : undefined;
+                    // An employee is "deactivated" if their HR record OR their
+                    // portal account is switched off.
+                    const off = !e.is_active || (meta ? !meta.is_active : false);
+                    return (
+                      <span style={{
+                        padding: "3px 10px", borderRadius: 999, fontWeight: 800, fontSize: 12, whiteSpace: "nowrap",
+                        background: off ? "#fee2e2" : "#dcfce7",
+                        color: off ? "#991b1b" : "#166534",
+                        border: `1.5px solid ${off ? "#fca5a5" : "#86efac"}`,
+                      }}>
+                        {off ? "Deactivated" : "Active"}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td style={{ padding: 10, textAlign: "right" }}>
                   <Link href={employeeHref(e.id)} className="btn-ghost">
                     View
@@ -475,7 +540,7 @@ export default function EmployeesPage() {
             ))}
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={5} style={{ padding: 14, color: "#6b7280" }}>
+                <td colSpan={6} style={{ padding: 14, color: "#6b7280" }}>
                   (No employees found.)
                 </td>
               </tr>
@@ -487,6 +552,15 @@ export default function EmployeesPage() {
 
 
       {dialogModal}
+
+      {addOpen ? (
+        <AddUserModal
+          viewerRole={me?.role ?? null}
+          viewerCampusId={me?.campus_id ?? null}
+          onClose={() => setAddOpen(false)}
+          onCreated={() => { setAddOpen(false); void loadEmployees(); }}
+        />
+      ) : null}
 
       {exportOpen ? (
         <div

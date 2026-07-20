@@ -238,9 +238,6 @@ export default function HrSettingsPage() {
         </div>
 
         <div className="row" style={{ gap: 10 }}>
-          <button className="btn" onClick={() => void load()} disabled={loading || saving || addingRecipient}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
           <button
             className="btn btn-primary"
             onClick={() => void saveReminderSettings()}
