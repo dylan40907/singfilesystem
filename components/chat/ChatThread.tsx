@@ -3,9 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  ChatConversationView, ChatMessage, PreviewKind, fetchMessages, fileTypeIcon, getAttachmentUrl,
-  markRead, officeViewerUrl, previewKindFor, sendMessage, uploadChatAttachment, userDisplayName,
+  ChatConversationView, ChatMessage, ChatUserLite, PreviewKind, editMessage, fetchMessages,
+  fileTypeIcon, getAttachmentUrl, markRead, officeViewerUrl, previewKindFor, sendMessage,
+  unsendMessage, uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
+import { fetchMyProfile } from "@/lib/teachers";
+import { activeMentionQuery, insertMention, parseMentions } from "@/lib/mentions";
+import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
 
 type PreviewTarget = { url: string; kind: PreviewKind; name: string; type: string | null };
@@ -183,6 +187,18 @@ function formatDay(iso: string): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
+const msgActionBtn: React.CSSProperties = {
+  marginLeft: 6,
+  border: "none",
+  background: "transparent",
+  color: "#6b7280",
+  fontSize: 10,
+  fontWeight: 800,
+  cursor: "pointer",
+  padding: 0,
+  textDecoration: "underline",
+};
+
 const attachMenuItem: React.CSSProperties = {
   display: "block",
   width: "100%",
@@ -201,12 +217,12 @@ export default function ChatThread({
   conversation,
   myId,
   onMessageSent,
-  onDelete,
+  onMembersChanged,
 }: {
   conversation: ChatConversationView;
   myId: string;
   onMessageSent: () => void;
-  onDelete: () => void;
+  onMembersChanged: () => void;
 }) {
   const { confirm, modal: dialogModal } = useDialog();
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
@@ -218,6 +234,15 @@ export default function ChatThread({
   const [attachOpen, setAttachOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  // Editing an existing message (null = composing a new one)
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [participantsOpen, setParticipantsOpen] = useState(false);
+  const [viewerRole, setViewerRole] = useState<string | null>(null);
+  // @-mention autocomplete
+  const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -225,6 +250,31 @@ export default function ChatThread({
     () => new Map(conversation.members.map((m) => [m.id, m] as const)),
     [conversation.members]
   );
+
+  // Same rule as the app: every role above the lowest (teacher) may edit a
+  // group's participants; everyone else gets a read-only roster.
+  const canManageMembers = conversation.is_group && !!viewerRole && viewerRole !== "teacher";
+
+  const nameFor = (id: string) => {
+    const m = memberMap.get(id);
+    return m ? userDisplayName(m) : "someone";
+  };
+
+  /** Members matching the in-progress @query, for the composer dropdown. */
+  const mentionMatches = useMemo(() => {
+    if (!mention) return [] as ChatUserLite[];
+    const q = mention.query.toLowerCase();
+    return conversation.members
+      .filter((m) => m.id !== myId)
+      .filter((m) => !q || userDisplayName(m).toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [mention, conversation.members, myId]);
+
+  useEffect(() => {
+    (async () => {
+      try { setViewerRole((await fetchMyProfile())?.role ?? null); } catch { setViewerRole(null); }
+    })();
+  }, []);
 
   // Load messages whenever the selected conversation changes
   useEffect(() => {
@@ -300,6 +350,25 @@ export default function ChatThread({
     if (!draft.trim() || sending) return;
     setSending(true);
     setError(null);
+
+    // Saving an edit rather than sending a new message.
+    if (editing) {
+      try {
+        await editMessage(editing.id, draft);
+        const saved = draft.trim();
+        setMessages((prev) =>
+          prev.map((x) => (x.id === editing.id ? { ...x, content: saved, edited_at: new Date().toISOString() } : x))
+        );
+        setEditing(null);
+        setDraft("");
+      } catch (e: any) {
+        setError(e?.message ?? "Failed to edit");
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     try {
       const msg = await sendMessage(conversation.id, myId, draft);
       // Optimistically add (the realtime sub may also add it; we dedupe)
@@ -333,7 +402,36 @@ export default function ChatThread({
     }
   }
 
+  function applyMention(u: ChatUserLite) {
+    if (!mention) return;
+    const el = draftRef.current;
+    const caret = el?.selectionStart ?? draft.length;
+    const { next, caret: nextCaret } = insertMention(draft, mention.start, caret, u.id);
+    setDraft(next);
+    setMention(null);
+    setMentionIdx(0);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(nextCaret, nextCaret);
+    });
+  }
+
+  /** Recompute the @-autocomplete from the caret position. */
+  function syncMention(value: string, caret: number) {
+    const found = activeMentionQuery(value, caret);
+    setMention(found);
+    setMentionIdx(0);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // The mention list owns the arrow keys / Enter while it's open.
+    if (mention && mentionMatches.length > 0) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionMatches.length); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionMatches.length) % mentionMatches.length); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); applyMention(mentionMatches[mentionIdx]); return; }
+      if (e.key === "Escape") { e.preventDefault(); setMention(null); return; }
+    }
+    if (e.key === "Escape" && editing) { e.preventDefault(); setEditing(null); setDraft(""); return; }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -344,6 +442,16 @@ export default function ChatThread({
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "white" }}>
       {dialogModal}
       {preview && <PreviewLightbox target={preview} onClose={() => setPreview(null)} />}
+      {participantsOpen && (
+        <ChatParticipantsModal
+          conversationId={conversation.id}
+          members={conversation.members}
+          myId={myId}
+          canManage={canManageMembers}
+          onClose={() => setParticipantsOpen(false)}
+          onChanged={onMembersChanged}
+        />
+      )}
       {/* Header */}
       <div
         style={{
@@ -383,29 +491,19 @@ export default function ChatThread({
               : "Direct message"}
           </div>
         </div>
-        <button
-          onClick={async () => {
-            const msg = conversation.is_group
-              ? `Hide "${conversation.displayName}" from your chat list?\n\nThe other members will still see it. New messages will bring it back automatically.`
-              : `Hide this chat with ${conversation.displayName}?\n\n${conversation.displayName} will still see the chat. New messages will bring it back automatically.`;
-            const ok = await confirm(msg, { title: "Delete chat", confirmLabel: "Delete", danger: true });
-            if (ok) onDelete();
-          }}
-          title="Delete chat (hide from your list)"
-          style={{
-            flexShrink: 0,
-            padding: "6px 12px",
-            borderRadius: 8,
-            border: "1.5px solid #fca5a5",
-            background: "#fee2e2",
-            color: "#991b1b",
-            fontWeight: 700,
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-        >
-          Delete
-        </button>
+        {conversation.is_group ? (
+          <button
+            onClick={() => setParticipantsOpen(true)}
+            title={canManageMembers ? "Edit participants" : "View participants"}
+            style={{
+              flexShrink: 0, padding: "6px 12px", borderRadius: 8,
+              border: "1.5px solid #e5e7eb", background: "white",
+              color: "#374151", fontWeight: 700, fontSize: 13, cursor: "pointer",
+            }}
+          >
+            {canManageMembers ? "✎ Participants" : "👥 Participants"}
+          </button>
+        ) : null}
       </div>
 
       {/* Messages */}
@@ -476,6 +574,8 @@ export default function ChatThread({
                     justifyContent: isMine ? "flex-end" : "flex-start",
                     marginBottom: 4,
                   }}
+                  onMouseEnter={() => setHoverId(m.id)}
+                  onMouseLeave={() => setHoverId((cur) => (cur === m.id ? null : cur))}
                 >
                   <div style={{ maxWidth: "70%" }}>
                     {showSenderName && (
@@ -519,7 +619,26 @@ export default function ChatThread({
                         }}
                       >
                         {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
-                        {m.content?.trim() ? m.content : null}
+                        {m.content?.trim()
+                          ? parseMentions(m.content).map((seg, si) =>
+                              seg.type === "text" ? (
+                                <span key={si}>{seg.text}</span>
+                              ) : (
+                                <span
+                                  key={si}
+                                  style={{
+                                    fontWeight: 800,
+                                    borderRadius: 4,
+                                    padding: "0 3px",
+                                    color: isMine ? "#ffffff" : "#4338ca",
+                                    background: isMine ? "rgba(255,255,255,0.22)" : "#e0e7ff",
+                                  }}
+                                >
+                                  @{nameFor(seg.userId)}
+                                </span>
+                              )
+                            )
+                          : null}
                       </div>
                     )}
                     <div
@@ -534,6 +653,34 @@ export default function ChatThread({
                     >
                       {formatTime(m.created_at)}
                       {m.edited_at && !m.deleted_at ? " · edited" : ""}
+                      {isMine && !m.deleted_at && hoverId === m.id ? (
+                        <>
+                          {m.content?.trim() ? (
+                            <button
+                              onClick={() => { setEditing(m); setDraft(m.content); draftRef.current?.focus(); }}
+                              style={msgActionBtn}
+                            >
+                              Edit
+                            </button>
+                          ) : null}
+                          <button
+                            onClick={async () => {
+                              const ok = await confirm("Unsend this message? It will be removed for everyone.", {
+                                title: "Unsend message", confirmLabel: "Unsend", danger: true,
+                              });
+                              if (!ok) return;
+                              try {
+                                await unsendMessage(m.id);
+                                setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, deleted_at: new Date().toISOString(), content: "", attachment_path: null } : x)));
+                                if (editing?.id === m.id) { setEditing(null); setDraft(""); }
+                              } catch (e: any) { setError(e?.message ?? "Failed to unsend"); }
+                            }}
+                            style={{ ...msgActionBtn, color: "#b91c1c" }}
+                          >
+                            Unsend
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -554,6 +701,58 @@ export default function ChatThread({
       >
         {error && (
           <div style={{ marginBottom: 8, fontSize: 12, color: "#991b1b", fontWeight: 600 }}>{error}</div>
+        )}
+
+        {editing && (
+          <div className="row-between" style={{
+            marginBottom: 8, padding: "6px 10px", borderRadius: 8,
+            background: "#fdf2f8", border: "1px solid #f9d9ec",
+          }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: "#e6178d" }}>✎ Editing message</span>
+            <button
+              onClick={() => { setEditing(null); setDraft(""); }}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#6b7280" }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {mention && mentionMatches.length > 0 && (
+          <div style={{
+            position: "relative", marginBottom: 6,
+          }}>
+            <div style={{
+              border: "1px solid #e5e7eb", borderRadius: 10, background: "white",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.10)", overflow: "hidden",
+            }}>
+              <div style={{ padding: "6px 10px", fontSize: 11, fontWeight: 800, color: "#9ca3af" }}>
+                MEMBERS MATCHING @{mention.query.toUpperCase()}
+              </div>
+              {mentionMatches.map((u, i) => (
+                <button
+                  key={u.id}
+                  onMouseDown={(e) => { e.preventDefault(); applyMention(u); }}
+                  onMouseEnter={() => setMentionIdx(i)}
+                  style={{
+                    display: "flex", width: "100%", alignItems: "center", gap: 8,
+                    padding: "8px 10px", border: "none", cursor: "pointer", textAlign: "left",
+                    background: i === mentionIdx ? "rgba(230,23,141,0.08)" : "transparent",
+                    fontSize: 13, fontWeight: 700, color: "#111827",
+                  }}
+                >
+                  <span style={{
+                    width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
+                    background: "#eef2ff", color: "#4338ca", fontSize: 10, fontWeight: 800,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>
+                    {userDisplayName(u).slice(0, 2).toUpperCase()}
+                  </span>
+                  {userDisplayName(u)}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
 
         <input ref={imageInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleAttachmentChosen} />
@@ -597,10 +796,13 @@ export default function ChatThread({
             )}
           </div>
           <textarea
+            ref={draftRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => { setDraft(e.target.value); syncMention(e.target.value, e.target.selectionStart ?? 0); }}
+            onClick={(e) => syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
+            onKeyUp={(e) => syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message — Enter to send, Shift+Enter for newline"
+            placeholder={editing ? "Edit your message — Enter to save, Esc to cancel" : "Type a message — @ to mention, Enter to send"}
             rows={1}
             disabled={sending}
             style={{

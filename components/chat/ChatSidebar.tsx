@@ -1,6 +1,7 @@
 "use client";
 
 import { ChatConversationView, userDisplayName } from "@/lib/chat";
+import { mentionsToPlainText } from "@/lib/mentions";
 
 function formatRelative(iso: string): string {
   const d = new Date(iso);
@@ -21,12 +22,15 @@ export default function ChatSidebar({
   selectedId,
   onSelect,
   onNewChat,
+  onHide,
   myId,
 }: {
   conversations: ChatConversationView[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onNewChat: () => void;
+  /** Hide the chat from my list (it returns on new activity). */
+  onHide: (id: string) => void;
   myId: string;
 }) {
   return (
@@ -74,8 +78,14 @@ export default function ChatSidebar({
         ) : (
           conversations.map((c) => {
             const isSelected = selectedId === c.id;
-            const preview =
-              c.lastMessage?.content?.replace(/\s+/g, " ").slice(0, 60) ?? "No messages yet";
+            // Render mention tokens as "@Name" so previews stay readable.
+            const rawPreview = c.lastMessage?.content
+              ? mentionsToPlainText(c.lastMessage.content, (id) => {
+                  const u = c.members.find((m) => m.id === id);
+                  return u ? userDisplayName(u) : null;
+                })
+              : null;
+            const preview = rawPreview?.replace(/\s+/g, " ").slice(0, 60) ?? "No messages yet";
             const senderLabel = (() => {
               if (!c.lastMessage) return "";
               if (c.lastMessage.sender_id === myId) return "You: ";
@@ -85,12 +95,16 @@ export default function ChatSidebar({
               return name ? `${name}: ` : "";
             })();
             return (
-              <button
+              <div
                 key={c.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelect(c.id)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(c.id); } }}
                 style={{
                   display: "flex",
                   width: "100%",
+                  boxSizing: "border-box",
                   alignItems: "flex-start",
                   gap: 10,
                   padding: "12px 14px",
@@ -133,8 +147,23 @@ export default function ChatSidebar({
                     >
                       {c.displayName}
                     </div>
-                    <div style={{ flexShrink: 0, fontSize: 11, color: "#9ca3af" }}>
-                      {formatRelative(c.last_message_at)}
+                    <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                      <div style={{ fontSize: 11, color: "#9ca3af" }}>
+                        {formatRelative(c.last_message_at)}
+                      </div>
+                      <button
+                        title="Close chat — it comes back on new activity"
+                        onClick={(e) => { e.stopPropagation(); onHide(c.id); }}
+                        style={{
+                          border: "none", background: "transparent", cursor: "pointer",
+                          color: "#dc2626", fontSize: 13, fontWeight: 900, lineHeight: 1,
+                          padding: "1px 4px", borderRadius: 6,
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#fee2e2")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        ✕
+                      </button>
                     </div>
                   </div>
                   <div
@@ -171,7 +200,7 @@ export default function ChatSidebar({
                     {c.unreadCount > 99 ? "99+" : c.unreadCount}
                   </div>
                 )}
-              </button>
+              </div>
             );
           })
         )}

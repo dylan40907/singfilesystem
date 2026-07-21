@@ -329,6 +329,73 @@ export function officeViewerUrl(fileUrl: string): string {
   return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(fileUrl)}`;
 }
 
+/** Edit my own message. Sets edited_at so clients can show an "edited" hint. */
+export async function editMessage(messageId: string, newContent: string): Promise<void> {
+  const text = newContent.trim();
+  if (!text) throw new Error("Message cannot be empty");
+  const { error } = await supabase
+    .from("chat_messages")
+    .update({ content: text, edited_at: new Date().toISOString() })
+    .eq("id", messageId);
+  if (error) throw error;
+}
+
+/** Unsend (soft-delete) my own message — clears the body for everyone. */
+export async function unsendMessage(messageId: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_messages")
+    .update({
+      deleted_at: new Date().toISOString(),
+      content: "",
+      attachment_path: null,
+      attachment_name: null,
+      attachment_type: null,
+      attachment_size: null,
+      attachment_kind: null,
+    })
+    .eq("id", messageId);
+  if (error) throw error;
+}
+
+/** Post a system note (e.g. "Dana added Sam") — a normal row flagged system. */
+export async function postSystemMessage(
+  conversationId: string,
+  actorId: string,
+  text: string
+): Promise<void> {
+  const { error } = await supabase.from("chat_messages").insert({
+    conversation_id: conversationId,
+    sender_id: actorId,
+    content: text,
+    message_type: "system",
+  });
+  if (error) throw error;
+  await supabase
+    .from("chat_conversations")
+    .update({ last_message_at: new Date().toISOString() })
+    .eq("id", conversationId);
+}
+
+/** Add members to a group. RLS allows any member; the app gates by role. */
+export async function addMembers(conversationId: string, userIds: string[]): Promise<void> {
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) return;
+  const { error } = await supabase
+    .from("chat_members")
+    .insert(ids.map((uid) => ({ conversation_id: conversationId, user_id: uid })));
+  if (error) throw error;
+}
+
+/** Remove a member from a group. RLS allows managers (role ≠ teacher). */
+export async function removeMember(conversationId: string, userId: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_members")
+    .delete()
+    .eq("conversation_id", conversationId)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
 /** Update my last_read_at to "now" for a conversation. */
 export async function markRead(conversationId: string, myId: string): Promise<void> {
   const { error } = await supabase

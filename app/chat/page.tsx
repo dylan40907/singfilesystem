@@ -103,6 +103,17 @@ export default function ChatPage() {
         selectedId={selectedId}
         onSelect={(id) => setSelectedId(id)}
         onNewChat={() => setNewChatOpen(true)}
+        onHide={async (id) => {
+          if (!myId) return;
+          try {
+            await hideConversation(id, myId);
+          } catch (e: any) {
+            setError(e?.message ?? "Failed to close chat");
+            return;
+          }
+          setSelectedId((cur) => (cur === id ? null : cur));
+          reload();
+        }}
         myId={myId ?? ""}
       />
 
@@ -117,16 +128,7 @@ export default function ChatPage() {
             conversation={selectedConversation}
             myId={myId}
             onMessageSent={() => reload()}
-            onDelete={async () => {
-              try {
-                await hideConversation(selectedConversation.id, myId);
-              } catch (e: any) {
-                setError(e?.message ?? "Failed to delete chat");
-                return;
-              }
-              setSelectedId(null);
-              reload();
-            }}
+            onMembersChanged={() => reload()}
           />
         ) : (
           <div
