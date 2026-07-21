@@ -74,7 +74,11 @@ export default function ScheduleBlock({
   // Times occupy two 14px lines and only render above 32px of height.
   const showsTimes = heightPx > 32;
   const twoLineNeed = 32 + (showsTimes ? 28 : 0) + 8; // 2 name lines + times + padding
+  // Auto-wrapping long text is space-dependent…
   const allowTwoLines = !!planMode && heightPx >= twoLineNeed;
+  // …but a newline the user typed with Shift+Enter is deliberate, so it always
+  // breaks, even on a block too short to have earned an automatic second line.
+  const hasExplicitBreak = !!planMode && /\r?\n/.test(displayName);
 
   const timeStart = formatTime(block.start_time);
   const timeEnd = formatTime(block.end_time);
@@ -304,10 +308,15 @@ export default function ScheduleBlock({
           style={{
             fontWeight: 900,
             fontSize: isUnassigned ? 15 : 13,
-            // Plans often carry longer labels. Let them run onto a second line,
-            // but only while the times below still fit inside the block —
-            // otherwise stay on one line and clip, as before.
-            ...(allowTwoLines
+            // Plans often carry longer labels. A typed newline always breaks;
+            // long single-line text only wraps to a 2nd line while the times
+            // below still fit — otherwise it stays on one line and clips.
+            ...(hasExplicitBreak
+              ? {
+                  whiteSpace: "pre-wrap" as const,
+                  overflowWrap: "anywhere" as const,
+                }
+              : allowTwoLines
               ? {
                   display: "-webkit-box",
                   WebkitLineClamp: 2,

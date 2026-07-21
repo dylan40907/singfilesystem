@@ -336,10 +336,18 @@ export async function downloadSchedulePdf(opts: {
 
       doc.setTextColor(15, 23, 42);
       doc.setFont(FONT, "bold");
+      let extraLines = 0;
 
       if (h >= 12) {
         doc.setFontSize(8.5);
-        doc.text(fit(doc, primary, innerW), x + 7, y0 + 10);
+        // Plan labels can carry typed newlines - render each on its own line,
+        // as many as the block's height allows.
+        const lines = primary.split(/\r?\n/).filter((l) => l.length > 0);
+        const LINE_H = 9;
+        const maxLines = Math.max(1, Math.floor((h - 10) / LINE_H));
+        const shown = lines.slice(0, Math.max(1, Math.min(lines.length, maxLines)));
+        shown.forEach((ln, li) => doc.text(fit(doc, ln, innerW), x + 7, y0 + 10 + li * LINE_H));
+        extraLines = shown.length - 1;
       } else {
         // A 5–10 minute slot is only a few points tall, so the name can't fit
         // inside. Draw it anyway — smaller, vertically centred, and allowed to
@@ -360,18 +368,19 @@ export async function downloadSchedulePdf(opts: {
         }
       }
 
-      if (h >= 22) {
+      const shift = extraLines * 9;
+      if (h >= 22 + shift) {
         doc.setFont(FONT, "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(100, 116, 139);
-        doc.text(fit(doc, `${formatTime(b.start_time)}–${formatTime(b.end_time)}`, innerW), x + 7, y0 + 19);
+        doc.text(fit(doc, `${formatTime(b.start_time)}–${formatTime(b.end_time)}`, innerW), x + 7, y0 + 19 + shift);
       }
       // A non-plan block's own label, when there's room for a third line.
-      if (!isPlan && emp && b.label && h >= 32) {
+      if (!isPlan && emp && b.label && h >= 32 + shift) {
         doc.setTextColor(79, 70, 229);
         doc.setFont(FONT, "bold");
         doc.setFontSize(7);
-        doc.text(fit(doc, b.label, innerW), x + 7, y0 + 28);
+        doc.text(fit(doc, b.label, innerW), x + 7, y0 + 28 + shift);
       }
     }
 
