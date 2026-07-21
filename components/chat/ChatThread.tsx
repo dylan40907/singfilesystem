@@ -8,7 +8,10 @@ import {
   unsendMessage, uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
 import { fetchMyProfile } from "@/lib/teachers";
-import { activeMentionQuery, insertMention, parseMentions } from "@/lib/mentions";
+import {
+  DraftMention, activeMentionQuery, draftToStored, insertMention, mentionLabel,
+  parseMentions, storedToDraft,
+} from "@/lib/mentions";
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
 
@@ -243,6 +246,9 @@ export default function ChatThread({
   // @-mention autocomplete
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
+  // Mentions picked for the current draft — the composer shows labels, these
+  // map them back to user ids when the message is sent.
+  const [draftMentions, setDraftMentions] = useState<DraftMention[]>([]);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -354,13 +360,15 @@ export default function ChatThread({
     // Saving an edit rather than sending a new message.
     if (editing) {
       try {
-        await editMessage(editing.id, draft);
-        const saved = draft.trim();
+        const stored = draftToStored(draft, draftMentions).trim();
+        await editMessage(editing.id, stored);
+        const saved = stored;
         setMessages((prev) =>
           prev.map((x) => (x.id === editing.id ? { ...x, content: saved, edited_at: new Date().toISOString() } : x))
         );
         setEditing(null);
         setDraft("");
+        setDraftMentions([]);
       } catch (e: any) {
         setError(e?.message ?? "Failed to edit");
       } finally {
@@ -370,10 +378,11 @@ export default function ChatThread({
     }
 
     try {
-      const msg = await sendMessage(conversation.id, myId, draft);
+      const msg = await sendMessage(conversation.id, myId, draftToStored(draft, draftMentions));
       // Optimistically add (the realtime sub may also add it; we dedupe)
       setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
       setDraft("");
+      setDraftMentions([]);
       onMessageSent();
     } catch (e: any) {
       setError(e?.message ?? "Failed to send");
@@ -391,9 +400,10 @@ export default function ChatThread({
     setError(null);
     try {
       const att = await uploadChatAttachment(conversation.id, file);
-      const msg = await sendMessage(conversation.id, myId, draft, att);
+      const msg = await sendMessage(conversation.id, myId, draftToStored(draft, draftMentions), att);
       setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
       setDraft("");
+      setDraftMentions([]);
       onMessageSent();
     } catch (e2: any) {
       setError(e2?.message ?? "Failed to upload");
@@ -406,8 +416,12 @@ export default function ChatThread({
     if (!mention) return;
     const el = draftRef.current;
     const caret = el?.selectionStart ?? draft.length;
-    const { next, caret: nextCaret } = insertMention(draft, mention.start, caret, u.id);
+    const label = mentionLabel(userDisplayName(u));
+    const { next, caret: nextCaret } = insertMention(draft, mention.start, caret, label);
     setDraft(next);
+    setDraftMentions((prev) =>
+      prev.some((m) => m.text === label && m.userId === u.id) ? prev : [...prev, { text: label, userId: u.id }]
+    );
     setMention(null);
     setMentionIdx(0);
     requestAnimationFrame(() => {
@@ -431,7 +445,7 @@ export default function ChatThread({
       if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); applyMention(mentionMatches[mentionIdx]); return; }
       if (e.key === "Escape") { e.preventDefault(); setMention(null); return; }
     }
-    if (e.key === "Escape" && editing) { e.preventDefault(); setEditing(null); setDraft(""); return; }
+    if (e.key === "Escape" && editing) { e.preventDefault(); setEditing(null); setDraft(""); setDraftMentions([]); return; }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -657,7 +671,10 @@ export default function ChatThread({
                         <>
                           {m.content?.trim() ? (
                             <button
-                              onClick={() => { setEditing(m); setDraft(m.content); draftRef.current?.focus(); }}
+                              onClick={() => {
+                                const { draft: d, mentions } = storedToDraft(m.content, nameFor);
+                                setEditing(m); setDraft(d); setDraftMentions(mentions); draftRef.current?.focus();
+                              }}
                               style={msgActionBtn}
                             >
                               Edit
@@ -672,7 +689,7 @@ export default function ChatThread({
                               try {
                                 await unsendMessage(m.id);
                                 setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, deleted_at: new Date().toISOString(), content: "", attachment_path: null } : x)));
-                                if (editing?.id === m.id) { setEditing(null); setDraft(""); }
+                                if (editing?.id === m.id) { setEditing(null); setDraft(""); setDraftMentions([]); }
                               } catch (e: any) { setError(e?.message ?? "Failed to unsend"); }
                             }}
                             style={{ ...msgActionBtn, color: "#b91c1c" }}
@@ -710,7 +727,7 @@ export default function ChatThread({
           }}>
             <span style={{ fontSize: 12, fontWeight: 800, color: "#e6178d" }}>✎ Editing message</span>
             <button
-              onClick={() => { setEditing(null); setDraft(""); }}
+              onClick={() => { setEditing(null); setDraft(""); setDraftMentions([]); }}
               style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#6b7280" }}
             >
               Cancel
