@@ -4,12 +4,13 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile } from "@/lib/teachers";
-import { formatWeekRange, parseDateLocal } from "@/lib/scheduleUtils";
+import { parseDateLocal, scheduleTitle } from "@/lib/scheduleUtils";
 import ScheduleGridEditor from "@/components/schedule/ScheduleGridEditor";
 
 type ScheduleRow = {
   id: string;
-  week_start: string;
+  /** Null on "plan" schedules — this page only lists weekly ones. */
+  week_start: string | null;
   status: "draft" | "published";
   created_at: string;
 };
@@ -39,7 +40,11 @@ export default function SupervisorSchedulesPage() {
     if (!authOk) return;
     supabase
       .from("schedules")
+      // Weekly only — plans have a null week_start and no staffing, and would
+      // otherwise blow up the date formatting below.
       .select("id, week_start, status, created_at")
+      .eq("kind", "week")
+      .not("week_start", "is", null)
       .order("week_start", { ascending: false })
       .then(({ data }) => {
         setSchedules((data as ScheduleRow[]) ?? []);
@@ -75,7 +80,7 @@ export default function SupervisorSchedulesPage() {
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 560 }}>
             {schedules.map((s) => {
-              const mon = parseDateLocal(s.week_start);
+              const mon = s.week_start ? parseDateLocal(s.week_start) : null;
               const isPublished = s.status === "published";
               return (
                 <button
@@ -93,10 +98,12 @@ export default function SupervisorSchedulesPage() {
                 >
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>
-                      {formatWeekRange(s.week_start)}
+                      {scheduleTitle({ kind: "week", name: null, week_start: s.week_start })}
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
-                      Week of {mon.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}
+                      {mon
+                        ? `Week of ${mon.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`
+                        : ""}
                     </div>
                   </div>
                   <span style={{
