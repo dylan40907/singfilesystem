@@ -238,11 +238,48 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   // ── Timeline mutations ───────────────────────────────────────────────────────
   function subjCol(r: Row) { return r.kind === "roster" ? "roster_entry_id" : "waitlist_entry_id"; }
 
+  /**
+   * Rooms/programs are stored as change-points: a value holds from its month
+   * until the next change-point. That means a *downstream* row restating the
+   * value you were already on silently blocks a new choice from carrying
+   * forward — which is what made edits look like they "remembered" old colours.
+   * Those rows are leftovers (an earlier edit, or a promote tag auto-writing a
+   * room), so after setting a new value we clear the ones that merely repeat
+   * the previous value, stopping at the first genuinely different change.
+   */
+  async function clearRedundantAhead(
+    table: "hr_admissions_room_changes" | "hr_admissions_program_changes",
+    valueCol: "room_id" | "program_id",
+    subjectCol: string,
+    entryId: string,
+    monthIso: string,
+    previousValue: string | null
+  ) {
+    const { data } = await supabase
+      .from(table)
+      .select(`id, effective_month, ${valueCol}`)
+      .eq(subjectCol, entryId)
+      .gt("effective_month", monthIso)
+      .order("effective_month", { ascending: true });
+
+    const stale: string[] = [];
+    for (const row of (data ?? []) as any[]) {
+      if ((row[valueCol] ?? null) === previousValue) stale.push(row.id as string);
+      else break; // a real future change — leave it and everything after it
+    }
+    if (stale.length) await supabase.from(table).delete().in("id", stale);
+  }
+
   async function setRoom(r: Row, monthIso: string, roomId: string | null) {
     const col = subjCol(r);
+    const mi = colIndex.get(monthIso);
+    const prevRoom = (mi != null ? seriesByEntry.get(r.entry.id)?.room[mi] : null) ?? null;
+
     await supabase.from("hr_admissions_room_changes").delete().eq(col, r.entry.id).eq("effective_month", monthIso);
     const { error } = await supabase.from("hr_admissions_room_changes").insert({ campus_id: campusId, [col]: r.entry.id, effective_month: monthIso, room_id: roomId, created_by: myUserId });
     if (error) { setStatus("Error: " + error.message); return; }
+
+    await clearRedundantAhead("hr_admissions_room_changes", "room_id", col, r.entry.id, monthIso, prevRoom);
     await reloadTimelines();
   }
   async function clearRoomChange(r: Row, monthIso: string) {
@@ -251,9 +288,15 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
   }
   async function setProgram(r: Row, monthIso: string, programId: string | null) {
     const col = subjCol(r);
+    const mi = colIndex.get(monthIso);
+    const prevProgram = (mi != null ? seriesByEntry.get(r.entry.id)?.program[mi] : null) ?? null;
+
     await supabase.from("hr_admissions_program_changes").delete().eq(col, r.entry.id).eq("effective_month", monthIso);
     const { error } = await supabase.from("hr_admissions_program_changes").insert({ campus_id: campusId, [col]: r.entry.id, effective_month: monthIso, program_id: programId, created_by: myUserId });
     if (error) { setStatus("Error: " + error.message); return; }
+
+    // Same leftover-change-point problem applies to programs.
+    await clearRedundantAhead("hr_admissions_program_changes", "program_id", col, r.entry.id, monthIso, prevProgram);
     await reloadTimelines();
   }
   async function clearProgramChange(r: Row, monthIso: string) {
