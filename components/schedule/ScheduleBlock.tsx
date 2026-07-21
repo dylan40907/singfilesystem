@@ -71,6 +71,11 @@ export default function ScheduleBlock({
       ? "#22c55e"
       : "#6366f1";
 
+  // Times occupy two 14px lines and only render above 32px of height.
+  const showsTimes = heightPx > 32;
+  const twoLineNeed = 32 + (showsTimes ? 28 : 0) + 8; // 2 name lines + times + padding
+  const allowTwoLines = !!planMode && heightPx >= twoLineNeed;
+
   const timeStart = formatTime(block.start_time);
   const timeEnd = formatTime(block.end_time);
 
@@ -299,7 +304,18 @@ export default function ScheduleBlock({
           style={{
             fontWeight: 900,
             fontSize: isUnassigned ? 15 : 13,
-            whiteSpace: "nowrap",
+            // Plans often carry longer labels. Let them run onto a second line,
+            // but only while the times below still fit inside the block —
+            // otherwise stay on one line and clip, as before.
+            ...(allowTwoLines
+              ? {
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical" as const,
+                  whiteSpace: "pre-wrap" as const,
+                  overflowWrap: "anywhere" as const,
+                }
+              : { whiteSpace: "nowrap" as const }),
             overflow: "hidden",
             color: "#1e293b",
             lineHeight: "16px",

@@ -230,16 +230,22 @@ export default function ScheduleGrid({
                   position: "absolute",
                   left: 0,
                   top: 0,
-                  // span all columns of this room; clip if single column
-                  width: col.capacity === 1 ? COL_WIDTH : col.capacity * COL_WIDTH,
+                  // Span every column of this room. Percentages (not
+                  // capacity × COL_WIDTH) because the columns are flex-grow —
+                  // with only a few rooms they stretch well past COL_WIDTH, and
+                  // a fixed pixel width left the title off-centre and clipped.
+                  width: `calc(100% * ${Math.max(1, col.capacity)})`,
                   height: 36,
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
+                  padding: "0 8px",
+                  boxSizing: "border-box",
                   fontSize: 13,
                   fontWeight: 800,
                   color: "#111827",
                   overflow: "hidden",
+                  textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                   pointerEvents: "none",
                 }}>

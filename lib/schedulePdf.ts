@@ -42,6 +42,34 @@ const PLAN_ACCENT: Rgb = [124, 58, 237];
 /** Minimum width for a single sub-column before we spill onto a new page. */
 const MIN_SUB_W = 74;
 
+const CJK_RE = /[㐀-鿿豈-﫿　-〿＀-￯]/;
+
+/**
+ * jsPDF's built-in fonts are WinAnsi-only, so Chinese renders as mojibake.
+ * When a schedule contains CJK we fetch a subsetted Noto Sans SC (only the
+ * glyphs this document actually uses, ~20-40 KB) and embed that instead.
+ * Returns the font name to use, or null to stay on Helvetica.
+ */
+async function ensureCjkFont(doc: any, text: string): Promise<string | null> {
+  if (!CJK_RE.test(text)) return null;
+  try {
+    const res = await fetch("/api/schedule-font", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    const { regular, bold } = (await res.json()) as { regular: string; bold: string };
+    doc.addFileToVFS("NotoCJK-Regular.ttf", regular);
+    doc.addFont("NotoCJK-Regular.ttf", "NotoCJK", "normal");
+    doc.addFileToVFS("NotoCJK-Bold.ttf", bold);
+    doc.addFont("NotoCJK-Bold.ttf", "NotoCJK", "bold");
+    return "NotoCJK";
+  } catch {
+    return null; // fall back rather than failing the whole export
+  }
+}
+
 function hexToRgb(hex: string): Rgb | null {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec((hex ?? "").trim());
   if (!m) return null;
@@ -124,6 +152,20 @@ export async function downloadSchedulePdf(opts: {
 
   if (pages.length === 0) pages.push({ day: DAY_NUMBERS[0], rooms: [], part: 1, parts: 1 });
 
+  // Everything we're going to draw — used to subset the CJK font.
+  const allText = [
+    title,
+    campusName ?? "",
+    ...rooms.map((r) => r.name),
+    ...employees.map((e) => `${getDisplayName(e)}${getFirstName(e)}`),
+    ...blocks.map((b) => b.label ?? ""),
+    "0123456789:–.,·  ",
+    ...DAY_LABELS,
+    "Weekly schedulePlanPublishedDraftRoomsofPage",
+  ].join("");
+  const cjk = await ensureCjkFont(doc, allText);
+  const FONT = cjk ?? "helvetica";
+
   pages.forEach((page, pageIdx) => {
     if (pageIdx > 0) doc.addPage();
 
@@ -146,12 +188,12 @@ export async function downloadSchedulePdf(opts: {
     }
 
     // ── Header ──────────────────────────────────────────────────────────────
-    doc.setFont("helvetica", "bold");
+    doc.setFont(FONT, "bold");
     doc.setFontSize(15);
     doc.setTextColor(17, 24, 39);
     doc.text(title, M, M + 13);
 
-    doc.setFont("helvetica", "normal");
+    doc.setFont(FONT, "normal");
     doc.setFontSize(9.5);
     doc.setTextColor(107, 114, 128);
     const dayLabel = DAY_LABELS[day - 1] ?? "";
@@ -213,7 +255,7 @@ export async function downloadSchedulePdf(opts: {
 
     // ── Hour lines + time gutter ────────────────────────────────────────────
     doc.setFontSize(8);
-    doc.setFont("helvetica", "normal");
+    doc.setFont(FONT, "normal");
     for (let m = startMin; m <= endMin; m += 60) {
       const y = yFor(m);
       doc.setDrawColor(226, 232, 240);
@@ -232,7 +274,7 @@ export async function downloadSchedulePdf(opts: {
       doc.setDrawColor(203, 213, 225);
       doc.setLineWidth(0.6);
       doc.rect(pos.x, gridTop - roomHeaderH, pos.w, roomHeaderH, "S");
-      doc.setFont("helvetica", "bold");
+      doc.setFont(FONT, "bold");
       doc.setTextColor(51, 65, 85);
       doc.text(fit(doc, r.name, pos.w - 8), pos.x + pos.w / 2, gridTop - roomHeaderH + 13, { align: "center" });
 
@@ -262,15 +304,24 @@ export async function downloadSchedulePdf(opts: {
       return [{ b, x, y0, h: Math.max(3, y1 - y0) }];
     });
 
-    // Pass 1 — cards.
+    // Pass 1 — cards. The body is a translucent white so the painted cell
+    // colour behind it still reads through, matching the on-screen grid.
+    const GState = (doc as any).GState;
     for (const { b, x, y0, h } of laidOut) {
       const accent = isPlan ? PLAN_ACCENT : (ACCENT[b.block_type] ?? ACCENT.shift);
+      const bh = Math.max(1.4, h - 1);
+
+      doc.setGState(new GState({ opacity: 0.62 }));
       doc.setFillColor(255, 255, 255);
+      doc.roundedRect(x + 1.5, y0 + 0.5, subW - 3, bh, 2.5, 2.5, "F");
+
+      // Border + accent stay fully opaque so edges remain crisp.
+      doc.setGState(new GState({ opacity: 1 }));
       doc.setDrawColor(203, 213, 225);
       doc.setLineWidth(0.6);
-      doc.roundedRect(x + 1.5, y0 + 0.5, subW - 3, Math.max(1.4, h - 1), 2.5, 2.5, "FD");
+      doc.roundedRect(x + 1.5, y0 + 0.5, subW - 3, bh, 2.5, 2.5, "S");
       doc.setFillColor(accent[0], accent[1], accent[2]);
-      doc.rect(x + 1.5, y0 + 0.5, 2.6, Math.max(1.4, h - 1), "F");
+      doc.rect(x + 1.5, y0 + 0.5, 2.6, bh, "F");
     }
 
     // Pass 2 — labels.
@@ -284,7 +335,7 @@ export async function downloadSchedulePdf(opts: {
         : (b.label ?? "Unassigned");
 
       doc.setTextColor(15, 23, 42);
-      doc.setFont("helvetica", "bold");
+      doc.setFont(FONT, "bold");
 
       if (h >= 12) {
         doc.setFontSize(8.5);
@@ -294,11 +345,23 @@ export async function downloadSchedulePdf(opts: {
         // inside. Draw it anyway — smaller, vertically centred, and allowed to
         // spill past the card — rather than leaving an unreadable empty sliver.
         doc.setFontSize(6.8);
-        doc.text(fit(doc, primary, subW - 6), x + 6, y0 + h / 2 + 2.3);
+        const baseline = y0 + h / 2 + 2.3;
+        const nameStr = fit(doc, primary, subW - 6);
+        doc.text(nameStr, x + 6, baseline);
+
+        // There's usually room to the right of a shrunken name for the times.
+        const timeStr = `${formatTime(b.start_time)}–${formatTime(b.end_time)}`;
+        const used = doc.getTextWidth(nameStr);
+        doc.setFont(FONT, "normal");
+        doc.setFontSize(6.2);
+        if (doc.getTextWidth(timeStr) <= subW - 9 - used - 3) {
+          doc.setTextColor(100, 116, 139);
+          doc.text(timeStr, x + 6 + used + 3, baseline);
+        }
       }
 
       if (h >= 22) {
-        doc.setFont("helvetica", "normal");
+        doc.setFont(FONT, "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(100, 116, 139);
         doc.text(fit(doc, `${formatTime(b.start_time)}–${formatTime(b.end_time)}`, innerW), x + 7, y0 + 19);
@@ -306,14 +369,14 @@ export async function downloadSchedulePdf(opts: {
       // A non-plan block's own label, when there's room for a third line.
       if (!isPlan && emp && b.label && h >= 32) {
         doc.setTextColor(79, 70, 229);
-        doc.setFont("helvetica", "bold");
+        doc.setFont(FONT, "bold");
         doc.setFontSize(7);
         doc.text(fit(doc, b.label, innerW), x + 7, y0 + 28);
       }
     }
 
     // Footer
-    doc.setFont("helvetica", "normal");
+    doc.setFont(FONT, "normal");
     doc.setFontSize(7.5);
     doc.setTextColor(148, 163, 184);
     doc.text(`Page ${pageIdx + 1} of ${pages.length}`, pageW - M, pageH - 12, { align: "right" });

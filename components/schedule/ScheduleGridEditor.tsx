@@ -2129,15 +2129,35 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
                 <label style={{ fontSize: 12, fontWeight: 700, color: "#374151", display: "block", marginBottom: 4 }}>
                   {isPlan ? "Block text" : "Notes / Label (optional)"}
                 </label>
+                {isPlan ? (
+                  // Plans support multi-line block text: Enter submits,
+                  // Shift+Enter adds a line, and the box grows to fit.
+                  <textarea
+                    placeholder="e.g., Circle Time, Math Rotation…"
+                    value={blockFormNotes}
+                    onChange={(e) => setBlockFormNotes(e.target.value)}
+                    autoFocus
+                    rows={Math.min(6, Math.max(1, blockFormNotes.split(/\r?\n/).length))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleBlockFormSubmit(); }
+                      if (e.key === "Escape") setBlockForm(null);
+                    }}
+                    style={{
+                      width: "100%", padding: "7px 10px", borderRadius: 8,
+                      border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box",
+                      fontFamily: "inherit", resize: "vertical", lineHeight: 1.35,
+                    }}
+                  />
+                ) : (
                 <input
                   type="text"
-                  placeholder={isPlan ? "e.g., Circle Time, Math Rotation…" : "e.g., Front desk, Tutoring…"}
+                  placeholder="e.g., Front desk, Tutoring…"
                   value={blockFormNotes}
                   onChange={(e) => setBlockFormNotes(e.target.value)}
-                  autoFocus={isPlan}
                   onKeyDown={(e) => { if (e.key === "Enter") handleBlockFormSubmit(); if (e.key === "Escape") setBlockForm(null); }}
                   style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid #e5e7eb", fontSize: 13, boxSizing: "border-box" }}
                 />
+                )}
               </div>
             )}
 
