@@ -348,13 +348,20 @@ export async function downloadSchedulePdf(opts: {
 
       if (h >= 12) {
         doc.setFontSize(8.5);
-        // Plan labels can carry typed newlines - render each on its own line,
-        // as many as the block's height allows.
-        const lines = primary.split(/\r?\n/).filter((l) => l.length > 0);
+        // Honour typed newlines, then word-wrap each of those to the column so
+        // long labels run onto as many lines as the block has room for.
         const LINE_H = 9;
+        const wrapped = primary
+          .split(/\r?\n/)
+          .filter((l) => l.length > 0)
+          .flatMap((l) => doc.splitTextToSize(l, innerW) as string[]);
         const maxLines = Math.max(1, Math.floor((h - 10) / LINE_H));
-        const shown = lines.slice(0, Math.max(1, Math.min(lines.length, maxLines)));
-        shown.forEach((ln, li) => doc.text(fit(doc, ln, innerW), x + 7, y0 + 10 + li * LINE_H));
+        const shown = wrapped.slice(0, Math.min(wrapped.length, maxLines));
+        shown.forEach((ln, li) => {
+          // Only the final line can need an ellipsis, and only if we ran out.
+          const clipped = li === shown.length - 1 && wrapped.length > shown.length;
+          doc.text(clipped ? fit(doc, ln + "…", innerW) : ln, x + 7, y0 + 10 + li * LINE_H);
+        });
         extraLines = shown.length - 1;
 
         // Mid-sized blocks: too tall to be treated as "short", but with no room

@@ -73,9 +73,14 @@ export default function ScheduleBlock({
 
   // Times occupy two 14px lines and only render above 32px of height.
   const showsTimes = heightPx > 32;
-  const twoLineNeed = 32 + (showsTimes ? 28 : 0) + 8; // 2 name lines + times + padding
-  // Auto-wrapping long text is space-dependent…
-  const allowTwoLines = !!planMode && heightPx >= twoLineNeed;
+  const NAME_LINE_H = 16;
+  // However many name lines fit once the times and padding are accounted for —
+  // not a fixed cap, so a tall block can run to 3, 4, 5 lines.
+  const maxNameLines = Math.max(
+    1,
+    Math.floor((heightPx - (showsTimes ? 28 : 0) - 8) / NAME_LINE_H)
+  );
+  const allowWrap = !!planMode && maxNameLines >= 2;
   // …but a newline the user typed with Shift+Enter is deliberate, so it always
   // breaks, even on a block too short to have earned an automatic second line.
   const hasExplicitBreak = !!planMode && /\r?\n/.test(displayName);
@@ -309,17 +314,18 @@ export default function ScheduleBlock({
             fontWeight: 900,
             fontSize: isUnassigned ? 15 : 13,
             // Plans often carry longer labels. A typed newline always breaks;
-            // long single-line text only wraps to a 2nd line while the times
-            // below still fit — otherwise it stays on one line and clips.
+            // long text wraps onto as many lines as the block has room for
+            // (keeping the times visible) — only clipping when even a second
+            // line wouldn't fit.
             ...(hasExplicitBreak
               ? {
                   whiteSpace: "pre-wrap" as const,
                   overflowWrap: "anywhere" as const,
                 }
-              : allowTwoLines
+              : allowWrap
               ? {
                   display: "-webkit-box",
-                  WebkitLineClamp: 2,
+                  WebkitLineClamp: maxNameLines,
                   WebkitBoxOrient: "vertical" as const,
                   whiteSpace: "pre-wrap" as const,
                   overflowWrap: "anywhere" as const,
