@@ -83,8 +83,10 @@ export async function downloadSchedulePdf(opts: {
   employees: EmployeeLite[];
   campusName?: string | null;
   cellColors?: CellColorsByDay;
+  /** Surfaced when the export degrades (e.g. the CJK font couldn't load). */
+  onWarn?: (message: string) => void;
 }) {
-  const { schedule, rooms, blocks, employees, campusName, cellColors = {} } = opts;
+  const { schedule, rooms, blocks, employees, campusName, cellColors = {}, onWarn } = opts;
   const { jsPDF } = await import("jspdf");
 
   const isPlan = schedule.kind === "plan";
@@ -165,6 +167,10 @@ export async function downloadSchedulePdf(opts: {
   ].join("");
   const cjk = await ensureCjkFont(doc, allText);
   const FONT = cjk ?? "helvetica";
+  // Don't silently emit mojibake — say so if the CJK font didn't load.
+  if (!cjk && CJK_RE.test(allText)) {
+    onWarn?.("Chinese characters may not render — the PDF font could not be loaded.");
+  }
 
   pages.forEach((page, pageIdx) => {
     if (pageIdx > 0) doc.addPage();
