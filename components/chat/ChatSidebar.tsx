@@ -39,6 +39,11 @@ export default function ChatSidebar({
         display: "flex",
         flexDirection: "column",
         height: "100%",
+        // As a grid item this defaults to min-height:auto, which lets a long
+        // chat list stretch past the container so the list below never
+        // scrolls. Pin it so the overflow lands on the list instead.
+        minHeight: 0,
+        overflow: "hidden",
         background: "white",
         borderRight: "1px solid #e5e7eb",
       }}
@@ -70,7 +75,7 @@ export default function ChatSidebar({
         </button>
       </div>
 
-      <div style={{ overflowY: "auto", flex: 1 }}>
+      <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
         {conversations.length === 0 ? (
           <div style={{ padding: 20, color: "#9ca3af", fontSize: 14, textAlign: "center" }}>
             No chats yet. Tap <strong style={{ color: "#e6178d" }}>+ New</strong> to start one.

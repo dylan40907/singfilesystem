@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ObjectType, QuizQuestion, uploadCourseMedia } from "@/lib/courses";
 import RichTextEditor from "./RichTextEditor";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
+import { clearDraft, loadDraft, useDraftAutosave } from "@/lib/draftAutosave";
 
 export type ObjectDraft = {
   type: ObjectType;
@@ -14,21 +15,37 @@ export type ObjectDraft = {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+type StoredDraft = { title: string; content: Record<string, any>; settings: Record<string, any> };
+
 export default function ObjectEditorModal({
   draft,
+  draftKey,
   onCancel,
   onSave,
 }: {
   draft: ObjectDraft;
+  /** Identity for autosaved work-in-progress; omit to disable persistence. */
+  draftKey?: string;
   onCancel: () => void;
   onSave: (d: ObjectDraft) => void;
 }) {
-  const [title, setTitle] = useState(draft.title);
-  const [content, setContent] = useState<Record<string, any>>(draft.content ?? {});
-  const [settings, setSettings] = useState<Record<string, any>>(draft.settings ?? {});
+  // Pick up anything left behind by an accidental dismiss of this same editor.
+  const restored = useMemo(() => loadDraft<StoredDraft>(draftKey), [draftKey]);
+  const [title, setTitle] = useState(restored?.title ?? draft.title);
+  const [content, setContent] = useState<Record<string, any>>(restored?.content ?? draft.content ?? {});
+  const [settings, setSettings] = useState<Record<string, any>>(restored?.settings ?? draft.settings ?? {});
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Autosave as the user types. Escape / backdrop keep the draft; only an
+  // explicit Cancel or a successful Confirm throws it away.
+  useDraftAutosave(draftKey, { title, content, settings });
   useEscapeKey(onCancel);
+
+  function discardAndClose() {
+    clearDraft(draftKey);
+    onCancel();
+  }
 
   function patchContent(p: Record<string, any>) { setContent((c) => ({ ...c, ...p })); }
   function patchSettings(p: Record<string, any>) { setSettings((s) => ({ ...s, ...p })); }
@@ -67,6 +84,7 @@ export default function ObjectEditorModal({
     // Text titles are optional (the section header is often enough); other
     // object types fall back to their type label so the list stays readable.
     const finalTitle = draft.type === "text" ? title.trim() : (title.trim() || defaultTitle(draft.type));
+    clearDraft(draftKey);
     onSave({ type: draft.type, title: finalTitle, content, settings });
   }
 
@@ -145,7 +163,7 @@ export default function ObjectEditorModal({
         {error && <div style={{ color: "#991b1b", fontWeight: 600, fontSize: 13, marginTop: 12 }}>{error}</div>}
 
         <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-          <button className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn" onClick={discardAndClose}>Cancel</button>
           <button className="btn btn-primary" onClick={save} disabled={uploading}>{uploading ? "Uploading…" : "Confirm"}</button>
         </div>
       </div>

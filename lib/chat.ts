@@ -520,17 +520,35 @@ export async function createConversation(opts: {
 }
 
 /**
- * Fetch all active users (for the new-chat picker), excluding the current user.
+ * Profile ids of employees deactivated in HR. `user_profiles.is_active` tracks
+ * portal login and is left alone when someone is deactivated in HR, so this is
+ * the flag that actually says "no longer staff".
+ */
+export async function fetchInactiveStaffIds(): Promise<Set<string>> {
+  const { data } = await supabase.rpc("inactive_staff_profile_ids");
+  return new Set(((data ?? []) as (string | { inactive_staff_profile_ids: string })[]).map(
+    (r) => (typeof r === "string" ? r : r.inactive_staff_profile_ids)
+  ));
+}
+
+/**
+ * Fetch all active users (for the new-chat picker), excluding the current user
+ * and anyone deactivated in HR.
  */
 export async function fetchPickableUsers(myId: string): Promise<ChatUserLite[]> {
-  const { data, error } = await supabase
-    .from("user_profiles")
-    .select("id, full_name, username, email, is_active")
-    .eq("is_active", true)
-    .neq("id", myId)
-    .order("full_name", { ascending: true });
+  const [{ data, error }, inactive] = await Promise.all([
+    supabase
+      .from("user_profiles")
+      .select("id, full_name, username, email, is_active")
+      .eq("is_active", true)
+      .neq("id", myId)
+      .order("full_name", { ascending: true }),
+    fetchInactiveStaffIds(),
+  ]);
   if (error) throw error;
-  return ((data ?? []) as (ChatUserLite & { is_active: boolean })[]).map((u) => ({
-    id: u.id, full_name: u.full_name, username: u.username, email: u.email,
-  }));
+  return ((data ?? []) as (ChatUserLite & { is_active: boolean })[])
+    .filter((u) => !inactive.has(u.id))
+    .map((u) => ({
+      id: u.id, full_name: u.full_name, username: u.username, email: u.email,
+    }));
 }

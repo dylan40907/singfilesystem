@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { clearDraft, loadDraft, useDraftAutosave } from "@/lib/draftAutosave";
 import {
   CourseObject, CourseProgress, CourseSection, FullCourse, QuizQuestion, saveProgress,
 } from "@/lib/courses";
@@ -97,7 +98,7 @@ export default function CourseTaker({
       <h2 style={{ fontWeight: 900, fontSize: 20, margin: "10px 0 14px" }}>📖 {section.title || "Section"}</h2>
 
       {objs.map((o) => (
-        <ObjectView key={o.id} o={o} done={done.has(o.id)} result={quizResults?.[o.id]}
+        <ObjectView key={o.id} o={o} assignmentId={assignmentId} done={done.has(o.id)} result={quizResults?.[o.id]}
           onDone={() => markDone(o.id)}
           onQuiz={(score, passed, answers) => {
             setQuizResults((qr) => ({ ...(qr ?? {}), [o.id]: { score, passed, answers } }));
@@ -132,8 +133,9 @@ const wrap: React.CSSProperties = { maxWidth: 820, margin: "0 auto", width: "100
 
 // ─── Object renderers (unchanged behaviour) ──────────────────────────────────
 
-function ObjectView({ o, done, result, onDone, onQuiz }: {
+function ObjectView({ o, assignmentId, done, result, onDone, onQuiz }: {
   o: CourseObject;
+  assignmentId: string;
   done: boolean;
   result?: { score: number; passed: boolean };
   onDone: () => void;
@@ -155,7 +157,7 @@ function ObjectView({ o, done, result, onDone, onQuiz }: {
       {o.type === "youtube" && <MediaView><div style={{ position: "relative", paddingBottom: "56%", height: 0 }}><iframe src={youtubeEmbed(o.content.url)} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none", borderRadius: 8 }} allowFullScreen /></div><DoneBtn done={done} onDone={onDone} /></MediaView>}
       {o.type === "file" && <MediaView><a className="btn" href={o.content.url} download={o.content.name} target="_blank" rel="noopener noreferrer">⬇ Download {o.content.name ?? "file"}</a><DoneBtn done={done} onDone={onDone} /></MediaView>}
       {o.type === "link" && <MediaView><a className="btn" href={o.content.url} target="_blank" rel="noopener noreferrer">🔗 Open link</a><DoneBtn done={done} onDone={onDone} /></MediaView>}
-      {o.type === "quiz" && <QuizView o={o} done={done} result={result} onQuiz={onQuiz} />}
+      {o.type === "quiz" && <QuizView o={o} assignmentId={assignmentId} done={done} result={result} onQuiz={onQuiz} />}
     </div>
   );
 }
@@ -200,8 +202,8 @@ function TextView({ o, done, onDone }: { o: CourseObject; done: boolean; onDone:
   );
 }
 
-function QuizView({ o, done, result, onQuiz }: {
-  o: CourseObject; done: boolean; result?: { score: number; passed: boolean };
+function QuizView({ o, assignmentId, done, result, onQuiz }: {
+  o: CourseObject; assignmentId: string; done: boolean; result?: { score: number; passed: boolean };
   onQuiz: (score: number, passed: boolean, answers: Record<string, string[]>) => void;
 }) {
   const questions = useMemo(() => {
@@ -212,7 +214,13 @@ function QuizView({ o, done, result, onQuiz }: {
   const showCorrect = o.settings.showCorrect !== false;
   const showScore = o.settings.showScore !== false;
 
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  // In-progress answers survive closing the course or a refresh, so a
+  // half-finished quiz isn't lost. Scoped to this learner's assignment.
+  const answersKey = `quiz-answers:${assignmentId}:${o.id}`;
+  const [picked, setPicked] = useState<Record<string, string>>(
+    () => loadDraft<Record<string, string>>(answersKey) ?? {}
+  );
+  useDraftAutosave(answersKey, picked);
   // Only restore a PASSED result; a failed/incomplete quiz starts fresh on
   // (re)mount so reopening a course doesn't drop the learner into a graded
   // "try again" state — they can just retake it.
@@ -230,6 +238,7 @@ function QuizView({ o, done, result, onQuiz }: {
     const score = Math.round((correct / Math.max(1, questions.length)) * 100);
     const passed = score >= passScore;
     setSubmitted({ score, passed });
+    clearDraft(answersKey);
     onQuiz(score, passed, answers);
   }
 

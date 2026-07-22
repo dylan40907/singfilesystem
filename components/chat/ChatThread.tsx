@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  ChatConversationView, ChatMessage, ChatUserLite, PreviewKind, editMessage, fetchMessages,
-  fileTypeIcon, getAttachmentUrl, markRead, officeViewerUrl, previewKindFor, sendMessage,
-  unsendMessage, uploadChatAttachment, userDisplayName,
+  ChatConversationView, ChatMessage, ChatUserLite, PreviewKind, editMessage, fetchInactiveStaffIds,
+  fetchMessages, fileTypeIcon, getAttachmentUrl, markRead, officeViewerUrl, previewKindFor,
+  sendMessage, unsendMessage, uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
 import { fetchMyProfile } from "@/lib/teachers";
 import {
@@ -257,6 +257,12 @@ export default function ChatThread({
     [conversation.members]
   );
 
+  // Staff deactivated in HR — excluded from the @mention dropdown.
+  const [inactiveStaff, setInactiveStaff] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    fetchInactiveStaffIds().then(setInactiveStaff).catch(() => {});
+  }, []);
+
   // Same rule as the app: every role above the lowest (teacher) may edit a
   // group's participants; everyone else gets a read-only roster.
   const canManageMembers = conversation.is_group && !!viewerRole && viewerRole !== "teacher";
@@ -272,9 +278,11 @@ export default function ChatThread({
     const q = mention.query.toLowerCase();
     return conversation.members
       .filter((m) => m.id !== myId)
+      // Deactivated staff stay visible on their old messages but aren't taggable.
+      .filter((m) => !inactiveStaff.has(m.id))
       .filter((m) => !q || userDisplayName(m).toLowerCase().includes(q))
       .slice(0, 6);
-  }, [mention, conversation.members, myId]);
+  }, [mention, conversation.members, myId, inactiveStaff]);
 
   useEffect(() => {
     (async () => {

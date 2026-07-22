@@ -262,7 +262,20 @@ export default function CourseBuilderPage() {
         </div>
       )}
 
-      {editor && <ObjectEditorModal draft={editor.draft} onCancel={() => setEditor(null)} onSave={saveObject} />}
+      {editor && (
+        <ObjectEditorModal
+          draft={editor.draft}
+          // Identifies the in-progress draft so dismissing the modal by
+          // accident doesn't lose the work. New objects key off their slot.
+          draftKey={
+            editor.objectId
+              ? `course-object:${editor.objectId}`
+              : `course-object:new:${courseId}:${editor.sectionId}:${editor.draft.type}`
+          }
+          onCancel={() => setEditor(null)}
+          onSave={saveObject}
+        />
+      )}
 
       {sectionModal && (
         <div onMouseDown={(e) => { if (e.currentTarget === e.target) setSectionModal(null); }}
