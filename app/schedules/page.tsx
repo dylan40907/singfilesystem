@@ -9,8 +9,10 @@ import ScheduleGridEditor from "@/components/schedule/ScheduleGridEditor";
 
 type ScheduleRow = {
   id: string;
-  /** Null on "plan" schedules — this page only lists weekly ones. */
+  name: string | null;
+  /** Null on "plan" schedules. */
   week_start: string | null;
+  kind: "week" | "plan";
   status: "draft" | "published";
   created_at: string;
 };
@@ -21,6 +23,8 @@ export default function SupervisorSchedulesPage() {
   const [schedules, setSchedules] = useState<ScheduleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Supervisors can browse the weekly schedules or the general Plans.
+  const [mode, setMode] = useState<"week" | "plan">("week");
 
   // Auth: supervisor only
   useEffect(() => {
@@ -38,19 +42,16 @@ export default function SupervisorSchedulesPage() {
 
   useEffect(() => {
     if (!authOk) return;
-    supabase
-      .from("schedules")
-      // Weekly only — plans have a null week_start and no staffing, and would
-      // otherwise blow up the date formatting below.
-      .select("id, week_start, status, created_at")
-      .eq("kind", "week")
-      .not("week_start", "is", null)
-      .order("week_start", { ascending: false })
-      .then(({ data }) => {
-        setSchedules((data as ScheduleRow[]) ?? []);
-        setLoading(false);
-      });
-  }, [authOk]);
+    setLoading(true);
+    let q = supabase.from("schedules").select("id, name, week_start, status, created_at, kind").eq("kind", mode);
+    q = mode === "week"
+      ? q.not("week_start", "is", null).order("week_start", { ascending: false })
+      : q.order("created_at", { ascending: false });
+    q.then(({ data }) => {
+      setSchedules((data as ScheduleRow[]) ?? []);
+      setLoading(false);
+    });
+  }, [authOk, mode]);
 
   if (!authOk) return null;
 
@@ -71,12 +72,32 @@ export default function SupervisorSchedulesPage() {
   return (
     <div className="page">
       <div className="container">
-        <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 20 }}>Schedules</h2>
+        <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 14 }}>
+          {mode === "week" ? "Schedules" : "Plans"}
+        </h2>
+
+        <div style={{ display: "flex", gap: 4, background: "#f3f4f6", padding: 4, borderRadius: 10, width: "fit-content", marginBottom: 18 }}>
+          {(["week", "plan"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              style={{
+                padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+                fontWeight: 800, fontSize: 13,
+                background: mode === m ? "white" : "transparent",
+                color: mode === m ? "#e6178d" : "#6b7280",
+                boxShadow: mode === m ? "0 1px 3px rgba(0,0,0,0.12)" : "none",
+              }}
+            >
+              {m === "week" ? "Schedules" : "Plans"}
+            </button>
+          ))}
+        </div>
 
         {loading ? (
-          <div style={{ color: "#6b7280" }}>Loading schedules…</div>
+          <div style={{ color: "#6b7280" }}>Loading…</div>
         ) : schedules.length === 0 ? (
-          <div style={{ color: "#6b7280" }}>No schedules found.</div>
+          <div style={{ color: "#6b7280" }}>{mode === "week" ? "No schedules found." : "No plans found."}</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 560 }}>
             {schedules.map((s) => {
@@ -98,10 +119,12 @@ export default function SupervisorSchedulesPage() {
                 >
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 15, color: "#111827" }}>
-                      {scheduleTitle({ kind: "week", name: null, week_start: s.week_start })}
+                      {scheduleTitle({ kind: s.kind, name: s.name, week_start: s.week_start })}
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
-                      {mon
+                      {s.kind === "plan"
+                        ? "Plan"
+                        : mon
                         ? `Week of ${mon.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`
                         : ""}
                     </div>

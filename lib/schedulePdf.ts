@@ -70,6 +70,13 @@ async function ensureCjkFont(doc: any, text: string): Promise<string | null> {
   }
 }
 
+// jsPDF can't embed colour/astral-plane emoji, so strip them (rather than
+// emitting tofu boxes). The on-screen grid still shows the native emoji.
+const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{FE00}-\u{FE0F}‍⃣]/gu;
+function stripEmoji(t: string): string {
+  return (t ?? "").replace(EMOJI_RE, "").replace(/[ \t]{2,}/g, " ").replace(/\s+([,，、])/g, "$1").trim();
+}
+
 function hexToRgb(hex: string): Rgb | null {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec((hex ?? "").trim());
   if (!m) return null;
@@ -282,7 +289,7 @@ export async function downloadSchedulePdf(opts: {
       doc.rect(pos.x, gridTop - roomHeaderH, pos.w, roomHeaderH, "S");
       doc.setFont(FONT, "bold");
       doc.setTextColor(51, 65, 85);
-      doc.text(fit(doc, r.name, pos.w - 8), pos.x + pos.w / 2, gridTop - roomHeaderH + 13, { align: "center" });
+      doc.text(fit(doc, stripEmoji(r.name) || r.name, pos.w - 8), pos.x + pos.w / 2, gridTop - roomHeaderH + 13, { align: "center" });
 
       // Faint sub-column dividers inside the room
       doc.setDrawColor(241, 245, 249);
@@ -335,13 +342,16 @@ export async function downloadSchedulePdf(opts: {
       const emp = b.employee_id ? empById.get(b.employee_id) : null;
       const innerX = x + 7;
       const innerW = subW - 11;
-      const primary = isPlan
-        ? (b.label ?? "").trim() || "Block"
-        : emp
-        ? preferFull(doc, getDisplayName(emp), getFirstName(emp), innerW)
-        : (b.label ?? "Unassigned");
+      const primary =
+        stripEmoji(
+          isPlan
+            ? (b.label ?? "").trim() || "Block"
+            : emp
+            ? preferFull(doc, getDisplayName(emp), getFirstName(emp), innerW)
+            : (b.label ?? "Unassigned")
+        ) || (isPlan ? "Block" : "—");
       const timeStr = `${formatTime(b.start_time)}–${formatTime(b.end_time)}`;
-      const secondary = !isPlan && emp && b.label ? b.label : null;
+      const secondary = !isPlan && emp && b.label ? stripEmoji(b.label) || null : null;
 
       // EVERY block shows both its name and its time. We reserve the time's
       // space first, then fit the name into what's left — shrinking the font,
@@ -370,29 +380,32 @@ export async function downloadSchedulePdf(opts: {
           doc.text(fit(doc, secondary, innerW), innerX, timeY + 8);
         }
       } else {
-        // Inline: too short to stack — name (left) + time (right-aligned) share
-        // one baseline. The time is placed first; the name takes the rest.
+        // Inline: too short to stack — the name and its time share one baseline,
+        // with the time sitting directly to the RIGHT of the name (not far-right
+        // aligned). The name shrinks to leave room for the time beside it.
         const baseline = y0 + h / 2 + 2.3;
+        const gap = 3;
 
-        let timeFs = 6.2;
+        // Reserve the time's width first so the name can't crowd it out.
+        const timeFs = 6.2;
         doc.setFont(FONT, "normal");
         doc.setFontSize(timeFs);
-        while (timeFs > 4.6 && doc.getTextWidth(timeStr) > subW - 10) { timeFs -= 0.3; doc.setFontSize(timeFs); }
         const timeW = doc.getTextWidth(timeStr);
-        const timeX = x + subW - 4 - timeW;
 
-        const nameMaxW = Math.max(6, timeX - 4 - innerX);
+        const nameMaxW = Math.max(6, subW - 8 - gap - timeW);
         doc.setFont(FONT, "bold");
         let nameFs = 6.9;
         doc.setFontSize(nameFs);
         while (nameFs > 4.8 && doc.getTextWidth(primary) > nameMaxW) { nameFs -= 0.3; doc.setFontSize(nameFs); }
         doc.setTextColor(15, 23, 42);
-        doc.text(fit(doc, primary, nameMaxW), innerX, baseline);
+        const nameDrawn = fit(doc, primary, nameMaxW);
+        doc.text(nameDrawn, innerX, baseline);
+        const nameW = doc.getTextWidth(nameDrawn);
 
         doc.setFont(FONT, "normal");
         doc.setFontSize(timeFs);
         doc.setTextColor(100, 116, 139);
-        doc.text(timeStr, timeX, baseline);
+        doc.text(timeStr, innerX + nameW + gap, baseline);
       }
     }
 
