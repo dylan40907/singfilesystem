@@ -26,6 +26,7 @@ const OBJECT_TYPES: { type: ObjectType; label: string; icon: string }[] = [
 ];
 
 const objIcon = (t: ObjectType) => OBJECT_TYPES.find((o) => o.type === t)?.icon ?? "•";
+const objTypeLabel = (t: ObjectType) => OBJECT_TYPES.find((o) => o.type === t)?.label ?? "object";
 
 export default function CourseBuilderPage() {
   const params = useParams();
@@ -40,7 +41,7 @@ export default function CourseBuilderPage() {
   const [titleDraft, setTitleDraft] = useState("");
 
   // object editor state
-  const [editor, setEditor] = useState<{ draft: ObjectDraft; sectionId: string; objectId?: string } | null>(null);
+  const [editor, setEditor] = useState<{ draft: ObjectDraft; sectionId: string; objectId?: string; isNew?: boolean } | null>(null);
   // type picker popover (sectionId currently adding to)
   const [pickerSection, setPickerSection] = useState<string | null>(null);
   // section create/rename modal (no browser prompts)
@@ -111,9 +112,37 @@ export default function CourseBuilderPage() {
     await reload();
   }
 
-  function openNewObject(sectionId: string, type: ObjectType) {
+  // Picking a type creates the (empty) object immediately, so the editor is
+  // always editing something real. That gives autosaved work a durable home:
+  // dismiss the modal by accident and the placeholder is still in the list —
+  // hit ✏️ to pick the draft back up.
+  async function openNewObject(sectionId: string, type: ObjectType) {
     setPickerSection(null);
-    setEditor({ sectionId, draft: { type, title: "", content: {}, settings: {} } });
+    const pos = objectsBySection.get(sectionId)?.length ?? 0;
+    let created: CourseObject;
+    try {
+      created = await createObject({ courseId, sectionId, type, title: "", content: {}, settings: {}, position: pos });
+    } catch (e: any) {
+      setStatus("Could not add object: " + (e?.message ?? "unknown"));
+      return;
+    }
+    await reload();
+    setEditor({
+      sectionId,
+      objectId: created.id,
+      isNew: true,
+      draft: { type: created.type, title: created.title, content: created.content, settings: created.settings },
+    });
+  }
+
+  /** Cancel on a just-created object removes the placeholder it left behind. */
+  async function discardEditor() {
+    const e = editor;
+    setEditor(null);
+    if (e?.isNew && e.objectId) {
+      await deleteObject(e.objectId);
+      await reload();
+    }
   }
   function openEditObject(o: CourseObject) {
     setEditor({ sectionId: o.section_id, objectId: o.id, draft: { type: o.type, title: o.title, content: o.content, settings: o.settings } });
@@ -224,7 +253,7 @@ export default function CourseBuilderPage() {
                       <span style={{ color: "#6b7280", width: 18, flexShrink: 0 }}>{i + 1}</span>
                       <span style={{ fontSize: 18, flexShrink: 0 }}>{objIcon(o.type)}</span>
                       <span style={{ fontWeight: 600, overflowWrap: "anywhere", wordBreak: "break-word", color: o.title?.trim() ? undefined : "#9ca3af", fontStyle: o.title?.trim() ? undefined : "italic" }}>
-                        {o.title?.trim() || "Untitled text"}
+                        {o.title?.trim() || `Untitled ${objTypeLabel(o.type).toLowerCase()}`}
                       </span>
                     </div>
                     <div className="row" style={{ gap: 4, flexShrink: 0 }}>
@@ -265,14 +294,11 @@ export default function CourseBuilderPage() {
       {editor && (
         <ObjectEditorModal
           draft={editor.draft}
-          // Identifies the in-progress draft so dismissing the modal by
-          // accident doesn't lose the work. New objects key off their slot.
-          draftKey={
-            editor.objectId
-              ? `course-object:${editor.objectId}`
-              : `course-object:new:${courseId}:${editor.sectionId}:${editor.draft.type}`
-          }
+          // Keyed to the real row, so autosaved work is reachable again via
+          // the object's edit button.
+          draftKey={editor.objectId ? `course-object:${editor.objectId}` : undefined}
           onCancel={() => setEditor(null)}
+          onDiscard={discardEditor}
           onSave={saveObject}
         />
       )}

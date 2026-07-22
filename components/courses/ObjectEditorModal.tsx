@@ -21,12 +21,16 @@ export default function ObjectEditorModal({
   draft,
   draftKey,
   onCancel,
+  onDiscard,
   onSave,
 }: {
   draft: ObjectDraft;
   /** Identity for autosaved work-in-progress; omit to disable persistence. */
   draftKey?: string;
+  /** Escape / backdrop — an accidental close. The draft is kept. */
   onCancel: () => void;
+  /** The Cancel button — a deliberate throw-away. Defaults to onCancel. */
+  onDiscard?: () => void;
   onSave: (d: ObjectDraft) => void;
 }) {
   // Pick up anything left behind by an accidental dismiss of this same editor.
@@ -44,7 +48,7 @@ export default function ObjectEditorModal({
 
   function discardAndClose() {
     clearDraft(draftKey);
-    onCancel();
+    (onDiscard ?? onCancel)();
   }
 
   function patchContent(p: Record<string, any>) { setContent((c) => ({ ...c, ...p })); }
