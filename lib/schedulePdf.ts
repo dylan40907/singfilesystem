@@ -333,84 +333,66 @@ export async function downloadSchedulePdf(opts: {
     // Pass 2 — labels.
     for (const { b, x, y0, h } of laidOut) {
       const emp = b.employee_id ? empById.get(b.employee_id) : null;
+      const innerX = x + 7;
       const innerW = subW - 11;
       const primary = isPlan
         ? (b.label ?? "").trim() || "Block"
         : emp
         ? preferFull(doc, getDisplayName(emp), getFirstName(emp), innerW)
         : (b.label ?? "Unassigned");
-
-      doc.setTextColor(15, 23, 42);
-      doc.setFont(FONT, "bold");
-      let extraLines = 0;
-
       const timeStr = `${formatTime(b.start_time)}–${formatTime(b.end_time)}`;
+      const secondary = !isPlan && emp && b.label ? b.label : null;
 
-      if (h >= 12) {
-        doc.setFontSize(8.5);
-        // Honour typed newlines, then word-wrap each of those to the column so
-        // long labels run onto as many lines as the block has room for.
-        const LINE_H = 9;
-        const wrapped = primary
-          .split(/\r?\n/)
-          .filter((l) => l.length > 0)
-          .flatMap((l) => doc.splitTextToSize(l, innerW) as string[]);
-        const maxLines = Math.max(1, Math.floor((h - 10) / LINE_H));
-        const shown = wrapped.slice(0, Math.min(wrapped.length, maxLines));
-        shown.forEach((ln, li) => {
-          // Only the final line can need an ellipsis, and only if we ran out.
-          const clipped = li === shown.length - 1 && wrapped.length > shown.length;
-          doc.text(clipped ? fit(doc, ln + "…", innerW) : ln, x + 7, y0 + 10 + li * LINE_H);
-        });
-        extraLines = shown.length - 1;
+      // EVERY block shows both its name and its time. We reserve the time's
+      // space first, then fit the name into what's left — shrinking the font,
+      // and only clipping as a last resort — so the time is never dropped.
+      if (h >= 20) {
+        // Stacked: name line(s) on top, time (and optional note) beneath.
+        const secondaryH = secondary ? 8 : 0;
+        const availNameH = Math.max(9, h - 6 - 9 /* time line */ - secondaryH);
+        const { font, lineH, lines: nameLines } = fitNameLines(doc, primary, innerW, availNameH);
 
-        // Mid-sized blocks: too tall to be treated as "short", but with no room
-        // for a line beneath the name. Tuck the times in beside the last line
-        // instead of dropping them entirely.
-        if (h < 22 + extraLines * 9) {
-          const lastLine = shown[shown.length - 1] ?? "";
-          const used = doc.getTextWidth(fit(doc, lastLine, innerW));
-          doc.setFont(FONT, "normal");
-          doc.setFontSize(6.4);
-          if (doc.getTextWidth(timeStr) <= subW - 10 - used - 3) {
-            doc.setTextColor(100, 116, 139);
-            doc.text(timeStr, x + 7 + used + 3, y0 + 10 + extraLines * LINE_H);
-          }
+        doc.setFont(FONT, "bold");
+        doc.setFontSize(font);
+        doc.setTextColor(15, 23, 42);
+        nameLines.forEach((ln, li) => doc.text(ln, innerX, y0 + font + 1 + li * lineH));
+
+        const timeY = y0 + font + 1 + nameLines.length * lineH + 1;
+        doc.setFont(FONT, "normal");
+        doc.setFontSize(6.8);
+        doc.setTextColor(100, 116, 139);
+        doc.text(fit(doc, timeStr, innerW), innerX, timeY);
+
+        if (secondary) {
           doc.setFont(FONT, "bold");
-          doc.setTextColor(15, 23, 42);
+          doc.setFontSize(6.6);
+          doc.setTextColor(79, 70, 229);
+          doc.text(fit(doc, secondary, innerW), innerX, timeY + 8);
         }
       } else {
-        // A 5–10 minute slot is only a few points tall, so the name can't fit
-        // inside. Draw it anyway — smaller, vertically centred, and allowed to
-        // spill past the card — rather than leaving an unreadable empty sliver.
-        doc.setFontSize(6.8);
+        // Inline: too short to stack — name (left) + time (right-aligned) share
+        // one baseline. The time is placed first; the name takes the rest.
         const baseline = y0 + h / 2 + 2.3;
-        const nameStr = fit(doc, primary, subW - 6);
-        doc.text(nameStr, x + 6, baseline);
 
-        // There's usually room to the right of a shrunken name for the times.
-        const used = doc.getTextWidth(nameStr);
+        let timeFs = 6.2;
         doc.setFont(FONT, "normal");
-        doc.setFontSize(6.2);
-        if (doc.getTextWidth(timeStr) <= subW - 9 - used - 3) {
-          doc.setTextColor(100, 116, 139);
-          doc.text(timeStr, x + 6 + used + 3, baseline);
-        }
-      }
+        doc.setFontSize(timeFs);
+        while (timeFs > 4.6 && doc.getTextWidth(timeStr) > subW - 10) { timeFs -= 0.3; doc.setFontSize(timeFs); }
+        const timeW = doc.getTextWidth(timeStr);
+        const timeX = x + subW - 4 - timeW;
 
-      const shift = extraLines * 9;
-      if (h >= 22 + shift) {
-        doc.setFont(FONT, "normal");
-        doc.setFontSize(7.5);
-        doc.setTextColor(100, 116, 139);
-        doc.text(fit(doc, timeStr, innerW), x + 7, y0 + 19 + shift);
-      }
-      // A non-plan block's own label, when there's room for a third line.
-      if (!isPlan && emp && b.label && h >= 32 + shift) {
-        doc.setTextColor(79, 70, 229);
+        const nameMaxW = Math.max(6, timeX - 4 - innerX);
         doc.setFont(FONT, "bold");
-        doc.setFontSize(7);
-        doc.text(fit(doc, b.label, innerW), x + 7, y0 + 28 + shift);
+        let nameFs = 6.9;
+        doc.setFontSize(nameFs);
+        while (nameFs > 4.8 && doc.getTextWidth(primary) > nameMaxW) { nameFs -= 0.3; doc.setFontSize(nameFs); }
+        doc.setTextColor(15, 23, 42);
+        doc.text(fit(doc, primary, nameMaxW), innerX, baseline);
+
+        doc.setFont(FONT, "normal");
+        doc.setFontSize(timeFs);
+        doc.setTextColor(100, 116, 139);
+        doc.text(timeStr, timeX, baseline);
       }
     }
 
@@ -423,6 +405,44 @@ export async function downloadSchedulePdf(opts: {
 
   const safe = title.replace(/[^\w\s-]+/g, "").trim().replace(/\s+/g, "-") || "schedule";
   doc.save(`${safe}.pdf`);
+}
+
+/**
+ * Fit (wrapping) text into width `W` and height `availH`. Tries decreasing font
+ * sizes and accepts the first where every wrapped line fits the width AND the
+ * line count fits the height — so the name shrinks rather than losing its time.
+ * Only when even the minimum size won't fit does it clip the last line.
+ */
+function fitNameLines(
+  doc: any,
+  text: string,
+  W: number,
+  availH: number
+): { font: number; lineH: number; lines: string[] } {
+  const wrap = (): string[] =>
+    text.split(/\r?\n/).filter((l) => l.length > 0).flatMap((l) => doc.splitTextToSize(l, W) as string[]);
+
+  for (let f = 8.5; f >= 6; f -= 0.5) {
+    doc.setFontSize(f);
+    const lineH = f * 1.06;
+    const maxLines = Math.max(1, Math.floor(availH / lineH));
+    const lines = wrap();
+    if (lines.length <= maxLines && lines.every((l) => doc.getTextWidth(l) <= W)) {
+      return { font: f, lineH, lines };
+    }
+  }
+
+  // Minimum size — clip to fit both width and height.
+  const f = 6;
+  doc.setFontSize(f);
+  const lineH = f * 1.06;
+  const maxLines = Math.max(1, Math.floor(availH / lineH));
+  const all = wrap();
+  const shown = all.slice(0, maxLines).map((l) => fit(doc, l, W));
+  if (all.length > shown.length && shown.length) {
+    shown[shown.length - 1] = fit(doc, (all[shown.length - 1] ?? "") + "…", W);
+  }
+  return { font: f, lineH, lines: shown.length ? shown : [fit(doc, text, W)] };
 }
 
 /** Use the full name when it fits, otherwise fall back to the short one. */
