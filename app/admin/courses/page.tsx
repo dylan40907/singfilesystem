@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile } from "@/lib/teachers";
@@ -17,6 +17,15 @@ import CourseProgressPanel from "@/components/courses/CourseProgressPanel";
 import EmployeeCourses from "@/components/courses/EmployeeCourses";
 
 const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "#dc2626", "#0891b2"];
+
+/**
+ * The course list gets long, and "← Courses" is a forward navigation, which the
+ * App Router always scrolls to the top — so opening a course and coming back
+ * lost your place. We stash the position on the way in and restore it once the
+ * rows have rendered. Session-scoped, and consumed on restore so it only ever
+ * applies to the trip it was saved for.
+ */
+const SCROLL_KEY = "admin-courses:scrollY";
 
 function StatusBadge({ status }: { status: CourseStatus }) {
   const map: Record<CourseStatus, { bg: string; fg: string; label: string }> = {
@@ -88,6 +97,34 @@ export default function AdminCoursesPage() {
   useEffect(() => {
     if (authzd) reload();
   }, [authzd, reload]);
+
+  /** Remember where we were, then hand off to the course. */
+  function openCourse(id: string) {
+    try {
+      sessionStorage.setItem(SCROLL_KEY, String(window.scrollY));
+    } catch {
+      /* private mode / storage disabled — just navigate */
+    }
+    router.push(`/admin/courses/${id}`);
+  }
+
+  // Restore only after `loading` clears: until the rows exist the page is short
+  // and the browser would clamp the scroll back to the top.
+  const scrollRestored = useRef(false);
+  useEffect(() => {
+    if (loading || scrollRestored.current) return;
+    scrollRestored.current = true;
+
+    let y = 0;
+    try {
+      y = Number(sessionStorage.getItem(SCROLL_KEY) ?? 0);
+      sessionStorage.removeItem(SCROLL_KEY); // one-shot
+    } catch {
+      return;
+    }
+    // One frame after the commit, so the rows have actually laid out.
+    if (y > 0) requestAnimationFrame(() => window.scrollTo({ top: y }));
+  }, [loading]);
 
   const visible = useMemo(
     () => courses.filter((c) => (tab === "archived" ? c.status === "archived" : c.status !== "archived")),
@@ -453,7 +490,7 @@ export default function AdminCoursesPage() {
                           <input type="checkbox" checked={selected.has(c.id)} onChange={(e) => toggleSelect(c.id, e.target.checked)} />
                         </td>
                         <td style={td}>
-                          <button onClick={() => router.push(`/admin/courses/${c.id}`)}
+                          <button onClick={() => openCourse(c.id)}
                             style={{ background: "none", border: "none", cursor: "pointer", color: "#111827", fontWeight: 700, padding: 0, textAlign: "left" }}>
                             {c.title}
                           </button>
@@ -464,7 +501,7 @@ export default function AdminCoursesPage() {
                         <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                           <button className="btn" onClick={() => reorderCourse(g.items, ci, -1)} disabled={ci === 0} style={miniBtn}>↑</button>
                           <button className="btn" onClick={() => reorderCourse(g.items, ci, 1)} disabled={ci === g.items.length - 1} style={miniBtn}>↓</button>
-                          <button className="btn" onClick={() => router.push(`/admin/courses/${c.id}`)} style={miniBtn}>Edit</button>
+                          <button className="btn" onClick={() => openCourse(c.id)} style={miniBtn}>Edit</button>
                           <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
                           {c.status !== "published" && c.status !== "archived" && (
                             <button className="btn" onClick={() => changeStatus(c, "published")} style={miniBtn}>Publish</button>
