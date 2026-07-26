@@ -1,3 +1,4 @@
+import type { jsPDF } from "jspdf";
 import {
   Schedule,
   ScheduleRoom,
@@ -70,11 +71,187 @@ async function ensureCjkFont(doc: any, text: string): Promise<string | null> {
   }
 }
 
-// jsPDF can't embed colour/astral-plane emoji, so strip them (rather than
-// emitting tofu boxes). The on-screen grid still shows the native emoji.
-const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{FE00}-\u{FE0F}‍⃣]/gu;
+/**
+ * Emoji.
+ *
+ * jsPDF can only embed TrueType outlines, so colour emoji can never come from a
+ * font — they used to be stripped, which turned an emoji-only label into the
+ * literal word "Block". Instead we rasterise each emoji through a canvas using
+ * the platform's own emoji font (Segoe UI Emoji / Apple Color Emoji), giving the
+ * same glyphs the on-screen grid shows, and place them inline as images.
+ *
+ * Text therefore has to be measured and drawn in runs — see measureRich/drawRich
+ * below. Every helper that positions text goes through those, never doc.text /
+ * doc.getTextWidth directly, or emoji-bearing strings would be mis-measured.
+ */
+const EMOJI_CHAR_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{FE00}-\u{FE0F}\u{20E3}]/u;
+const EMOJI_STRIP_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{FE00}-\u{FE0F}\u{20E3}\u{200D}]/gu;
+
+/** Emoji contribute nothing to the CJK subset — they're drawn as images. */
 function stripEmoji(t: string): string {
-  return (t ?? "").replace(EMOJI_RE, "").replace(/[ \t]{2,}/g, " ").replace(/\s+([,，、])/g, "$1").trim();
+  return (t ?? "").replace(EMOJI_STRIP_RE, "");
+}
+
+type RichSeg = { emoji: boolean; text: string };
+
+let segmenter: Intl.Segmenter | undefined | null = null;
+function graphemeSegmenter(): Intl.Segmenter | undefined {
+  if (segmenter === null) {
+    try {
+      segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl
+        ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+        : undefined;
+    } catch {
+      segmenter = undefined;
+    }
+  }
+  return segmenter ?? undefined;
+}
+
+/**
+ * Split into grapheme clusters so ZWJ sequences (👨‍👩‍👧), skin-tone modifiers and
+ * flags stay whole — splitting them would render as separate broken glyphs.
+ */
+function toClusters(text: string): string[] {
+  const seg = graphemeSegmenter();
+  if (seg) return Array.from(seg.segment(text), (s) => s.segment);
+
+  // Fallback for engines without Intl.Segmenter: glue joiners/modifiers on.
+  const out: string[] = [];
+  const chars = Array.from(text);
+  for (let i = 0; i < chars.length; i++) {
+    let c = chars[i];
+    while (i + 1 < chars.length && /[‍️⃣\u{1F3FB}-\u{1F3FF}]/u.test(chars[i + 1])) {
+      c += chars[++i];
+      // A ZWJ always binds the following glyph into the same cluster.
+      if (chars[i] === "‍" && i + 1 < chars.length) c += chars[++i];
+    }
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Emoji clusters stay separate (one image each); plain text runs coalesce.
+ * Memoised — the font-size search in fitNameLines re-measures the same strings
+ * several times per block, and segmenting is the expensive part.
+ */
+const segmentCache = new Map<string, RichSeg[]>();
+
+function segmentRich(text: string): RichSeg[] {
+  const key = text ?? "";
+  const hit = segmentCache.get(key);
+  if (hit) return hit;
+
+  const out: RichSeg[] = [];
+  for (const c of toClusters(key)) {
+    const emoji = EMOJI_CHAR_RE.test(c);
+    const last = out[out.length - 1];
+    if (!emoji && last && !last.emoji) last.text += c;
+    else out.push({ emoji, text: c });
+  }
+  segmentCache.set(key, out);
+  return out;
+}
+
+/** cluster -> PNG data URL (or null when it can't be rendered). */
+const emojiPngCache = new Map<string, string | null>();
+
+function emojiPng(cluster: string): string | null {
+  if (emojiPngCache.has(cluster)) return emojiPngCache.get(cluster)!;
+
+  let url: string | null = null;
+  try {
+    if (typeof document !== "undefined") {
+      // Rasterise well above the on-page size so the PDF stays crisp when zoomed.
+      const S = 128;
+      const canvas = document.createElement("canvas");
+      canvas.width = S;
+      canvas.height = S;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.font = `${Math.round(S * 0.78)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Twemoji Mozilla",sans-serif`;
+        ctx.fillText(cluster, S / 2, S * 0.82);
+
+        // If nothing was painted there's no emoji font here — treat it as
+        // unrenderable so it takes no width, instead of leaving a blank gap.
+        const { data } = ctx.getImageData(0, 0, S, S);
+        let painted = false;
+        for (let i = 3; i < data.length; i += 4) {
+          if (data[i] !== 0) { painted = true; break; }
+        }
+        if (painted) url = canvas.toDataURL("image/png");
+      }
+    }
+  } catch {
+    url = null; // never let a single glyph kill the export
+  }
+
+  emojiPngCache.set(cluster, url);
+  return url;
+}
+
+/** Stable ASCII key for a cluster, e.g. "emoji-1f469-200d-1f373". */
+function emojiAlias(cluster: string): string {
+  return "emoji-" + Array.from(cluster).map((c) => c.codePointAt(0)!.toString(16)).join("-");
+}
+
+/** Advance width for one emoji at the given font size. */
+function emojiWidth(cluster: string, fontSize: number): number {
+  return emojiPng(cluster) ? fontSize * 1.1 : 0;
+}
+
+/** doc.getTextWidth, but emoji-aware. Uses the doc's current font size. */
+function measureRich(doc: jsPDF, text: string): number {
+  const fs = doc.getFontSize();
+  let w = 0;
+  for (const s of segmentRich(text)) {
+    w += s.emoji ? emojiWidth(s.text, fs) : doc.getTextWidth(s.text);
+  }
+  return w;
+}
+
+/** doc.text, but emoji are drawn as inline images. */
+function drawRich(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  opts?: { align?: "left" | "center" | "right" }
+) {
+  const segs = segmentRich(text);
+  if (!segs.length) return;
+
+  const fs = doc.getFontSize();
+  const align = opts?.align ?? "left";
+  let cx = x;
+  if (align !== "left") {
+    const total = measureRich(doc, text);
+    cx = align === "center" ? x - total / 2 : x - total;
+  }
+
+  for (const s of segs) {
+    if (!s.emoji) {
+      doc.text(s.text, cx, y);
+      cx += doc.getTextWidth(s.text);
+      continue;
+    }
+    const png = emojiPng(s.text);
+    if (!png) continue; // unrenderable: contributes no width either
+    const adv = fs * 1.1;
+    const size = fs;
+    try {
+      // Sit the glyph on the text baseline. The alias dedupes repeats so the
+      // same emoji is only embedded once no matter how often it appears — keep
+      // it plain ASCII rather than the raw cluster, since it becomes a PDF key.
+      doc.addImage(png, "PNG", cx + (adv - size) / 2, y - size * 0.82, size, size, emojiAlias(s.text), "FAST");
+    } catch {
+      /* skip this glyph rather than fail the export */
+    }
+    cx += adv;
+  }
 }
 
 function hexToRgb(hex: string): Rgb | null {
@@ -171,7 +348,9 @@ export async function downloadSchedulePdf(opts: {
     "0123456789:–.,·  ",
     ...DAY_LABELS,
     "Weekly schedulePlanPublishedDraftRoomsofPage",
-  ].join("");
+  ]
+    .map(stripEmoji) // emoji are drawn as images, not glyphs from this font
+    .join("");
   const cjk = await ensureCjkFont(doc, allText);
   const FONT = cjk ?? "helvetica";
   // Don't silently emit mojibake — say so if the CJK font didn't load.
@@ -204,7 +383,7 @@ export async function downloadSchedulePdf(opts: {
     doc.setFont(FONT, "bold");
     doc.setFontSize(15);
     doc.setTextColor(17, 24, 39);
-    doc.text(title, M, M + 13);
+    drawRich(doc, title, M, M + 13);
 
     doc.setFont(FONT, "normal");
     doc.setFontSize(9.5);
@@ -217,7 +396,7 @@ export async function downloadSchedulePdf(opts: {
       schedule.status === "published" ? "Published" : "Draft",
       page.parts > 1 ? `Rooms ${page.part} of ${page.parts}` : null,
     ].filter(Boolean);
-    doc.text(bits.join("  ·  "), M, M + 30);
+    drawRich(doc, bits.join("  ·  "), M, M + 30);
 
     // ── Painted cell backgrounds (merged into runs to avoid hairlines) ──────
     // key = roomId:colIdx:HH:MM
@@ -289,7 +468,7 @@ export async function downloadSchedulePdf(opts: {
       doc.rect(pos.x, gridTop - roomHeaderH, pos.w, roomHeaderH, "S");
       doc.setFont(FONT, "bold");
       doc.setTextColor(51, 65, 85);
-      doc.text(fit(doc, stripEmoji(r.name) || r.name, pos.w - 8), pos.x + pos.w / 2, gridTop - roomHeaderH + 13, { align: "center" });
+      drawRich(doc, fit(doc, r.name, pos.w - 8), pos.x + pos.w / 2, gridTop - roomHeaderH + 13, { align: "center" });
 
       // Faint sub-column dividers inside the room
       doc.setDrawColor(241, 245, 249);
@@ -343,15 +522,14 @@ export async function downloadSchedulePdf(opts: {
       const innerX = x + 7;
       const innerW = subW - 11;
       const primary =
-        stripEmoji(
-          isPlan
-            ? (b.label ?? "").trim() || "Block"
-            : emp
-            ? preferFull(doc, getDisplayName(emp), getFirstName(emp), innerW)
-            : (b.label ?? "Unassigned")
-        ) || (isPlan ? "Block" : "—");
+        (isPlan
+          ? (b.label ?? "").trim() || "Block"
+          : emp
+          ? preferFull(doc, getDisplayName(emp), getFirstName(emp), innerW)
+          : (b.label ?? "Unassigned")
+        ).trim() || (isPlan ? "Block" : "—");
       const timeStr = `${formatTime(b.start_time)}–${formatTime(b.end_time)}`;
-      const secondary = !isPlan && emp && b.label ? stripEmoji(b.label) || null : null;
+      const secondary = !isPlan && emp && b.label ? b.label.trim() || null : null;
 
       // EVERY block shows both its name and its time. We reserve the time's
       // space first, then fit the name into what's left — shrinking the font,
@@ -365,7 +543,7 @@ export async function downloadSchedulePdf(opts: {
         doc.setFont(FONT, "bold");
         doc.setFontSize(font);
         doc.setTextColor(15, 23, 42);
-        nameLines.forEach((ln, li) => doc.text(ln, innerX, y0 + font + 1 + li * lineH));
+        nameLines.forEach((ln, li) => drawRich(doc, ln, innerX, y0 + font + 1 + li * lineH));
 
         const timeY = y0 + font + 1 + nameLines.length * lineH + 1;
         doc.setFont(FONT, "normal");
@@ -377,7 +555,7 @@ export async function downloadSchedulePdf(opts: {
           doc.setFont(FONT, "bold");
           doc.setFontSize(6.6);
           doc.setTextColor(79, 70, 229);
-          doc.text(fit(doc, secondary, innerW), innerX, timeY + 8);
+          drawRich(doc, fit(doc, secondary, innerW), innerX, timeY + 8);
         }
       } else {
         // Inline: too short to stack — the name and its time share one baseline,
@@ -396,11 +574,11 @@ export async function downloadSchedulePdf(opts: {
         doc.setFont(FONT, "bold");
         let nameFs = 6.9;
         doc.setFontSize(nameFs);
-        while (nameFs > 4.8 && doc.getTextWidth(primary) > nameMaxW) { nameFs -= 0.3; doc.setFontSize(nameFs); }
+        while (nameFs > 4.8 && measureRich(doc, primary) > nameMaxW) { nameFs -= 0.3; doc.setFontSize(nameFs); }
         doc.setTextColor(15, 23, 42);
         const nameDrawn = fit(doc, primary, nameMaxW);
-        doc.text(nameDrawn, innerX, baseline);
-        const nameW = doc.getTextWidth(nameDrawn);
+        drawRich(doc, nameDrawn, innerX, baseline);
+        const nameW = measureRich(doc, nameDrawn);
 
         doc.setFont(FONT, "normal");
         doc.setFontSize(timeFs);
@@ -432,15 +610,12 @@ function fitNameLines(
   W: number,
   availH: number
 ): { font: number; lineH: number; lines: string[] } {
-  const wrap = (): string[] =>
-    text.split(/\r?\n/).filter((l) => l.length > 0).flatMap((l) => doc.splitTextToSize(l, W) as string[]);
-
   for (let f = 8.5; f >= 6; f -= 0.5) {
     doc.setFontSize(f);
     const lineH = f * 1.06;
     const maxLines = Math.max(1, Math.floor(availH / lineH));
-    const lines = wrap();
-    if (lines.length <= maxLines && lines.every((l) => doc.getTextWidth(l) <= W)) {
+    const lines = wrapRich(doc, text, W);
+    if (lines.length <= maxLines && lines.every((l) => measureRich(doc, l) <= W)) {
       return { font: f, lineH, lines };
     }
   }
@@ -450,7 +625,7 @@ function fitNameLines(
   doc.setFontSize(f);
   const lineH = f * 1.06;
   const maxLines = Math.max(1, Math.floor(availH / lineH));
-  const all = wrap();
+  const all = wrapRich(doc, text, W);
   const shown = all.slice(0, maxLines).map((l) => fit(doc, l, W));
   if (all.length > shown.length && shown.length) {
     shown[shown.length - 1] = fit(doc, (all[shown.length - 1] ?? "") + "…", W);
@@ -458,22 +633,68 @@ function fitNameLines(
   return { font: f, lineH, lines: shown.length ? shown : [fit(doc, text, W)] };
 }
 
+/**
+ * Word-wrap to width `W`. Replaces doc.splitTextToSize, which measures with
+ * getTextWidth and so would treat emoji as zero-width.
+ */
+function wrapRich(doc: jsPDF, text: string, W: number): string[] {
+  const wrapped: string[] = [];
+
+  for (const para of (text ?? "").split(/\r?\n/)) {
+    if (!para.trim()) continue;
+    let cur = "";
+    for (const token of para.split(/(\s+)/)) {
+      if (!token) continue;
+      const next = cur + token;
+      if (cur && measureRich(doc, next.trim()) > W) {
+        wrapped.push(cur.trim());
+        cur = token.trim() ? token : "";
+      } else {
+        cur = next;
+      }
+    }
+    if (cur.trim()) wrapped.push(cur.trim());
+  }
+
+  // A single unbroken token (or one very wide emoji run) can still overflow.
+  const out: string[] = [];
+  for (const line of wrapped) {
+    if (measureRich(doc, line) <= W) {
+      out.push(line);
+      continue;
+    }
+    let buf = "";
+    for (const c of toClusters(line)) {
+      if (buf && measureRich(doc, buf + c) > W) {
+        out.push(buf);
+        buf = c;
+      } else {
+        buf += c;
+      }
+    }
+    if (buf) out.push(buf);
+  }
+  return out;
+}
+
 /** Use the full name when it fits, otherwise fall back to the short one. */
 function preferFull(doc: any, full: string, short: string, maxW: number): string {
-  return doc.getTextWidth(full) <= maxW ? full : short;
+  return measureRich(doc, full) <= maxW ? full : short;
 }
 
 /** Truncate text with an ellipsis so it fits the given width. */
 function fit(doc: any, text: string, maxW: number): string {
   const t = (text ?? "").toString();
   if (!t) return "";
-  if (doc.getTextWidth(t) <= maxW) return t;
+  if (measureRich(doc, t) <= maxW) return t;
+  // Cut on grapheme clusters so a multi-codepoint emoji is never split apart.
+  const clusters = toClusters(t);
   let lo = 0;
-  let hi = t.length;
+  let hi = clusters.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (doc.getTextWidth(t.slice(0, mid) + "…") <= maxW) lo = mid;
+    if (measureRich(doc, clusters.slice(0, mid).join("") + "…") <= maxW) lo = mid;
     else hi = mid - 1;
   }
-  return lo > 0 ? t.slice(0, lo) + "…" : "";
+  return lo > 0 ? clusters.slice(0, lo).join("") + "…" : "";
 }
