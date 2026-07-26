@@ -15,6 +15,12 @@ function json(data: unknown, status = 200) {
   });
 }
 
+// Must stay in sync with teacher-setup-check / teacher-setup-set-password: an
+// account we let reset here has to be one that can run "Set up an account" after.
+function isResettableRole(role: unknown) {
+  return role === "teacher" || role === "supervisor" || role === "campus_admin";
+}
+
 function randomPassword(len = 32) {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}:,.?";
   const bytes = new Uint8Array(len);
@@ -68,7 +74,7 @@ Deno.serve(async (req) => {
 
     const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Ensure target exists and is teacher/supervisor (not admin)
+    // Ensure target exists and can go through account setup afterwards (not admin)
     const { data: targetProfile, error: targetErr } = await supabaseAdmin
       .from("user_profiles")
       .select("id, role")
@@ -78,8 +84,8 @@ Deno.serve(async (req) => {
     if (targetErr) return json({ error: targetErr.message }, 400);
     if (!targetProfile) return json({ error: "Target not found." }, 404);
 
-    if (targetProfile.role !== "teacher" && targetProfile.role !== "supervisor") {
-      return json({ error: "Can only reset teacher/supervisor accounts." }, 400);
+    if (!isResettableRole(targetProfile.role)) {
+      return json({ error: "Can only reset teacher/supervisor/campus admin accounts." }, 400);
     }
 
     // Reset the app-level "has_set_password" flow
