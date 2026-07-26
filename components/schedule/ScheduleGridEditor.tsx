@@ -191,7 +191,8 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
 
   // Copy week picker
   const [copyPickerOpen, setCopyPickerOpen] = useState(false);
-  const [copyPickerSchedules, setCopyPickerSchedules] = useState<{ id: string; week_start: string; status: string }[]>([]);
+  // week_start is null for plans — see openCopyPicker, which filters them out.
+  const [copyPickerSchedules, setCopyPickerSchedules] = useState<{ id: string; week_start: string | null; status: string }[]>([]);
   const [copyPickerSelected, setCopyPickerSelected] = useState<string | null>(null);
   const [copyPickerLoading, setCopyPickerLoading] = useState(false);
 
@@ -1337,15 +1338,22 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
     if (!schedule) return;
     setCopyPickerLoading(true);
     setCopyPickerOpen(true);
+    // Weekly schedules only. Plans have a null week_start (and no employees or
+    // hours), so they can't be copied into a week — and rendering one here used
+    // to crash the page in formatWeekRange.
     const { data } = await supabase
       .from("schedules")
       .select("id, week_start, status")
+      .eq("kind", "week")
+      .not("week_start", "is", null)
       .neq("id", scheduleId)
       .order("week_start", { ascending: false });
-    const rows = (data ?? []) as { id: string; week_start: string; status: string }[];
+    const rows = (data ?? []) as { id: string; week_start: string | null; status: string }[];
     setCopyPickerSchedules(rows);
     // Default to most recent before current week
-    const prev = schedule.week_start ? rows.find((s) => s.week_start < schedule.week_start!) : undefined;
+    const prev = schedule.week_start
+      ? rows.find((s) => !!s.week_start && s.week_start < schedule.week_start!)
+      : undefined;
     setCopyPickerSelected(prev?.id ?? (rows[0]?.id ?? null));
     setCopyPickerLoading(false);
   }
@@ -1981,7 +1989,9 @@ export default function ScheduleGridEditor({ scheduleId, onBack, forceReadOnly =
                         background: isSelected ? "rgba(230,23,141,0.05)" : "white",
                       }}
                     >
-                      <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>{formatWeekRange(s.week_start)}</span>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>
+                        {s.week_start ? formatWeekRange(s.week_start) : "Schedule"}
+                      </span>
                       <span style={{
                         padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
                         background: isPublished ? "#dcfce7" : "#fef3c7",
