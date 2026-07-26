@@ -2020,7 +2020,7 @@ export default function Home() {
                   <div className="stack" style={{ gap: 10 }}>
                     <input
                       className="input"
-                      placeholder="New password (min 8 characters)"
+                      placeholder="New password"
                       type="password"
                       value={setupPass1}
                       onChange={(e) => setSetupPass1(e.target.value)}
@@ -2048,6 +2048,13 @@ export default function Home() {
                         }
                       }}
                     />
+
+                    {/* Must match the rule enforced in runSetupSetPassword and in the
+                        teacher-setup-set-password edge function — and the wording the
+                        HR app shows on its own setup screen. */}
+                    <div className="subtle" style={{ fontSize: 12 }}>
+                      At least 10 characters, using 3 of: lowercase, uppercase, number, symbol.
+                    </div>
 
                     <div className="row" style={{ justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                       <button
