@@ -88,7 +88,11 @@ export default function ModeNavbar({
   }
 
   const activeTab = useMemo(() => {
-    const hit = links.find((l) => pathname === l.href || pathname.startsWith(l.href + "/"));
+    // Longest href first: with nested tabs (e.g. /admin/sales and
+    // /admin/sales/reports) a plain first-match would always pick the parent.
+    const hit = [...links]
+      .sort((a, b) => b.href.length - a.href.length)
+      .find((l) => pathname === l.href || pathname.startsWith(l.href + "/"));
     return hit?.tab ?? "";
   }, [pathname, links]);
 

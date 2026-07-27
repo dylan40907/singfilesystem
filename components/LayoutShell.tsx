@@ -56,7 +56,15 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
   if (isSales) {
     return (
       <CampusProvider>
-        <ModeNavbar mode="sales" title="Sales" links={[]} />
+        <ModeNavbar
+          mode="sales"
+          title="Sales"
+          links={[
+            { href: "/admin/sales", label: "Leads", tab: "leads" },
+            { href: "/admin/sales/reports", label: "Reports", tab: "reports" },
+            { href: "/admin/sales/settings", label: "Settings", tab: "settings" },
+          ]}
+        />
         <div className="page">
           <div className="container">{children}</div>
         </div>
