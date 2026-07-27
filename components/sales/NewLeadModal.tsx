@@ -8,6 +8,7 @@ import {
   SalesSource,
   addChild,
   createLead,
+  sourceWantsReferrer,
   todayLocal,
 } from "@/lib/sales";
 
@@ -32,12 +33,14 @@ export default function NewLeadModal({
 }) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
-  const [campusId, setCampusId] = useState<string>(defaultCampusId ?? (campuses[0]?.id ?? ""));
+  // A family can be considering both campuses; whichever they pick later wins.
+  const [campusIds, setCampusIds] = useState<string[]>(defaultCampusId ? [defaultCampusId] : []);
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
   const [sourceId, setSourceId] = useState("");
   const [sourceOther, setSourceOther] = useState("");
+  const [referredBy, setReferredBy] = useState("");
   const [firstContact, setFirstContact] = useState<FirstContactType | "">("");
   const [inquiryDate, setInquiryDate] = useState(todayLocal());
   const [desiredStart, setDesiredStart] = useState("");
@@ -52,22 +55,28 @@ export default function NewLeadModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const otherSelected = sources.find((s) => s.id === sourceId)?.name === "Other";
+  const selectedSourceName = sources.find((s) => s.id === sourceId)?.name ?? null;
+  const otherSelected = selectedSourceName === "Other";
+  const wantsReferrer = sourceWantsReferrer(selectedSourceName);
+
+  function toggleCampus(id: string) {
+    setCampusIds((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
+  }
 
   async function submit() {
     if (!firstName.trim() && !lastName.trim()) {
       setError("Enter the parent's name.");
       return;
     }
-    if (!campusId) {
-      setError("Choose a campus — leads with no campus are only visible to full admins.");
+    if (campusIds.length === 0) {
+      setError("Pick at least one campus — leads with no campus are only visible to full admins.");
       return;
     }
     setBusy(true);
     setError("");
     try {
       const lead = await createLead({
-        campus_id: campusId,
+        campus_ids: campusIds,
         status: "active",
         parent_first_name: firstName.trim(),
         parent_last_name: lastName.trim(),
@@ -76,6 +85,7 @@ export default function NewLeadModal({
         city: city.trim() || null,
         source_id: sourceId || null,
         source_other: otherSelected ? sourceOther.trim() || null : null,
+        referred_by: wantsReferrer ? referredBy.trim() || null : null,
         first_contact_type: firstContact || null,
         inquiry_date: inquiryDate || todayLocal(),
         desired_start_date: desiredStart || null,
@@ -132,11 +142,20 @@ export default function NewLeadModal({
 
         <div style={grid2}>
           <div>
-            <label style={lbl}>Campus</label>
-            <select className="select" value={campusId} onChange={(e) => setCampusId(e.target.value)}>
-              <option value="">— Choose —</option>
-              {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <label style={lbl}>Campus(es) they’re considering</label>
+            <div className="row" style={{ gap: 12, flexWrap: "wrap", paddingTop: 8 }}>
+              {campuses.map((c) => (
+                <label key={c.id} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 14 }}>
+                  <input type="checkbox" checked={campusIds.includes(c.id)} onChange={() => toggleCampus(c.id)} />
+                  {c.name}
+                </label>
+              ))}
+            </div>
+            {campusIds.length > 1 && (
+              <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                Both campuses will see this lead until they choose.
+              </div>
+            )}
           </div>
           <div>
             <label style={lbl}>Inquiry date</label>
@@ -183,6 +202,17 @@ export default function NewLeadModal({
             <div>
               <label style={lbl}>Where exactly?</label>
               <input className="input" value={sourceOther} onChange={(e) => setSourceOther(e.target.value)} />
+            </div>
+          )}
+          {wantsReferrer && (
+            <div>
+              <label style={lbl}>Who told them about us?</label>
+              <input
+                className="input"
+                placeholder="Name of the family or friend"
+                value={referredBy}
+                onChange={(e) => setReferredBy(e.target.value)}
+              />
             </div>
           )}
         </div>

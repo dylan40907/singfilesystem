@@ -4,6 +4,7 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { activeEmployeesOnly, compareEmployeesForPicker } from "@/lib/employeeSort";
 import "@fortune-sheet/react/dist/index.css";
 import {
   PreviewMode,
@@ -427,12 +428,13 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
 				"id,profile_id,legal_first_name,legal_middle_name,legal_last_name,nicknames,is_active,attendance_points"
 			);
 		q = applyCampusFilterToQuery(q, campusFilter);
-		const res = await q
-			.order("legal_last_name", { ascending: true })
-			.order("legal_first_name", { ascending: true });
+		const res = await q;
 		if (res.error) throw res.error;
 
-		const base = (res.data ?? []) as any as EmployeeLite[];
+		// These feed the attendee and review pickers, so past staff are dropped —
+		// and the sort follows the nickname that's actually displayed.
+		const base = activeEmployeesOnly((res.data ?? []) as any as EmployeeLite[])
+			.sort(compareEmployeesForPicker);
 		const profileIds = Array.from(
 			new Set(base.map((e) => (e as any)?.profile_id).filter((x) => typeof x === "string" && x.length > 0))
 		) as string[];

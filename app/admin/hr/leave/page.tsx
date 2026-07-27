@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
+import { activeEmployeesOnly, compareEmployeesForPicker } from "@/lib/employeeSort";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -478,12 +479,13 @@ export default function LeavePage() {
         .from("hr_employees")
         .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, is_active, start_date, profile_id");
       q = applyCampusFilterToQuery(q, campusFilter);
-      const { data, error } = await q
-        .order("legal_last_name", { ascending: true })
-        .order("legal_first_name", { ascending: true });
+      const { data, error } = await q;
       if (cancelled) return;
       if (error) { setError(error.message); return; }
-      let rows = (data ?? []) as EmployeeRow[];
+      // Sorted here rather than in SQL: the dropdown shows the nickname, so
+      // ordering by legal_first_name reads as unsorted to anyone looking at it.
+      let rows = activeEmployeesOnly((data ?? []) as EmployeeRow[], selectedEmployeeId)
+        .sort(compareEmployeesForPicker);
       // Campus admins are a level below regular admins → never list admin accounts.
       if (me?.role === "campus_admin") {
         const profIds = rows.map((r) => (r as any).profile_id).filter(Boolean) as string[];

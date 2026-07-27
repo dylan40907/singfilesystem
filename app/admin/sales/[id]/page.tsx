@@ -12,7 +12,9 @@ import {
   ActivityKind,
   FIRST_CONTACT_LABEL,
   FirstContactType,
+  PREFERRED_LANGUAGES,
   SALES_STATUS_LABEL,
+  TIME_ZONES,
   SalesActivity,
   SalesLeadFull,
   SalesSource,
@@ -25,12 +27,17 @@ import {
   deleteLead,
   fetchActivities,
   fetchAssignableStaff,
+  fetchHousehold,
   fetchLead,
   fetchSources,
+  isAwkwardHourFor,
   leadName,
+  localTimeFor,
   nextActionState,
   setLeadStatus,
   setNextAction,
+  sourceWantsReferrer,
+  splitChildToNewLead,
   todayLocal,
   updateChild,
   updateLead,
@@ -51,6 +58,8 @@ export default function SalesLeadPage() {
   const { campuses, profile } = useCampusFilter();
 
   const [lead, setLead] = useState<SalesLeadFull | null>(null);
+  const [household, setHousehold] = useState<SalesLeadFull[]>([]);
+  const [enrollCampusId, setEnrollCampusId] = useState("");
   const [activities, setActivities] = useState<SalesActivity[]>([]);
   const [sources, setSources] = useState<SalesSource[]>([]);
   const [staff, setStaff] = useState<{ id: string; full_name: string | null; role: string }[]>([]);
@@ -84,6 +93,9 @@ export default function SalesLeadPage() {
       setNaDate(l.next_action_date ?? "");
       setNaType(l.next_action_type ?? "call");
       setNaNote(l.next_action_note ?? "");
+      // Only one campus in play? Then converting doesn't need to ask which.
+      setEnrollCampusId(l.enrolled_campus_id ?? (l.campus_ids.length === 1 ? l.campus_ids[0] : ""));
+      setHousehold(await fetchHousehold(l).catch(() => []));
     } catch (e) {
       setStatus("Load error: " + ((e as Error)?.message ?? "unknown"));
     } finally {
@@ -102,9 +114,14 @@ export default function SalesLeadPage() {
     })();
   }, []);
 
-  const campusName = useMemo(
-    () => campuses.find((c) => c.id === lead?.campus_id)?.name ?? "No campus",
-    [campuses, lead?.campus_id]
+  const campusLabel = useMemo(() => {
+    if (!lead?.campus_ids?.length) return "No campus";
+    return lead.campus_ids.map((id) => campuses.find((c) => c.id === id)?.name ?? "?").join(" + ");
+  }, [campuses, lead?.campus_ids]);
+
+  const campusNameOf = useCallback(
+    (id: string | null) => campuses.find((c) => c.id === id)?.name ?? "—",
+    [campuses]
   );
 
   function beginEdit() {
@@ -117,7 +134,7 @@ export default function SalesLeadPage() {
     if (!lead) return;
     try {
       await updateLead(lead.id, {
-        campus_id: draft.campus_id ?? null,
+        campus_ids: draft.campus_ids ?? [],
         parent_first_name: (draft.parent_first_name ?? "").trim(),
         parent_last_name: (draft.parent_last_name ?? "").trim(),
         phone: draft.phone?.trim() || null,
@@ -127,6 +144,7 @@ export default function SalesLeadPage() {
         preferred_language: draft.preferred_language?.trim() || null,
         source_id: draft.source_id || null,
         source_other: draft.source_other?.trim() || null,
+        referred_by: draft.referred_by?.trim() || null,
         first_contact_type: (draft.first_contact_type as FirstContactType) || null,
         inquiry_date: draft.inquiry_date || todayLocal(),
         desired_start_date: draft.desired_start_date || null,
@@ -177,7 +195,7 @@ export default function SalesLeadPage() {
 
   async function changeStatus(next: SalesStatus) {
     if (!lead) return;
-    let reason: string | undefined;
+    const reason: string | undefined = undefined;
     if (next === "inactive") {
       const ok = await confirm(
         `Mark ${leadName(lead)} inactive?\n\nThey move to the Inactive tab and follow-up reminders stop.`,
@@ -185,14 +203,25 @@ export default function SalesLeadPage() {
       );
       if (!ok) return;
     } else if (next === "enrolled") {
+      // Touring both campuses? We must know which one won, or the other campus
+      // can't tell a win from a loss.
+      if (lead.campus_ids.length > 1 && !enrollCampusId) {
+        setStatus("Choose which campus they enrolled at first.");
+        return;
+      }
+      const where = enrollCampusId ? ` at ${campusNameOf(enrollCampusId)}` : "";
+      const alsoNote =
+        lead.campus_ids.length > 1
+          ? `\n\n${campusNameOf(lead.campus_ids.find((c) => c !== enrollCampusId) ?? null)} will see this family as inactive.`
+          : "";
       const ok = await confirm(
-        `Convert ${leadName(lead)} to enrolled?\n\nThis counts toward the conversion rate and stops follow-up reminders.`,
+        `Convert ${leadName(lead)} to enrolled${where}?\n\nThis counts toward the conversion rate and stops follow-up reminders.${alsoNote}`,
         { title: "Convert to enrolled", confirmLabel: "Convert" }
       );
       if (!ok) return;
     }
     try {
-      await setLeadStatus(lead.id, next, reason);
+      await setLeadStatus(lead.id, next, reason, next === "enrolled" ? enrollCampusId || null : null);
       setStatus(next === "enrolled" ? "🎉 Converted." : next === "inactive" ? "Marked inactive." : "Re-opened.");
       await reload();
     } catch (e) {
@@ -240,10 +269,26 @@ export default function SalesLeadPage() {
           <Link href="/admin/sales" className="btn" style={{ padding: "4px 10px" }}>← Leads</Link>
           <h1 className="h1" style={{ margin: 0 }}>{leadName(lead)}</h1>
           <span className="badge badge-pink">{SALES_STATUS_LABEL[lead.status]}</span>
-          <span className="subtle">{campusName}</span>
+          <span className="subtle">{campusLabel}</span>
+          {lead.enrolled_campus_id && (
+            <span className="subtle">· enrolled at {campusNameOf(lead.enrolled_campus_id)}</span>
+          )}
         </div>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           {status ? <span className="badge badge-pink">{status}</span> : null}
+          {lead.status !== "enrolled" && lead.campus_ids.length > 1 && (
+            <select
+              className="select"
+              value={enrollCampusId}
+              onChange={(e) => setEnrollCampusId(e.target.value)}
+              style={{ minWidth: 170 }}
+            >
+              <option value="">Enrolling at…</option>
+              {lead.campus_ids.map((id) => (
+                <option key={id} value={id}>{campusNameOf(id)}</option>
+              ))}
+            </select>
+          )}
           {lead.status !== "enrolled" && (
             <button className="btn btn-primary" onClick={() => void changeStatus("enrolled")}>Convert to enrolled</button>
           )}
@@ -255,6 +300,21 @@ export default function SalesLeadPage() {
           )}
         </div>
       </div>
+
+      {household.length > 0 && (
+        <div className="card" style={{ borderColor: "#ddd6fe", background: "#f5f3ff" }}>
+          <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontWeight: 800, color: "#5b21b6" }}>Same family</span>
+            {household.map((h) => (
+              <Link key={h.id} href={`/admin/sales/${h.id}`} className="btn" style={{ padding: "4px 10px", fontSize: 13 }}>
+                {h.children.map((c) => c.name).filter(Boolean).join(", ") || leadName(h)}
+                {" · "}
+                {SALES_STATUS_LABEL[h.status]}
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Next action ─────────────────────────────────────────────────── */}
       <div
@@ -340,14 +400,28 @@ export default function SalesLeadPage() {
             <Field label="Phone" value={lead.phone} />
             <Field label="Email" value={lead.email} />
             <Field label="City" value={lead.city} />
-            <Field label="Time zone" value={lead.time_zone} />
+            <div>
+              <div style={lbl}>Their local time</div>
+              {lead.time_zone ? (
+                <div style={{ color: isAwkwardHourFor(lead.time_zone) ? "#b45309" : "#111827", fontWeight: isAwkwardHourFor(lead.time_zone) ? 800 : 400 }}>
+                  {localTimeFor(lead.time_zone) ?? lead.time_zone}
+                  {isAwkwardHourFor(lead.time_zone) && " — bad time to call"}
+                  <div className="subtle" style={{ fontSize: 12, fontWeight: 400 }}>
+                    {TIME_ZONES.find((t) => t.value === lead.time_zone)?.label ?? lead.time_zone}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: "#9ca3af" }}>—</div>
+              )}
+            </div>
             <Field label="Preferred language" value={lead.preferred_language} />
             <Field label="How they heard" value={lead.source?.name ?? lead.source_other} />
+            <Field label="Referred by" value={lead.referred_by} />
             <Field label="Call or scheduled tour" value={lead.first_contact_type ? FIRST_CONTACT_LABEL[lead.first_contact_type] : null} />
             <Field label="Inquiry date" value={fmtDate(lead.inquiry_date)} />
             <Field label="Desired start" value={lead.desired_start_date ? fmtDate(lead.desired_start_date) : lead.desired_start_note} />
             <Field label="Owner" value={staff.find((s) => s.id === lead.staff_owner_id)?.full_name ?? lead.staff_name} />
-            <Field label="Campus" value={campusName} />
+            <Field label="Campus(es)" value={campusLabel} />
             <Field label="Added" value={fmtDate(lead.created_at.slice(0, 10))} />
             <div style={{ gridColumn: "1 / -1" }}>
               <Field label="Notes" value={lead.notes} multiline />
@@ -358,17 +432,59 @@ export default function SalesLeadPage() {
             <Input label="Parent first name" value={draft.parent_first_name ?? ""} onChange={(v) => setDraft((d) => ({ ...d, parent_first_name: v }))} />
             <Input label="Parent last name" value={draft.parent_last_name ?? ""} onChange={(v) => setDraft((d) => ({ ...d, parent_last_name: v }))} />
             <div>
-              <label style={lbl}>Campus</label>
-              <select className="select" value={draft.campus_id ?? ""} onChange={(e) => setDraft((d) => ({ ...d, campus_id: e.target.value || null }))}>
-                <option value="">— None —</option>
-                {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <label style={lbl}>Campus(es) they’re considering</label>
+              <div className="row" style={{ gap: 12, flexWrap: "wrap", paddingTop: 6 }}>
+                {campuses.map((c) => {
+                  const on = (draft.campus_ids ?? []).includes(c.id);
+                  return (
+                    <label key={c.id} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 14 }}>
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={() =>
+                          setDraft((d) => {
+                            const cur = new Set(d.campus_ids ?? []);
+                            if (on) cur.delete(c.id); else cur.add(c.id);
+                            return { ...d, campus_ids: [...cur] };
+                          })
+                        }
+                      />
+                      {c.name}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
             <Input label="Phone" value={draft.phone ?? ""} onChange={(v) => setDraft((d) => ({ ...d, phone: v }))} />
             <Input label="Email" value={draft.email ?? ""} onChange={(v) => setDraft((d) => ({ ...d, email: v }))} />
             <Input label="City" value={draft.city ?? ""} onChange={(v) => setDraft((d) => ({ ...d, city: v }))} />
-            <Input label="Time zone" value={draft.time_zone ?? ""} onChange={(v) => setDraft((d) => ({ ...d, time_zone: v }))} placeholder="America/Los_Angeles" />
-            <Input label="Preferred language" value={draft.preferred_language ?? ""} onChange={(v) => setDraft((d) => ({ ...d, preferred_language: v }))} placeholder="English / 中文" />
+            <div>
+              <label style={lbl}>Time zone</label>
+              <select
+                className="select"
+                value={draft.time_zone ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, time_zone: e.target.value || null }))}
+              >
+                <option value="">— Not known —</option>
+                {TIME_ZONES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              {draft.time_zone && (
+                <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                  Right now it’s {localTimeFor(draft.time_zone)} for them.
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={lbl}>Preferred language</label>
+              <select
+                className="select"
+                value={draft.preferred_language ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, preferred_language: e.target.value || null }))}
+              >
+                <option value="">— Not known —</option>
+                {PREFERRED_LANGUAGES.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
             <div>
               <label style={lbl}>How they heard</label>
               <select className="select" value={draft.source_id ?? ""} onChange={(e) => setDraft((d) => ({ ...d, source_id: e.target.value || null }))}>
@@ -377,6 +493,14 @@ export default function SalesLeadPage() {
               </select>
             </div>
             <Input label="Source detail" value={draft.source_other ?? ""} onChange={(v) => setDraft((d) => ({ ...d, source_other: v }))} />
+            {sourceWantsReferrer(sources.find((s) => s.id === draft.source_id)?.name) && (
+              <Input
+                label="Who told them about us?"
+                value={draft.referred_by ?? ""}
+                onChange={(v) => setDraft((d) => ({ ...d, referred_by: v }))}
+                placeholder="Name of the family or friend"
+              />
+            )}
             <div>
               <label style={lbl}>Call or scheduled tour</label>
               <select className="select" value={draft.first_contact_type ?? ""} onChange={(e) => setDraft((d) => ({ ...d, first_contact_type: (e.target.value || null) as FirstContactType }))}>
@@ -404,7 +528,7 @@ export default function SalesLeadPage() {
         )}
       </div>
 
-      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} />
+      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} onSplit={(id) => router.push(`/admin/sales/${id}`)} />
 
       {/* ── History ─────────────────────────────────────────────────────── */}
       <div className="card">
@@ -488,11 +612,12 @@ export default function SalesLeadPage() {
 // ─── Children ────────────────────────────────────────────────────────────────
 
 function ChildrenCard({
-  lead, onChanged, onError,
+  lead, onChanged, onError, onSplit,
 }: {
   lead: SalesLeadFull;
   onChanged: () => Promise<void>;
   onError: (msg: string) => void;
+  onSplit: (newLeadId: string) => void;
 }) {
   const { confirm, modal } = useDialog();
   const [adding, setAdding] = useState(false);
@@ -567,6 +692,31 @@ function ChildrenCard({
                       catch (err) { onError((err as Error)?.message ?? "Could not update."); }
                     }}
                   />
+                  {lead.children.length > 1 && (
+                    <button
+                      className="btn"
+                      style={{ padding: "2px 8px", fontSize: 11 }}
+                      title="Track this child as their own lead, still linked to the family"
+                      onClick={async () => {
+                        const ok = await confirm(
+                          `Give ${c.name || "this child"} their own lead?\n\n` +
+                            `The parent's details are copied across and both leads stay linked as one family, ` +
+                            `so one child can enrol while the other is still deciding.`,
+                          { title: "Split into own lead", confirmLabel: "Split" }
+                        );
+                        if (!ok) return;
+                        try {
+                          const newId = await splitChildToNewLead(lead, c.id);
+                          await onChanged();
+                          onSplit(newId);
+                        } catch (err) {
+                          onError((err as Error)?.message ?? "Could not split the child out.");
+                        }
+                      }}
+                    >
+                      Split out
+                    </button>
+                  )}
                   <button
                     className="btn"
                     style={{ padding: "2px 8px", fontSize: 11, color: "#991b1b" }}

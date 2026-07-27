@@ -92,7 +92,7 @@ export default function SalesImportPage() {
       children += l.children.length;
       activities += l.activities.length;
       warnings += l.warnings.length;
-      if (!l.campusName) noCampus += 1;
+      if (l.campusNames.length === 0) noCampus += 1;
       byStatus[l.status] += 1;
     }
     return { children, activities, warnings, noCampus, byStatus };
@@ -126,7 +126,7 @@ export default function SalesImportPage() {
         const { data: lead, error } = await supabase
           .from("sales_leads")
           .insert({
-            campus_id: l.campusName ? campusByName.get(l.campusName) ?? null : null,
+            campus_ids: l.campusNames.map((n) => campusByName.get(n)).filter(Boolean) as string[],
             status: l.status,
             parent_first_name: l.parent_first_name,
             parent_last_name: l.parent_last_name,
@@ -288,7 +288,7 @@ export default function SalesImportPage() {
                     <tr key={i} style={{ borderTop: "1px solid #f1f5f9" }}>
                       <td style={td}>{`${l.parent_last_name}, ${l.parent_first_name}`.replace(/^,\s*/, "")}</td>
                       <td style={td}>{l.status}</td>
-                      <td style={td}>{l.campusName ?? <span className="subtle">—</span>}</td>
+                      <td style={td}>{l.campusNames.join(" + ") || <span className="subtle">—</span>}</td>
                       <td style={td}>{l.phone || l.email || <span className="subtle">—</span>}</td>
                       <td style={td}>{l.children.map((c) => c.name || "(unnamed)").join(", ") || <span className="subtle">—</span>}</td>
                       <td style={td}>{normalizeSourceName(l.sourceName) ?? <span className="subtle">—</span>}</td>

@@ -17,8 +17,10 @@ import {
   leadName,
   leadPrograms,
   leadSortName,
+  lostToOtherCampus,
   nextActionState,
   sourceLabel,
+  statusForCampus,
   todayLocal,
 } from "@/lib/sales";
 
@@ -131,15 +133,32 @@ export default function SalesLeadsPage() {
     [campuses]
   );
 
+  /** "Torrance PV + North Torrance" for a family touring both. */
+  const campusLabel = useCallback(
+    (ids: string[]) => {
+      if (!ids?.length) return "—";
+      return ids.map((id) => campuses.find((c) => c.id === id)?.name ?? "?").join(" + ");
+    },
+    [campuses]
+  );
+
+  // Viewing a single campus? Then a family who chose the OTHER campus reads as
+  // a loss here, not a win. Full admins on "All campuses" see the real status.
+  const viewCampusId = filter !== "all" && filter !== "unassigned" ? filter : null;
+  const statusOf = useCallback(
+    (l: SalesLeadFull) => statusForCampus(l, viewCampusId),
+    [viewCampusId]
+  );
+
   const counts = useMemo(() => ({
-    active: leads.filter((l) => l.status === "active").length,
-    inactive: leads.filter((l) => l.status === "inactive").length,
-    enrolled: leads.filter((l) => l.status === "enrolled").length,
-  }), [leads]);
+    active: leads.filter((l) => statusOf(l) === "active").length,
+    inactive: leads.filter((l) => statusOf(l) === "inactive").length,
+    enrolled: leads.filter((l) => statusOf(l) === "enrolled").length,
+  }), [leads, statusOf]);
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let rows = leads.filter((l) => l.status === tab);
+    let rows = leads.filter((l) => statusOf(l) === tab);
 
     if (q) {
       rows = rows.filter((l) => {
@@ -189,29 +208,31 @@ export default function SalesLeadsPage() {
       }
     });
     return sorted;
-  }, [leads, tab, search, sortKey, sortAsc]);
+  }, [leads, tab, search, sortKey, sortAsc, statusOf]);
 
   const dueSoon = useMemo(() => {
     const today = todayLocal();
-    const act = leads.filter((l) => l.status === "active" && l.next_action_date);
+    const act = leads.filter((l) => statusOf(l) === "active" && l.next_action_date);
     return {
       overdue: act.filter((l) => (l.next_action_date as string) < today).length,
       today: act.filter((l) => l.next_action_date === today).length,
     };
-  }, [leads]);
+  }, [leads, statusOf]);
 
   function exportCsv() {
     const cols = [
-      "Status", "Campus", "Parent last name", "Parent first name", "Phone", "Email", "City",
-      "How they heard", "Call or tour", "Inquiry date", "Desired start", "Desired start (note)",
+      "Status", "Campuses", "Enrolled at", "Parent last name", "Parent first name", "Phone", "Email", "City",
+      "How they heard", "Referred by", "Call or tour", "Inquiry date", "Desired start", "Desired start (note)",
       "Next action date", "Next action type", "Next action note", "Owner", "Time zone",
       "Preferred language", "Children", "Programs", "Notes",
     ];
     const rows = visible.map((l) => [
-      SALES_STATUS_LABEL[l.status],
-      campusName(l.campus_id),
+      SALES_STATUS_LABEL[statusOf(l)],
+      campusLabel(l.campus_ids),
+      l.enrolled_campus_id ? campusName(l.enrolled_campus_id) : "",
       l.parent_last_name, l.parent_first_name, l.phone ?? "", l.email ?? "", l.city ?? "",
-      sourceLabel(l), l.first_contact_type ? FIRST_CONTACT_LABEL[l.first_contact_type] : "",
+      sourceLabel(l), l.referred_by ?? "",
+      l.first_contact_type ? FIRST_CONTACT_LABEL[l.first_contact_type] : "",
       l.inquiry_date, l.desired_start_date ?? "", l.desired_start_note ?? "",
       l.next_action_date ?? "", l.next_action_type ?? "", l.next_action_note ?? "",
       l.staff_name ?? "", l.time_zone ?? "", l.preferred_language ?? "",
@@ -353,7 +374,7 @@ export default function SalesLeadsPage() {
                   <th style={th}>City</th>
                   <th style={th}>How they heard</th>
                   <th style={th}>First contact</th>
-                  {filter === "all" && <th style={th}>Campus</th>}
+                  <th style={th}>Campus</th>
                   <th style={th}>Status</th>
                 </tr>
               </thead>
@@ -373,10 +394,25 @@ export default function SalesLeadsPage() {
                     {tab === "active" && <td style={td}>{fmtDate(l.desired_start_date) || l.desired_start_note || <span className="subtle">—</span>}</td>}
                     {tab === "active" && <td style={td}><NextActionCell lead={l} /></td>}
                     <td style={td}>{l.city || <span className="subtle">—</span>}</td>
-                    <td style={td}>{sourceLabel(l) || <span className="subtle">—</span>}</td>
+                    <td style={td}>
+                      {sourceLabel(l) || <span className="subtle">—</span>}
+                      {l.referred_by && <div className="subtle" style={{ fontSize: 12 }}>via {l.referred_by}</div>}
+                    </td>
                     <td style={td}>{l.first_contact_type ? FIRST_CONTACT_LABEL[l.first_contact_type] : <span className="subtle">—</span>}</td>
-                    {filter === "all" && <td style={td}>{campusName(l.campus_id)}</td>}
-                    <td style={td}><StatusPill status={l.status} /></td>
+                    <td style={td}>
+                      {campusLabel(l.campus_ids)}
+                      {l.campus_ids.length > 1 && (
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#7c3aed" }}>Both</div>
+                      )}
+                    </td>
+                    <td style={td}>
+                      <StatusPill status={statusOf(l)} />
+                      {lostToOtherCampus(l, viewCampusId) && (
+                        <div className="subtle" style={{ fontSize: 11, marginTop: 3 }}>
+                          Enrolled at {campusName(l.enrolled_campus_id)}
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

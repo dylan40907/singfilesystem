@@ -10,6 +10,8 @@ import {
   conversionBySource,
   fetchLeads,
   formatPct,
+  statusForCampus,
+  topProducer,
 } from "@/lib/sales";
 
 /**
@@ -55,7 +57,14 @@ export default function SalesReportsPage() {
     [leads, from, to]
   );
 
-  const { overall, bySource } = useMemo(() => conversionBySource(inRange), [inRange]);
+  // On a single campus, a family who chose the other campus is a loss here.
+  const viewCampusId = filter !== "all" && filter !== "unassigned" ? filter : null;
+
+  const { overall, bySource } = useMemo(
+    () => conversionBySource(inRange, viewCampusId),
+    [inRange, viewCampusId]
+  );
+  const best = useMemo(() => topProducer(bySource), [bySource]);
 
   const byContact = useMemo(() => {
     const map = new Map<string, ConversionRow>();
@@ -63,28 +72,34 @@ export default function SalesReportsPage() {
       const key = l.first_contact_type ?? "__none__";
       const label = l.first_contact_type ? FIRST_CONTACT_LABEL[l.first_contact_type as FirstContactType] : "Not recorded";
       const r = map.get(key) ?? { key, label, total: 0, enrolled: 0, inactive: 0, active: 0, rate: null };
+      const st = statusForCampus(l, viewCampusId);
       r.total += 1;
-      if (l.status === "enrolled") r.enrolled += 1;
-      else if (l.status === "inactive") r.inactive += 1;
+      if (st === "enrolled") r.enrolled += 1;
+      else if (st === "inactive") r.inactive += 1;
       else r.active += 1;
       map.set(key, r);
     }
     return [...map.values()]
       .map((r) => ({ ...r, rate: r.enrolled + r.inactive > 0 ? r.enrolled / (r.enrolled + r.inactive) : null }))
       .sort((a, b) => b.total - a.total);
-  }, [inRange]);
+  }, [inRange, viewCampusId]);
 
   const byCampus = useMemo(() => {
     const map = new Map<string, ConversionRow>();
+    // A lead touring both campuses counts toward each — so these rows sum to
+    // more than the overall total, which is the honest picture per campus.
     for (const l of inRange) {
-      const key = l.campus_id ?? "__none__";
-      const label = campuses.find((c) => c.id === l.campus_id)?.name ?? "No campus";
-      const r = map.get(key) ?? { key, label, total: 0, enrolled: 0, inactive: 0, active: 0, rate: null };
-      r.total += 1;
-      if (l.status === "enrolled") r.enrolled += 1;
-      else if (l.status === "inactive") r.inactive += 1;
-      else r.active += 1;
-      map.set(key, r);
+      const ids = l.campus_ids?.length ? l.campus_ids : ["__none__"];
+      for (const id of ids) {
+        const label = campuses.find((c) => c.id === id)?.name ?? "No campus";
+        const r = map.get(id) ?? { key: id, label, total: 0, enrolled: 0, inactive: 0, active: 0, rate: null };
+        const st = statusForCampus(l, id === "__none__" ? null : id);
+        r.total += 1;
+        if (st === "enrolled") r.enrolled += 1;
+        else if (st === "inactive") r.inactive += 1;
+        else r.active += 1;
+        map.set(id, r);
+      }
     }
     return [...map.values()]
       .map((r) => ({ ...r, rate: r.enrolled + r.inactive > 0 ? r.enrolled / (r.enrolled + r.inactive) : null }))
@@ -173,6 +188,13 @@ export default function SalesReportsPage() {
             <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 14 }}>Overall</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14 }}>
               <Stat label="Conversion rate" value={formatPct(overall.rate)} big accent />
+              <Stat
+                label="Top producer"
+                value={best ? best.label : "—"}
+                sub={best ? `${best.enrolled} enrolled · ${formatPct(best.rate)} conversion` : "no enrolments yet"}
+                big
+                accent
+              />
               <Stat label="Total leads" value={String(overall.total)} />
               <Stat label="Enrolled" value={String(overall.enrolled)} />
               <Stat label="Inactive" value={String(overall.inactive)} />
@@ -236,11 +258,12 @@ function Breakdown({ title, rows, total }: { title: string; rows: ConversionRow[
   );
 }
 
-function Stat({ label, value, big, accent }: { label: string; value: string; big?: boolean; accent?: boolean }) {
+function Stat({ label, value, sub, big, accent }: { label: string; value: string; sub?: string; big?: boolean; accent?: boolean }) {
   return (
     <div>
       <div style={lbl}>{label}</div>
-      <div style={{ fontWeight: 900, fontSize: big ? 30 : 22, color: accent ? "#e6178d" : "#111827" }}>{value}</div>
+      <div style={{ fontWeight: 900, fontSize: big ? 30 : 22, color: accent ? "#e6178d" : "#111827", lineHeight: 1.15 }}>{value}</div>
+      {sub && <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }

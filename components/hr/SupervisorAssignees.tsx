@@ -75,7 +75,9 @@ export default function SupervisorAssignees({ supervisorProfileId }: { superviso
 
   const candidates = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const pool = allTeachers.filter((t) => !assignedIds.has(t.id));
+    // Deactivated accounts can't be newly assigned — anyone already assigned
+    // still shows above (with an "inactive" tag) so they can be removed.
+    const pool = allTeachers.filter((t) => !assignedIds.has(t.id) && t.is_active);
     if (!q) return pool.slice(0, 8); // keep the list short until they search
     return pool.filter((t) => labelForUser(t).toLowerCase().includes(q)).slice(0, 20);
   }, [allTeachers, assignedIds, search]);

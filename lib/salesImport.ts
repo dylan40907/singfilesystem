@@ -26,7 +26,8 @@ export type ParsedLead = {
   sheet: string;
   rows: number[];
   status: "active" | "inactive" | "enrolled";
-  campusName: string | null;
+  /** Every campus named on the row — families often listed both. */
+  campusNames: string[];
   parent_first_name: string;
   parent_last_name: string;
   phone: string | null;
@@ -253,13 +254,18 @@ export function parseInquiryLog(sheets: SheetRows[]): ParseResult {
         warnings.push(`Row ${r + 1}: "${email}" doesn't look like an email.`);
       }
 
+      // A row may name one campus or both ("North Torrance, Torrance/PV").
       const campusRaw = at(L.campus);
-      const campusName = campusRaw
-        ? /north/i.test(campusRaw) && /pv|torrance\/pv/i.test(campusRaw)
-          ? null // listed both campuses — needs a human decision
-          : /north/i.test(campusRaw) ? "North Torrance" : "Torrance PV"
-        : sheetCampus;
-      if (campusRaw && !campusName) warnings.push(`Row ${r + 1}: campus is "${campusRaw}" (both) — left unset.`);
+      const campusNames: string[] = [];
+      if (campusRaw) {
+        if (/north/i.test(campusRaw)) campusNames.push("North Torrance");
+        // "Torrance/PV" contains "Torrance", so look for the PV half specifically.
+        if (/pv|palos verdes|torrance\s*\/|^torrance$/i.test(campusRaw)) campusNames.push("Torrance PV");
+      }
+      if (campusNames.length === 0 && sheetCampus) campusNames.push(sheetCampus);
+      if (campusRaw && campusNames.length === 0) {
+        warnings.push(`Row ${r + 1}: campus "${campusRaw}" not recognised — left unset.`);
+      }
 
       const desiredRaw = at(L.desired);
       const desired = parseDate(desiredRaw);
@@ -288,7 +294,7 @@ export function parseInquiryLog(sheets: SheetRows[]): ParseResult {
         sheet,
         rows: [r + 1],
         status,
-        campusName,
+        campusNames,
         parent_first_name: first,
         parent_last_name: last,
         phone: phone || null,
@@ -324,7 +330,9 @@ export function parseInquiryLog(sheets: SheetRows[]): ParseResult {
           if (!existing.activities.some((x) => x.note === a.note)) existing.activities.push(a);
         }
         if (!existing.notes && draft.notes) existing.notes = draft.notes;
-        if (!existing.campusName && draft.campusName) existing.campusName = draft.campusName;
+        for (const c of draft.campusNames) {
+          if (!existing.campusNames.includes(c)) existing.campusNames.push(c);
+        }
         if (!existing.sourceName && draft.sourceName) existing.sourceName = draft.sourceName;
       } else {
         byKey.set(key, draft);
