@@ -56,6 +56,7 @@ type ManualAdjRow = {
   new_value: number;
   notes: string | null;
   changed_at: string;
+  notes_edited_at: string | null;
   user_profiles: { full_name: string | null } | null;
 };
 
@@ -186,6 +187,9 @@ function decToHM(hours: number): [number, number] {
 function hmToDec(h: number, m: number): number {
   return h + m / 60;
 }
+
+/** Compact buttons that sit inline in the Change History rows. */
+const miniHistBtn: React.CSSProperties = { padding: "2px 8px", fontSize: 11 };
 
 function fmtHours(h: number): string {
   const totalMins = Math.round(h * 60);
@@ -420,6 +424,10 @@ export default function LeavePage() {
   const [editHistory, setEditHistory] = useState<ManualAdjRow[]>([]);
   const [editHistoryLoading, setEditHistoryLoading] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
+  // Correcting / removing a past change-history note.
+  const [histEditId, setHistEditId] = useState<string | null>(null);
+  const [histEditNotes, setHistEditNotes] = useState("");
+  const [histBusyId, setHistBusyId] = useState<string | null>(null);
   // Escape closes the manual-balance edit modal (unless a save is in flight).
   useEscapeKey(() => setEditField(null), !!editField && !editBusy);
 
@@ -940,6 +948,78 @@ export default function LeavePage() {
     setEditHistoryLoading(false);
   }
 
+  /** Re-read the change history for the field whose modal is open. */
+  async function reloadEditHistory() {
+    if (!editField || !selectedEmployeeId) return;
+    const { data } = await supabase
+      .from("hr_leave_manual_adjustments")
+      .select("*, user_profiles(full_name)")
+      .eq("employee_id", selectedEmployeeId)
+      .eq("year", year)
+      .eq("field", editField)
+      .order("changed_at", { ascending: false });
+    setEditHistory((data ?? []) as ManualAdjRow[]);
+
+    // The balance-log feed reads from the same table.
+    const { data: all } = await supabase
+      .from("hr_leave_manual_adjustments")
+      .select("*, user_profiles(full_name)")
+      .eq("employee_id", selectedEmployeeId)
+      .eq("year", year)
+      .order("changed_at", { ascending: false });
+    setAllAdjustments((all ?? []) as ManualAdjRow[]);
+  }
+
+  /**
+   * Correct the note on a past change. The old → new figures stay as they were:
+   * they're the record of what actually happened, and a history you can rewrite
+   * isn't a history. The note is stamped as edited so it's clear it was revised.
+   */
+  async function saveHistoryNote(row: ManualAdjRow) {
+    setHistBusyId(row.id);
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from("hr_leave_manual_adjustments")
+        .update({
+          notes: histEditNotes.trim() || null,
+          notes_edited_at: new Date().toISOString(),
+          notes_edited_by: auth.user?.id ?? null,
+        })
+        .eq("id", row.id);
+      if (error) throw error;
+      setHistEditId(null);
+      await reloadEditHistory();
+    } catch (e) {
+      setError("Could not update the note: " + ((e as Error)?.message ?? "unknown"));
+    } finally {
+      setHistBusyId(null);
+    }
+  }
+
+  /**
+   * Remove a change-history entry. This is only the written record — balances
+   * live on hr_leave_balances, so nobody's totals move as a result.
+   */
+  async function deleteHistoryRow(row: ManualAdjRow) {
+    const ok = await confirm(
+      `Delete this history entry?\n\n${fmtHours(Number(row.old_value))} → ${fmtHours(Number(row.new_value))}` +
+        `\n\nThis only removes the note from the record. The balance itself does not change.`,
+      { title: "Delete history entry", confirmLabel: "Delete", danger: true }
+    );
+    if (!ok) return;
+    setHistBusyId(row.id);
+    try {
+      const { error } = await supabase.from("hr_leave_manual_adjustments").delete().eq("id", row.id);
+      if (error) throw error;
+      await reloadEditHistory();
+    } catch (e) {
+      setError("Could not delete the entry: " + ((e as Error)?.message ?? "unknown"));
+    } finally {
+      setHistBusyId(null);
+    }
+  }
+
   async function saveEdit() {
     if (!editField || !selectedEmployeeId) return;
     const newVal = editField === "unpaid" ? parseFloat(editNewValue) : hmToDec(editNewH, editNewM);
@@ -1144,16 +1224,69 @@ export default function LeavePage() {
                             →
                             <span style={{ marginLeft: 6, color: "#111827" }}>{fmtHours(Number(h.new_value))}</span>
                           </div>
-                          <div style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>
-                            {new Date(h.changed_at).toLocaleString()}
+                          <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                            <div style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "nowrap" }}>
+                              {new Date(h.changed_at).toLocaleString()}
+                            </div>
+                            {histEditId !== h.id && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  style={miniHistBtn}
+                                  disabled={histBusyId === h.id}
+                                  onClick={() => { setHistEditId(h.id); setHistEditNotes(h.notes ?? ""); }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  style={{ ...miniHistBtn, color: "#991b1b" }}
+                                  disabled={histBusyId === h.id}
+                                  onClick={() => void deleteHistoryRow(h)}
+                                >
+                                  {histBusyId === h.id ? "…" : "Delete"}
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
-                        {(h.user_profiles?.full_name || h.notes) && (
-                          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>
-                            {h.user_profiles?.full_name && <span>{h.user_profiles.full_name}</span>}
-                            {h.user_profiles?.full_name && h.notes && <span> · </span>}
-                            {h.notes && <em>{h.notes}</em>}
+
+                        {histEditId === h.id ? (
+                          <div style={{ marginTop: 8 }}>
+                            <textarea
+                              className="textarea"
+                              style={{ minHeight: 80, fontSize: 13 }}
+                              value={histEditNotes}
+                              autoFocus
+                              onChange={(e) => setHistEditNotes(e.target.value)}
+                            />
+                            <div className="row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 6 }}>
+                              <button type="button" className="btn" style={miniHistBtn} disabled={histBusyId === h.id}
+                                onClick={() => setHistEditId(null)}>
+                                Cancel
+                              </button>
+                              <button type="button" className="btn btn-primary" style={miniHistBtn} disabled={histBusyId === h.id}
+                                onClick={() => void saveHistoryNote(h)}>
+                                {histBusyId === h.id ? "Saving…" : "Save note"}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+                              The figures above stay as recorded — only the note changes.
+                            </div>
                           </div>
+                        ) : (
+                          (h.user_profiles?.full_name || h.notes) && (
+                            <div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>
+                              {h.user_profiles?.full_name && <span>{h.user_profiles.full_name}</span>}
+                              {h.user_profiles?.full_name && h.notes && <span> · </span>}
+                              {h.notes && <em>{h.notes}</em>}
+                              {h.notes_edited_at && (
+                                <span style={{ color: "#9ca3af" }}> · edited {new Date(h.notes_edited_at).toLocaleDateString()}</span>
+                              )}
+                            </div>
+                          )
                         )}
                       </div>
                     ))}
