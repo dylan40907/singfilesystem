@@ -10,9 +10,12 @@ import { CampusProvider } from "@/lib/CampusContext";
 export default function LayoutShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
-  // Clock page + public legal pages: no navbar, no page wrapper — standalone UI.
+  // Clock page, public legal pages and the public tour booking pages: no navbar,
+  // no page wrapper — standalone UI. /book/* is also embedded in Squarespace via
+  // an iframe, so it must render nothing but itself.
   if (
     pathname === "/clock" || pathname.startsWith("/clock/") ||
+    pathname === "/book" || pathname.startsWith("/book/") ||
     pathname === "/privacy" || pathname === "/hr-privacy" || pathname === "/terms" || pathname === "/delete-account"
   ) {
     return <>{children}</>;
@@ -61,6 +64,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
           title="Sales"
           links={[
             { href: "/admin/sales", label: "Leads", tab: "leads" },
+            { href: "/admin/sales/tours", label: "Tours", tab: "tours" },
             { href: "/admin/sales/reports", label: "Reports", tab: "reports" },
             { href: "/admin/sales/settings", label: "Settings", tab: "settings" },
           ]}

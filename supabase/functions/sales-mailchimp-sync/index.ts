@@ -89,15 +89,21 @@ Deno.serve(async (req) => {
 
   if (!SUPABASE_URL || !SERVICE_KEY) return json(500, { error: "Server not configured" });
 
-  // Caller must be an active full admin.
-  const authHeader = req.headers.get("Authorization") ?? "";
-  if (!authHeader) return json(401, { error: "Missing Authorization header." });
-  const caller = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
-  const { data: userData, error: userErr } = await caller.auth.getUser();
-  if (userErr || !userData?.user) return json(401, { error: "Not authenticated." });
-  const { data: prof } = await caller
-    .from("user_profiles").select("role, is_active").eq("id", userData.user.id).single();
-  if (!prof?.is_active || prof.role !== "admin") return json(403, { error: "Admin-only." });
+  // Two callers: the database trigger (shared secret) when a lead's email is
+  // added or changed, and an admin pressing Test/Sync in Settings.
+  const HOOK_SECRET = (Deno.env.get("SALES_HOOK_SECRET") ?? "saleshook_5c1d93af7e02b4681fa7").trim();
+  const fromTrigger = (req.headers.get("x-sales-hook-secret") ?? "").trim() === HOOK_SECRET;
+
+  if (!fromTrigger) {
+    const authHeader = req.headers.get("Authorization") ?? "";
+    if (!authHeader) return json(401, { error: "Missing Authorization header." });
+    const caller = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: authHeader } } });
+    const { data: userData, error: userErr } = await caller.auth.getUser();
+    if (userErr || !userData?.user) return json(401, { error: "Not authenticated." });
+    const { data: prof } = await caller
+      .from("user_profiles").select("role, is_active").eq("id", userData.user.id).single();
+    if (!prof?.is_active || prof.role !== "admin") return json(403, { error: "Admin-only." });
+  }
 
   if (!API_KEY) {
     return json(400, {
