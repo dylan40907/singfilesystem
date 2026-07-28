@@ -62,6 +62,9 @@ export type SalesSource = {
   is_active: boolean;
 };
 
+/** The programs a family can enquire about. */
+export const PROGRAMS = ["Preschool", "HWC", "Language Classes", "Camps"] as const;
+
 export type SalesLeadChild = {
   id: string;
   lead_id: string;
@@ -69,6 +72,9 @@ export type SalesLeadChild = {
   dob: string | null;
   dob_note: string | null;
   program: string | null;
+  /** Siblings often start in different terms, so this lives per child. */
+  desired_start_date: string | null;
+  desired_start_note: string | null;
   schedule: string | null;
   learned_chinese: string | null;
   previous_school: string | null;
@@ -82,6 +88,8 @@ export type SalesActivity = {
   activity_date: string;
   kind: ActivityKind;
   note: string;
+  /** Who actually made the call / sent the email — not necessarily who typed it up. */
+  handled_by: string | null;
   created_by: string | null;
   created_at: string;
 };
@@ -113,8 +121,6 @@ export type SalesLead = {
   household_id: string | null;
   first_contact_type: FirstContactType | null;
   inquiry_date: string;
-  desired_start_date: string | null;
-  desired_start_note: string | null;
   notes: string | null;
   staff_owner_id: string | null;
   staff_name: string | null;
@@ -122,6 +128,8 @@ export type SalesLead = {
   next_action_date: string | null;
   next_action_type: ActionType | null;
   next_action_note: string | null;
+  /** Who owes this follow-up. Reminders go to them first. */
+  next_action_assigned_to: string | null;
 
   status_changed_at: string | null;
   converted_at: string | null;
@@ -193,13 +201,17 @@ export async function fetchActivities(leadId: string): Promise<SalesActivity[]> 
   return (data ?? []) as SalesActivity[];
 }
 
-/** Admins and campus admins who can own a lead. */
+/**
+ * Everyone who can own a lead or be assigned a follow-up: admins, campus admins
+ * and supervisors. ("App Supervisor" is a supervisor carrying the learning
+ * flag, so it's already included.)
+ */
 export async function fetchAssignableStaff(): Promise<{ id: string; full_name: string | null; role: string }[]> {
   const { data, error } = await supabase
     .from("user_profiles")
     .select("id, full_name, role")
     .eq("is_active", true)
-    .in("role", ["admin", "campus_admin"])
+    .in("role", ["admin", "campus_admin", "supervisor"])
     .order("full_name");
   if (error) throw error;
   return (data ?? []) as { id: string; full_name: string | null; role: string }[];
@@ -269,7 +281,7 @@ export async function setLeadStatus(
 
 export async function addActivity(
   leadId: string,
-  input: { kind: ActivityKind; note: string; activity_date?: string }
+  input: { kind: ActivityKind; note: string; activity_date?: string; handled_by?: string | null }
 ): Promise<void> {
   const { data: auth } = await supabase.auth.getUser();
   const { error } = await supabase.from("sales_activities").insert({
@@ -277,9 +289,56 @@ export async function addActivity(
     kind: input.kind,
     note: input.note,
     activity_date: input.activity_date ?? todayLocal(),
+    handled_by: input.handled_by ?? null,
     created_by: auth.user?.id ?? null,
   });
   if (error) throw error;
+}
+
+/**
+ * Record what was done AND what happens next, in one step.
+ *
+ * A lead that's still in play must always have a next action owned by somebody
+ * — that's the whole point of the follow-up reminders. Logging on its own would
+ * let a family go quiet the moment the last action was ticked off, so the two
+ * are deliberately submitted together and both are required.
+ *
+ * The next action is written first: if that fails, no activity is recorded and
+ * the pending action stays put, rather than the log advancing while the lead
+ * silently loses its follow-up.
+ */
+export async function logActionAndSetNext(
+  leadId: string,
+  done: { kind: ActivityKind; note: string; activity_date: string; handled_by: string },
+  next: { date: string; type: ActionType; note: string; assigned_to: string }
+): Promise<void> {
+  if (!done.handled_by) throw new Error("Choose who handled this.");
+  if (!done.note.trim()) throw new Error("Write what happened.");
+  if (!next.date) throw new Error("Set a date for the next action.");
+  if (!next.note.trim()) throw new Error("Add a note for the next action.");
+  if (!next.assigned_to) throw new Error("Assign the next action to someone.");
+
+  const { error: naErr } = await supabase
+    .from("sales_leads")
+    .update({
+      next_action_date: next.date,
+      next_action_type: next.type,
+      next_action_note: next.note.trim(),
+      next_action_assigned_to: next.assigned_to,
+      // Re-arm both reminder tracks for the new date.
+      alert_due_sent_for: null,
+      alert_nag_sent_for: null,
+      overdue_alert_last_at: null,
+    })
+    .eq("id", leadId);
+  if (naErr) throw naErr;
+
+  await addActivity(leadId, {
+    kind: done.kind,
+    note: done.note.trim(),
+    activity_date: done.activity_date,
+    handled_by: done.handled_by,
+  });
 }
 
 export async function deleteActivity(id: string): Promise<void> {
@@ -293,25 +352,36 @@ export async function deleteActivity(id: string): Promise<void> {
  */
 export async function setNextAction(
   leadId: string,
-  input: { date: string; type: ActionType; note: string }
+  input: { date: string; type: ActionType; note: string; assigned_to: string }
 ): Promise<void> {
+  if (!input.assigned_to) throw new Error("Assign the next action to someone.");
   const { error } = await supabase
     .from("sales_leads")
     .update({
       next_action_date: input.date,
       next_action_type: input.type,
       next_action_note: input.note,
+      next_action_assigned_to: input.assigned_to,
       alert_due_sent_for: null,
       alert_nag_sent_for: null,
+      overdue_alert_last_at: null,
     })
     .eq("id", leadId);
   if (error) throw error;
 }
 
+/**
+ * Only used when a lead is closed out — an active lead always keeps a pending
+ * action, otherwise nothing brings it back to anyone's attention.
+ */
 export async function clearNextAction(leadId: string): Promise<void> {
   const { error } = await supabase
     .from("sales_leads")
-    .update({ next_action_date: null, next_action_type: null, next_action_note: null })
+    .update({
+      next_action_date: null, next_action_type: null,
+      next_action_note: null, next_action_assigned_to: null,
+      overdue_alert_last_at: null,
+    })
     .eq("id", leadId);
   if (error) throw error;
 }
@@ -454,8 +524,6 @@ export async function splitChildToNewLead(lead: SalesLeadFull, childId: string):
       referred_by: lead.referred_by,
       first_contact_type: lead.first_contact_type,
       inquiry_date: lead.inquiry_date,
-      desired_start_date: lead.desired_start_date,
-      desired_start_note: lead.desired_start_note,
       staff_owner_id: lead.staff_owner_id,
       staff_name: lead.staff_name,
       notes: lead.notes,
@@ -518,9 +586,16 @@ export function sourceLabel(l: SalesLeadFull): string {
   return l.source_other ?? "";
 }
 
-/** Earliest desired start across the family's children, else the lead's own. */
+/** Earliest desired start across the family's children. */
 export function leadStartDate(l: SalesLeadFull): string | null {
-  return l.desired_start_date;
+  const dates = l.children.map((c) => c.desired_start_date).filter(Boolean) as string[];
+  return dates.length ? dates.sort()[0] : null;
+}
+
+/** Free-text start dates ("ASAP", "July or August"), for when no real date is set. */
+export function leadStartNote(l: SalesLeadFull): string {
+  const notes = l.children.map((c) => (c.desired_start_note ?? "").trim()).filter(Boolean);
+  return [...new Set(notes)].join("; ");
 }
 
 export type DueState = "none" | "upcoming" | "today" | "overdue";

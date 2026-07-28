@@ -43,7 +43,10 @@ export function availableModes(profile: TeacherProfile | null): PortalMode[] {
   const modes: PortalMode[] = ["curriculum"];
   // Students mirrors admissions access: admins, campus admins, supervisors.
   if (isAdmin || isCampusAdmin || isSupervisor) modes.push("hr", "students");
-  if (isAdmin || isCampusAdmin) modes.push("sales");
+  // Sales tracks prospective families, not enrolled ones — supervisors work
+  // those leads too, and campus scoping doesn't apply since a family may end up
+  // at either campus (or neither).
+  if (isAdmin || isCampusAdmin || isSupervisor) modes.push("sales");
   return modes;
 }
 

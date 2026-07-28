@@ -26,8 +26,12 @@ import {
  *     This is what the spreadsheet's "Sheet2" tally actually computed.
  */
 export default function SalesReportsPage() {
-  const { loading: campusLoading, profile, campuses, filter, setFilter, isTrueAdmin } = useCampusFilter();
-  const canUse = !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin");
+  const { loading: campusLoading, profile, campuses } = useCampusFilter();
+  // Own filter, not the shared HR one — see the leads page for why.
+  const [filter, setFilter] = useState<string>("all");
+  const canUse =
+    !!profile?.is_active &&
+    (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
   const [leads, setLeads] = useState<SalesLeadFull[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,16 +160,14 @@ export default function SalesReportsPage() {
 
       <div className="card">
         <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          {isTrueAdmin && (
-            <div>
-              <label style={lbl}>Campus</label>
-              <select className="select" value={filter} onChange={(e) => setFilter(e.target.value)}>
-                <option value="all">All campuses</option>
-                {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                <option value="unassigned">No campus</option>
-              </select>
-            </div>
-          )}
+          <div>
+            <label style={lbl}>Campus</label>
+            <select className="select" value={filter} onChange={(e) => setFilter(e.target.value)}>
+              <option value="all">All campuses</option>
+              {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option value="unassigned">No campus</option>
+            </select>
+          </div>
           <div>
             <label style={lbl}>Inquiries from</label>
             <input className="input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />

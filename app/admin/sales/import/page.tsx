@@ -139,8 +139,6 @@ export default function SalesImportPage() {
             inquiry_date:
               l.activities.map((a) => a.activity_date).filter(Boolean).sort()[0] ??
               new Date().toISOString().slice(0, 10),
-            desired_start_date: l.desired_start_date,
-            desired_start_note: l.desired_start_note,
             notes: l.notes,
             staff_name: l.staff_name,
             converted_at: l.status === "enrolled" ? new Date().toISOString() : null,
@@ -153,8 +151,16 @@ export default function SalesImportPage() {
         leadCount += 1;
 
         if (l.children.length) {
+          // The sheet's desired-start sat on the row, i.e. per child — which is
+          // where it now lives, so it carries straight over.
           const { error: cErr } = await supabase.from("sales_lead_children").insert(
-            l.children.map((c, idx) => ({ lead_id: lead.id, ...c, order_index: idx }))
+            l.children.map((c, idx) => ({
+              lead_id: lead.id,
+              ...c,
+              desired_start_date: l.desired_start_date,
+              desired_start_note: l.desired_start_note,
+              order_index: idx,
+            }))
           );
           if (cErr) throw new Error(`Children for ${l.parent_last_name}: ${cErr.message}`);
           childCount += l.children.length;

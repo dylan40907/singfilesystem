@@ -17,6 +17,8 @@ import {
   leadName,
   leadPrograms,
   leadSortName,
+  leadStartDate,
+  leadStartNote,
   lostToOtherCampus,
   nextActionState,
   sourceLabel,
@@ -88,9 +90,17 @@ function fmtDate(d: string | null): string {
 export default function SalesLeadsPage() {
   const router = useRouter();
   const { modal: dialogModal } = useDialog();
-  const { loading: campusLoading, profile, campuses, filter, setFilter, isTrueAdmin } = useCampusFilter();
+  const { loading: campusLoading, profile, campuses } = useCampusFilter();
+  // Sales keeps its own campus filter rather than the shared HR one: that one
+  // locks campus admins to their own campus, which is exactly the restriction
+  // we don't want here.
+  const [filter, setFilter] = useState<string>("all");
 
-  const canUse = !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin");
+  // Prospective families aren't campus property, so everyone on the sales side
+  // sees every lead regardless of campus.
+  const canUse =
+    !!profile?.is_active &&
+    (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
   const [leads, setLeads] = useState<SalesLeadFull[]>([]);
   const [sources, setSources] = useState<SalesSource[]>([]);
@@ -198,7 +208,7 @@ export default function SalesLeadsPage() {
     sorted.sort((a, b) => {
       switch (sortKey) {
         case "program": return cmpText(leadPrograms(a), leadPrograms(b)) || cmpText(leadSortName(a), leadSortName(b));
-        case "start": return cmpDate(a.desired_start_date, b.desired_start_date) || cmpText(leadSortName(a), leadSortName(b));
+        case "start": return cmpDate(leadStartDate(a), leadStartDate(b)) || cmpText(leadSortName(a), leadSortName(b));
         case "next_action": return cmpDate(a.next_action_date, b.next_action_date) || cmpText(leadSortName(a), leadSortName(b));
         case "city": return cmpText((a.city ?? "").toLowerCase(), (b.city ?? "").toLowerCase()) || cmpText(leadSortName(a), leadSortName(b));
         case "source": return cmpText(sourceLabel(a).toLowerCase(), sourceLabel(b).toLowerCase()) || cmpText(leadSortName(a), leadSortName(b));
@@ -233,7 +243,7 @@ export default function SalesLeadsPage() {
       l.parent_last_name, l.parent_first_name, l.phone ?? "", l.email ?? "", l.city ?? "",
       sourceLabel(l), l.referred_by ?? "",
       l.first_contact_type ? FIRST_CONTACT_LABEL[l.first_contact_type] : "",
-      l.inquiry_date, l.desired_start_date ?? "", l.desired_start_note ?? "",
+      l.inquiry_date, leadStartDate(l) ?? "", leadStartNote(l),
       l.next_action_date ?? "", l.next_action_type ?? "", l.next_action_note ?? "",
       l.staff_name ?? "", l.time_zone ?? "", l.preferred_language ?? "",
       leadChildNames(l), leadPrograms(l), l.notes ?? "",
@@ -314,18 +324,16 @@ export default function SalesLeadsPage() {
           </div>
 
           <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {isTrueAdmin && (
-              <select
-                className="select"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                style={{ minWidth: 150 }}
-              >
-                <option value="all">All campuses</option>
-                {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                <option value="unassigned">No campus</option>
-              </select>
-            )}
+            <select
+              className="select"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              style={{ minWidth: 150 }}
+            >
+              <option value="all">All campuses</option>
+              {campuses.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option value="unassigned">No campus</option>
+            </select>
             <input
               className="input"
               placeholder="Search name, phone, email, city, notes…"
@@ -391,7 +399,7 @@ export default function SalesLeadsPage() {
                     </td>
                     <td style={td}>{leadChildNames(l) || <span className="subtle">—</span>}</td>
                     <td style={td}>{leadPrograms(l) || <span className="subtle">—</span>}</td>
-                    {tab === "active" && <td style={td}>{fmtDate(l.desired_start_date) || l.desired_start_note || <span className="subtle">—</span>}</td>}
+                    {tab === "active" && <td style={td}>{fmtDate(leadStartDate(l)) || leadStartNote(l) || <span className="subtle">—</span>}</td>}
                     {tab === "active" && <td style={td}><NextActionCell lead={l} /></td>}
                     <td style={td}>{l.city || <span className="subtle">—</span>}</td>
                     <td style={td}>

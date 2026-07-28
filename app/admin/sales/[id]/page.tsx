@@ -19,10 +19,10 @@ import {
   SalesLeadFull,
   SalesSource,
   SalesStatus,
-  addActivity,
+  PROGRAMS,
   addChild,
-  clearNextAction,
   deleteActivity,
+  logActionAndSetNext,
   deleteChild,
   deleteLead,
   fetchActivities,
@@ -74,12 +74,20 @@ export default function SalesLeadPage() {
   const [naDate, setNaDate] = useState("");
   const [naType, setNaType] = useState<ActionType>("call");
   const [naNote, setNaNote] = useState("");
+  const [naAssignee, setNaAssignee] = useState("");
   const [naBusy, setNaBusy] = useState(false);
 
-  // Log activity form
+  // "Log what happened + what's next" — the two are submitted together so an
+  // active lead can never be left without a pending follow-up.
+  const [logOpen, setLogOpen] = useState(false);
   const [logKind, setLogKind] = useState<ActivityKind>("call");
   const [logDate, setLogDate] = useState(todayLocal());
   const [logNote, setLogNote] = useState("");
+  const [logHandledBy, setLogHandledBy] = useState("");
+  const [nextDate, setNextDate] = useState("");
+  const [nextType, setNextType] = useState<ActionType>("call");
+  const [nextNote, setNextNote] = useState("");
+  const [nextAssignee, setNextAssignee] = useState("");
   const [logBusy, setLogBusy] = useState(false);
 
   const reload = useCallback(async () => {
@@ -93,6 +101,7 @@ export default function SalesLeadPage() {
       setNaDate(l.next_action_date ?? "");
       setNaType(l.next_action_type ?? "call");
       setNaNote(l.next_action_note ?? "");
+      setNaAssignee(l.next_action_assigned_to ?? "");
       // Only one campus in play? Then converting doesn't need to ask which.
       setEnrollCampusId(l.enrolled_campus_id ?? (l.campus_ids.length === 1 ? l.campus_ids[0] : ""));
       setHousehold(await fetchHousehold(l).catch(() => []));
@@ -124,6 +133,11 @@ export default function SalesLeadPage() {
     [campuses]
   );
 
+  const staffName = useCallback(
+    (id: string | null) => staff.find((s) => s.id === id)?.full_name ?? "someone",
+    [staff]
+  );
+
   function beginEdit() {
     if (!lead) return;
     setDraft({ ...lead });
@@ -147,8 +161,6 @@ export default function SalesLeadPage() {
         referred_by: draft.referred_by?.trim() || null,
         first_contact_type: (draft.first_contact_type as FirstContactType) || null,
         inquiry_date: draft.inquiry_date || todayLocal(),
-        desired_start_date: draft.desired_start_date || null,
-        desired_start_note: draft.desired_start_note?.trim() || null,
         staff_owner_id: draft.staff_owner_id || null,
         notes: draft.notes?.trim() || null,
       });
@@ -164,9 +176,10 @@ export default function SalesLeadPage() {
     if (!lead) return;
     if (!naDate) { setStatus("Pick a date for the next action."); return; }
     if (!naNote.trim()) { setStatus("Add a note for the next action."); return; }
+    if (!naAssignee) { setStatus("Assign the next action to someone."); return; }
     setNaBusy(true);
     try {
-      await setNextAction(lead.id, { date: naDate, type: naType, note: naNote.trim() });
+      await setNextAction(lead.id, { date: naDate, type: naType, note: naNote.trim(), assigned_to: naAssignee });
       setStatus("✅ Next action set.");
       await reload();
     } catch (e) {
@@ -176,18 +189,40 @@ export default function SalesLeadPage() {
     }
   }
 
-  async function logActivity(alsoClearAction: boolean) {
+  /** Open the combined form, pre-filled from the action being completed. */
+  function openLogForm() {
     if (!lead) return;
-    if (!logNote.trim()) { setStatus("Write what happened."); return; }
+    setLogKind((lead.next_action_type as ActivityKind) ?? "call");
+    setLogDate(todayLocal());
+    setLogNote("");
+    setLogHandledBy(lead.next_action_assigned_to ?? lead.staff_owner_id ?? "");
+    setNextDate("");
+    setNextType("call");
+    setNextNote("");
+    setNextAssignee(lead.next_action_assigned_to ?? lead.staff_owner_id ?? "");
+    setLogOpen(true);
+  }
+
+  /**
+   * Records what was done and what happens next together. Both halves are
+   * required, so a lead that's still in play always has someone on the hook for
+   * a next step — that's what the reminders key off.
+   */
+  async function submitLogAndNext() {
+    if (!lead) return;
     setLogBusy(true);
+    setStatus("");
     try {
-      await addActivity(lead.id, { kind: logKind, note: logNote.trim(), activity_date: logDate });
-      if (alsoClearAction) await clearNextAction(lead.id);
-      setLogNote("");
-      setStatus("✅ Logged.");
+      await logActionAndSetNext(
+        lead.id,
+        { kind: logKind, note: logNote, activity_date: logDate, handled_by: logHandledBy },
+        { date: nextDate, type: nextType, note: nextNote, assigned_to: nextAssignee }
+      );
+      setLogOpen(false);
+      setStatus("✅ Logged, and the next follow-up is set.");
       await reload();
     } catch (e) {
-      setStatus("Error: " + ((e as Error)?.message ?? "unknown"));
+      setStatus((e as Error)?.message ?? "Could not save.");
     } finally {
       setLogBusy(false);
     }
@@ -341,43 +376,128 @@ export default function SalesLeadPage() {
         ) : (
           <>
             {lead.next_action_note && (
-              <div style={{ marginBottom: 10, color: "#374151" }}>{lead.next_action_note}</div>
+              <div style={{ marginBottom: 6, color: "#374151" }}>{lead.next_action_note}</div>
             )}
-            <div style={grid3}>
-              <div>
-                <label style={lbl}>Date</label>
-                <input className="input" type="date" value={naDate} onChange={(e) => setNaDate(e.target.value)} />
+            {lead.next_action_assigned_to && (
+              <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>
+                Assigned to <strong>{staffName(lead.next_action_assigned_to)}</strong>
               </div>
-              <div>
-                <label style={lbl}>Action</label>
-                <select className="select" value={naType} onChange={(e) => setNaType(e.target.value as ActionType)}>
-                  {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
-                    <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
-                  ))}
-                </select>
+            )}
+
+            {lead.next_action_date && !logOpen && (
+              <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                <button className="btn btn-primary" onClick={openLogForm}>✓ Mark done &amp; log it</button>
+                <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                  You’ll record what happened and set the next follow-up together.
+                </span>
               </div>
-              <div>
-                <label style={lbl}>Note</label>
+            )}
+
+            {logOpen ? (
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, background: "#fff" }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>1 · What happened</div>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={logDate} onChange={(e) => setLogDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Type</label>
+                    <select className="select" value={logKind} onChange={(e) => setLogKind(e.target.value as ActivityKind)}>
+                      {(["call", "email", "tour", "text", "note", "other"] as ActivityKind[]).map((k) => (
+                        <option key={k} value={k}>{ACTIVITY_KIND_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Who handled it</label>
+                    <select className="select" value={logHandledBy} onChange={(e) => setLogHandledBy(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>Notes</label>
+                <textarea
+                  className="textarea"
+                  style={{ minHeight: 70 }}
+                  value={logNote}
+                  onChange={(e) => setLogNote(e.target.value)}
+                  placeholder="Toured with Lynn, will decide by Friday…"
+                />
+
+                <div style={{ fontWeight: 800, fontSize: 13, margin: "16px 0 10px" }}>
+                  2 · What’s next <span className="subtle" style={{ fontWeight: 500 }}>(required)</span>
+                </div>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Action</label>
+                    <select className="select" value={nextType} onChange={(e) => setNextType(e.target.value as ActionType)}>
+                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
+                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Assign to</label>
+                    <select className="select" value={nextAssignee} onChange={(e) => setNextAssignee(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>What needs doing</label>
+                <input className="input" value={nextNote} onChange={(e) => setNextNote(e.target.value)} placeholder="Call to confirm start date" />
+
+                <div className="row" style={{ gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" onClick={() => void submitLogAndNext()} disabled={logBusy}>
+                    {logBusy ? "Saving…" : "Save both"}
+                  </button>
+                  <button className="btn" onClick={() => setLogOpen(false)} disabled={logBusy}>Cancel</button>
+                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                    To close the lead instead, use Convert or Mark inactive above.
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={naDate} onChange={(e) => setNaDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Action</label>
+                    <select className="select" value={naType} onChange={(e) => setNaType(e.target.value as ActionType)}>
+                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
+                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Assign to</label>
+                    <select className="select" value={naAssignee} onChange={(e) => setNaAssignee(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>What needs doing</label>
                 <input className="input" value={naNote} onChange={(e) => setNaNote(e.target.value)} placeholder="What needs doing?" />
-              </div>
-            </div>
-            <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-              <button className="btn btn-primary" onClick={() => void saveNextAction()} disabled={naBusy}>
-                {naBusy ? "Saving…" : lead.next_action_date ? "Update next action" : "Set next action"}
-              </button>
-              {lead.next_action_date && (
-                <button
-                  className="btn"
-                  disabled={naBusy}
-                  onClick={async () => { await clearNextAction(lead.id); setStatus("Cleared."); await reload(); }}
-                >
-                  Clear
-                </button>
-              )}
-              <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                A reminder goes out on the date, and again if nothing gets logged.
-              </span>
-            </div>
+                <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" onClick={() => void saveNextAction()} disabled={naBusy}>
+                    {naBusy ? "Saving…" : lead.next_action_date ? "Update next action" : "Set next action"}
+                  </button>
+                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                    Reminders go to the assignee and the admins on the day, then every 48 hours until it’s logged.
+                  </span>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -419,7 +539,6 @@ export default function SalesLeadPage() {
             <Field label="Referred by" value={lead.referred_by} />
             <Field label="Call or scheduled tour" value={lead.first_contact_type ? FIRST_CONTACT_LABEL[lead.first_contact_type] : null} />
             <Field label="Inquiry date" value={fmtDate(lead.inquiry_date)} />
-            <Field label="Desired start" value={lead.desired_start_date ? fmtDate(lead.desired_start_date) : lead.desired_start_note} />
             <Field label="Owner" value={staff.find((s) => s.id === lead.staff_owner_id)?.full_name ?? lead.staff_name} />
             <Field label="Campus(es)" value={campusLabel} />
             <Field label="Added" value={fmtDate(lead.created_at.slice(0, 10))} />
@@ -518,8 +637,6 @@ export default function SalesLeadPage() {
               </select>
             </div>
             <Input label="Inquiry date" type="date" value={draft.inquiry_date ?? ""} onChange={(v) => setDraft((d) => ({ ...d, inquiry_date: v }))} />
-            <Input label="Desired start date" type="date" value={draft.desired_start_date ?? ""} onChange={(v) => setDraft((d) => ({ ...d, desired_start_date: v }))} />
-            <Input label="…or in their words" value={draft.desired_start_note ?? ""} onChange={(v) => setDraft((d) => ({ ...d, desired_start_note: v }))} />
             <div style={{ gridColumn: "1 / -1" }}>
               <label style={lbl}>Notes</label>
               <textarea className="textarea" style={{ minHeight: 90 }} value={draft.notes ?? ""} onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))} />
@@ -532,44 +649,19 @@ export default function SalesLeadPage() {
 
       {/* ── History ─────────────────────────────────────────────────────── */}
       <div className="card">
-        <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 12 }}>History</div>
-
-        <div style={grid3}>
-          <div>
-            <label style={lbl}>Date</label>
-            <input className="input" type="date" value={logDate} onChange={(e) => setLogDate(e.target.value)} />
-          </div>
-          <div>
-            <label style={lbl}>What happened</label>
-            <select className="select" value={logKind} onChange={(e) => setLogKind(e.target.value as ActivityKind)}>
-              {(["call", "email", "tour", "text", "note", "other"] as ActivityKind[]).map((k) => (
-                <option key={k} value={k}>{ACTIVITY_KIND_LABEL[k]}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={lbl}>Note</label>
-            <input
-              className="input"
-              value={logNote}
-              onChange={(e) => setLogNote(e.target.value)}
-              placeholder="Toured with Lynn, will decide by Friday…"
-              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void logActivity(false); } }}
-            />
-          </div>
-        </div>
-        <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-          <button className="btn btn-primary" onClick={() => void logActivity(false)} disabled={logBusy}>
-            {logBusy ? "Saving…" : "Log it"}
-          </button>
-          {lead.next_action_date && lead.status === "active" && (
-            <button className="btn" onClick={() => void logActivity(true)} disabled={logBusy}>
-              Log it &amp; clear the pending action
-            </button>
+        <div className="row-between" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ fontWeight: 900, fontSize: 15 }}>History</div>
+          {lead.status === "active" && !logOpen && (
+            <button className="btn" onClick={openLogForm}>+ Log an action</button>
           )}
         </div>
+        {lead.status === "active" && (
+          <div className="subtle" style={{ fontSize: 12, marginBottom: 6 }}>
+            Logging an action also sets the next one — that’s how a lead never goes quiet.
+          </div>
+        )}
 
-        <div style={{ marginTop: 18 }}>
+        <div style={{ marginTop: 6 }}>
           {activities.length === 0 ? (
             <div className="subtle">Nothing logged yet.</div>
           ) : (
@@ -582,7 +674,12 @@ export default function SalesLeadPage() {
                       {ACTIVITY_KIND_LABEL[a.kind]}
                     </span>
                   </div>
-                  <div style={{ flex: 1, color: "#374151", whiteSpace: "pre-wrap" }}>{a.note}</div>
+                  <div style={{ flex: 1, color: "#374151", whiteSpace: "pre-wrap" }}>
+                    {a.note}
+                    {a.handled_by && (
+                      <div className="subtle" style={{ fontSize: 12, marginTop: 2 }}>by {staffName(a.handled_by)}</div>
+                    )}
+                  </div>
                   <button
                     className="btn"
                     style={{ padding: "2px 8px", fontSize: 11, color: "#991b1b" }}
@@ -625,22 +722,29 @@ function ChildrenCard({
   const [dob, setDob] = useState("");
   const [dobNote, setDobNote] = useState("");
   const [program, setProgram] = useState("");
+  const [programOther, setProgramOther] = useState("");
   const [schedule, setSchedule] = useState("");
+  const [start, setStart] = useState("");
+  const [startNote, setStartNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
-    if (!name.trim() && !program.trim()) { onError("Give the child a name or a program."); return; }
+    const prog = program === "Other" ? programOther.trim() : program;
+    if (!name.trim() && !prog) { onError("Give the child a name or a program."); return; }
     setBusy(true);
     try {
       await addChild(lead.id, {
         name: name.trim(),
         dob: dob || null,
         dob_note: dobNote.trim() || null,
-        program: program.trim() || null,
+        program: prog || null,
         schedule: schedule.trim() || null,
+        desired_start_date: start || null,
+        desired_start_note: startNote.trim() || null,
         order_index: lead.children.length,
       });
-      setName(""); setDob(""); setDobNote(""); setProgram(""); setSchedule("");
+      setName(""); setDob(""); setDobNote(""); setProgram(""); setProgramOther("");
+      setSchedule(""); setStart(""); setStartNote("");
       setAdding(false);
       await onChanged();
     } catch (e) {
@@ -672,23 +776,41 @@ function ChildrenCard({
                   <div className="subtle" style={{ fontSize: 12 }}>
                     {[
                       c.dob ? `DOB ${fmtDate(c.dob)}` : c.dob_note,
-                      c.program,
                       c.schedule,
+                      c.desired_start_date ? `Starts ${fmtDate(c.desired_start_date)}` : c.desired_start_note,
                       c.chinese_level ? `Chinese: ${c.chinese_level}` : null,
                       c.previous_school ? `Prev: ${c.previous_school}` : null,
                     ].filter(Boolean).join(" · ") || "No details"}
                   </div>
                 </div>
-                <div className="row" style={{ gap: 6 }}>
+                <div className="row" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <select
+                    className="select"
+                    style={{ maxWidth: 170, fontSize: 13 }}
+                    value={PROGRAMS.includes(c.program as never) ? (c.program as string) : c.program ? "__custom__" : ""}
+                    onChange={async (e) => {
+                      const v = e.target.value;
+                      if (v === "__custom__") return; // keeps whatever was imported
+                      try { await updateChild(c.id, { program: v || null }); await onChanged(); }
+                      catch (err) { onError((err as Error)?.message ?? "Could not update."); }
+                    }}
+                  >
+                    <option value="">Program…</option>
+                    {PROGRAMS.map((p) => <option key={p} value={p}>{p}</option>)}
+                    {c.program && !PROGRAMS.includes(c.program as never) && (
+                      <option value="__custom__">{c.program}</option>
+                    )}
+                  </select>
                   <input
                     className="input"
-                    style={{ maxWidth: 190, fontSize: 13 }}
-                    defaultValue={c.program ?? ""}
-                    placeholder="Program"
+                    type="date"
+                    title="Desired start date"
+                    style={{ maxWidth: 150, fontSize: 13 }}
+                    defaultValue={c.desired_start_date ?? ""}
                     onBlur={async (e) => {
-                      const v = e.target.value.trim();
-                      if (v === (c.program ?? "")) return;
-                      try { await updateChild(c.id, { program: v || null }); await onChanged(); }
+                      const v = e.target.value;
+                      if (v === (c.desired_start_date ?? "")) return;
+                      try { await updateChild(c.id, { desired_start_date: v || null }); await onChanged(); }
                       catch (err) { onError((err as Error)?.message ?? "Could not update."); }
                     }}
                   />
@@ -742,8 +864,20 @@ function ChildrenCard({
             <Input label="Name" value={name} onChange={setName} />
             <Input label="Date of birth" type="date" value={dob} onChange={setDob} />
             <Input label="…or age in words" value={dobNote} onChange={setDobNote} placeholder="22 months" />
-            <Input label="Program" value={program} onChange={setProgram} placeholder="Preschool" />
+            <div>
+              <label style={lbl}>Program</label>
+              <select className="select" value={program} onChange={(e) => setProgram(e.target.value)}>
+                <option value="">— Choose —</option>
+                {PROGRAMS.map((p) => <option key={p} value={p}>{p}</option>)}
+                <option value="Other">Other…</option>
+              </select>
+            </div>
+            {program === "Other" && (
+              <Input label="Which program?" value={programOther} onChange={setProgramOther} />
+            )}
             <Input label="Days / schedule" value={schedule} onChange={setSchedule} placeholder="5 Days/Week" />
+            <Input label="Desired start date" type="date" value={start} onChange={setStart} />
+            <Input label="…or in their words" value={startNote} onChange={setStartNote} placeholder="ASAP" />
           </div>
           <div className="row" style={{ gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
             <button className="btn" onClick={() => setAdding(false)} disabled={busy}>Cancel</button>

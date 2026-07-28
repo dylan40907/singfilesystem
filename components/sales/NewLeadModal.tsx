@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Campus } from "@/lib/CampusContext";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import {
   FIRST_CONTACT_LABEL,
   FirstContactType,
+  PREFERRED_LANGUAGES,
+  PROGRAMS,
   SalesSource,
+  TIME_ZONES,
   addChild,
   createLead,
+  fetchAssignableStaff,
+  localTimeFor,
   sourceWantsReferrer,
   todayLocal,
 } from "@/lib/sales";
@@ -43,17 +49,31 @@ export default function NewLeadModal({
   const [referredBy, setReferredBy] = useState("");
   const [firstContact, setFirstContact] = useState<FirstContactType | "">("");
   const [inquiryDate, setInquiryDate] = useState(todayLocal());
-  const [desiredStart, setDesiredStart] = useState("");
-  const [desiredStartNote, setDesiredStartNote] = useState("");
   const [notes, setNotes] = useState("");
+  const [timeZone, setTimeZone] = useState("");
+  const [language, setLanguage] = useState("");
+  const [ownerId, setOwnerId] = useState("");
 
   const [childName, setChildName] = useState("");
   const [childDob, setChildDob] = useState("");
   const [childProgram, setChildProgram] = useState("");
+  const [childProgramOther, setChildProgramOther] = useState("");
   const [childSchedule, setChildSchedule] = useState("");
+  // Start dates belong to the child — siblings often start in different terms.
+  const [childStart, setChildStart] = useState("");
+  const [childStartNote, setChildStartNote] = useState("");
 
+  const [staff, setStaff] = useState<{ id: string; full_name: string | null; role: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  useEscapeKey(onClose, !busy);
+
+  useEffect(() => {
+    (async () => {
+      try { setStaff(await fetchAssignableStaff()); } catch { /* picker just stays empty */ }
+    })();
+  }, []);
 
   const selectedSourceName = sources.find((s) => s.id === sourceId)?.name ?? null;
   const otherSelected = selectedSourceName === "Other";
@@ -88,17 +108,21 @@ export default function NewLeadModal({
         referred_by: wantsReferrer ? referredBy.trim() || null : null,
         first_contact_type: firstContact || null,
         inquiry_date: inquiryDate || todayLocal(),
-        desired_start_date: desiredStart || null,
-        desired_start_note: desiredStartNote.trim() || null,
+        time_zone: timeZone || null,
+        preferred_language: language || null,
+        staff_owner_id: ownerId || null,
         notes: notes.trim() || null,
       });
 
-      if (childName.trim() || childProgram.trim() || childDob) {
+      const program = childProgram === "Other" ? childProgramOther.trim() : childProgram;
+      if (childName.trim() || program || childDob || childStart) {
         await addChild(lead.id, {
           name: childName.trim(),
           dob: childDob || null,
-          program: childProgram.trim() || null,
+          program: program || null,
           schedule: childSchedule.trim() || null,
+          desired_start_date: childStart || null,
+          desired_start_note: childStartNote.trim() || null,
           order_index: 0,
         });
       }
@@ -219,12 +243,33 @@ export default function NewLeadModal({
 
         <div style={grid2}>
           <div>
-            <label style={lbl}>Desired start date</label>
-            <input className="input" type="date" value={desiredStart} onChange={(e) => setDesiredStart(e.target.value)} />
+            <label style={lbl}>Time zone</label>
+            <select className="select" value={timeZone} onChange={(e) => setTimeZone(e.target.value)}>
+              <option value="">— Not known —</option>
+              {TIME_ZONES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            {timeZone && (
+              <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                It’s {localTimeFor(timeZone)} for them right now.
+              </div>
+            )}
           </div>
           <div>
-            <label style={lbl}>…or in their words</label>
-            <input className="input" placeholder="ASAP, July or August…" value={desiredStartNote} onChange={(e) => setDesiredStartNote(e.target.value)} />
+            <label style={lbl}>Preferred language</label>
+            <select className="select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+              <option value="">— Not known —</option>
+              {PREFERRED_LANGUAGES.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={grid2}>
+          <div>
+            <label style={lbl}>Owner</label>
+            <select className="select" value={ownerId} onChange={(e) => setOwnerId(e.target.value)}>
+              <option value="">— Unassigned —</option>
+              {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+            </select>
           </div>
         </div>
 
@@ -246,11 +291,32 @@ export default function NewLeadModal({
         <div style={grid2}>
           <div>
             <label style={lbl}>Program</label>
-            <input className="input" placeholder="Preschool, HWC…" value={childProgram} onChange={(e) => setChildProgram(e.target.value)} />
+            <select className="select" value={childProgram} onChange={(e) => setChildProgram(e.target.value)}>
+              <option value="">— Choose —</option>
+              {PROGRAMS.map((p) => <option key={p} value={p}>{p}</option>)}
+              <option value="Other">Other…</option>
+            </select>
           </div>
+          {childProgram === "Other" && (
+            <div>
+              <label style={lbl}>Which program?</label>
+              <input className="input" value={childProgramOther} onChange={(e) => setChildProgramOther(e.target.value)} />
+            </div>
+          )}
           <div>
             <label style={lbl}>Days / schedule</label>
             <input className="input" placeholder="5 Days/Week (9am - 3pm)" value={childSchedule} onChange={(e) => setChildSchedule(e.target.value)} />
+          </div>
+        </div>
+
+        <div style={grid2}>
+          <div>
+            <label style={lbl}>Desired start date</label>
+            <input className="input" type="date" value={childStart} onChange={(e) => setChildStart(e.target.value)} />
+          </div>
+          <div>
+            <label style={lbl}>…or in their words</label>
+            <input className="input" placeholder="ASAP, July or August…" value={childStartNote} onChange={(e) => setChildStartNote(e.target.value)} />
           </div>
         </div>
 
