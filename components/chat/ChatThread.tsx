@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
-  ChatConversationView, ChatMessage, ChatUserLite, PreviewKind, editMessage, fetchInactiveStaffIds,
-  fetchMessages, fileTypeIcon, getAttachmentUrl, markRead, officeViewerUrl, previewKindFor,
-  sendMessage, unsendMessage, uploadChatAttachment, userDisplayName,
+  ChatConversationView, ChatMessage, ChatReaction, ChatUserLite, PreviewKind, REACTION_MORE,
+  REACTION_PRESETS, editMessage, fetchInactiveStaffIds, fetchMessages, fetchReactions, fileTypeIcon,
+  getAttachmentUrl, markRead, officeViewerUrl, previewKindFor, sendMessage, summarizeReactions,
+  toggleReaction, unsendMessage, uploadChatAttachment, userDisplayName,
 } from "@/lib/chat";
 import { fetchMyProfile } from "@/lib/teachers";
 import {
@@ -241,6 +242,11 @@ export default function ChatThread({
   // Editing an existing message (null = composing a new one)
   const [editing, setEditing] = useState<ChatMessage | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
+  // Reactions, keyed by message id. `reactFor` is the message whose picker is
+  // open; `reactMore` expands that picker from the preset row to the full grid.
+  const [reactions, setReactions] = useState<Map<string, ChatReaction[]>>(new Map());
+  const [reactFor, setReactFor] = useState<string | null>(null);
+  const [reactMore, setReactMore] = useState(false);
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [viewerRole, setViewerRole] = useState<string | null>(null);
   // @-mention autocomplete
@@ -291,7 +297,7 @@ export default function ChatThread({
       return [everyone, ...people].slice(0, 7);
     }
     return people;
-  }, [mention, conversation.members, myId, inactiveStaff]);
+  }, [mention, conversation.members, conversation.is_group, myId, inactiveStaff]);
 
   useEffect(() => {
     (async () => {
@@ -309,6 +315,9 @@ export default function ChatThread({
         const list = await fetchMessages(conversation.id);
         if (cancelled) return;
         setMessages(list);
+        fetchReactions(list.map((m) => m.id))
+          .then((r) => { if (!cancelled) setReactions(r); })
+          .catch(() => { /* reactions are decoration — never block the thread */ });
         // Mark read; don't bubble errors here
         markRead(conversation.id, myId).catch(() => {});
       } catch (e: any) {
@@ -354,6 +363,7 @@ export default function ChatThread({
         (payload) => {
           const upd = payload.new as ChatMessage;
           setMessages((prev) => prev.map((m) => (m.id === upd.id ? upd : m)));
+          // (reaction changes are handled by their own subscription below)
         }
       )
       .subscribe();
@@ -361,6 +371,50 @@ export default function ChatThread({
       supabase.removeChannel(channel);
     };
   }, [conversation.id, myId]);
+
+  /**
+   * Reactions arrive on their own channel. They can't be filtered by
+   * conversation (the row only knows its message), so we refetch for the
+   * messages on screen — cheap, and it keeps counts exact rather than trying to
+   * patch inserts and deletes by hand.
+   */
+  useEffect(() => {
+    const ids = messages.map((m) => m.id);
+    if (ids.length === 0) return;
+    const channel = supabase
+      .channel(`chat-reactions:${conversation.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "chat_message_reactions" }, (payload) => {
+        const row = (payload.new ?? payload.old) as { message_id?: string } | null;
+        if (!row?.message_id || !ids.includes(row.message_id)) return;
+        fetchReactions(ids).then(setReactions).catch(() => {});
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [conversation.id, messages]);
+
+  /** Add or remove my reaction, updating optimistically. */
+  async function react(messageId: string, emoji: string) {
+    const mine = (reactions.get(messageId) ?? []).some((r) => r.user_id === myId && r.emoji === emoji);
+    setReactFor(null);
+    setReactMore(false);
+    setReactions((prev) => {
+      const next = new Map(prev);
+      const list = next.get(messageId) ?? [];
+      next.set(
+        messageId,
+        mine
+          ? list.filter((r) => !(r.user_id === myId && r.emoji === emoji))
+          : [...list, { message_id: messageId, user_id: myId, emoji }]
+      );
+      return next;
+    });
+    try {
+      await toggleReaction(messageId, myId, emoji, !mine);
+    } catch (e) {
+      setError((e as Error)?.message ?? "Could not react");
+      fetchReactions(messages.map((m) => m.id)).then(setReactions).catch(() => {});
+    }
+  }
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -685,6 +739,18 @@ export default function ChatThread({
                     >
                       {formatTime(m.created_at)}
                       {m.edited_at && !m.deleted_at ? " · edited" : ""}
+                      {!m.deleted_at && (hoverId === m.id || reactFor === m.id) ? (
+                        <button
+                          onClick={() => {
+                            setReactMore(false);
+                            setReactFor((cur) => (cur === m.id ? null : m.id));
+                          }}
+                          style={msgActionBtn}
+                          title="Add a reaction"
+                        >
+                          React
+                        </button>
+                      ) : null}
                       {isMine && !m.deleted_at && hoverId === m.id ? (
                         <>
                           {m.content?.trim() ? (
@@ -717,6 +783,85 @@ export default function ChatThread({
                         </>
                       ) : null}
                     </div>
+
+                    {/* Reaction pills — tap one to join or drop it. */}
+                    {(() => {
+                      const summary = summarizeReactions(reactions.get(m.id), myId);
+                      if (summary.length === 0) return null;
+                      return (
+                        <div
+                          style={{
+                            display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3,
+                            justifyContent: isMine ? "flex-end" : "flex-start",
+                          }}
+                        >
+                          {summary.map((r) => (
+                            <button
+                              key={r.emoji}
+                              onClick={() => void react(m.id, r.emoji)}
+                              title={r.mine ? "Remove your reaction" : "React"}
+                              style={{
+                                display: "inline-flex", alignItems: "center", gap: 3,
+                                border: r.mine ? "1.5px solid #e6178d" : "1px solid #e5e7eb",
+                                background: r.mine ? "#fdf2f8" : "#fff",
+                                borderRadius: 999, padding: "1px 7px", fontSize: 12,
+                                cursor: "pointer", lineHeight: "18px",
+                              }}
+                            >
+                              <span>{r.emoji}</span>
+                              <span style={{ fontWeight: 700, color: r.mine ? "#9d174d" : "#6b7280" }}>{r.count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Picker: the six presets, then "+" for the full grid. */}
+                    {reactFor === m.id && (
+                      <>
+                        <div
+                          onMouseDown={() => { setReactFor(null); setReactMore(false); }}
+                          style={{ position: "fixed", inset: 0, zIndex: 40 }}
+                        />
+                        <div
+                          style={{
+                            position: "relative", zIndex: 41, marginTop: 4,
+                            display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center",
+                            background: "#fff", border: "1px solid #e5e7eb",
+                            boxShadow: "0 6px 20px rgba(0,0,0,0.12)", padding: "5px 8px",
+                            maxWidth: reactMore ? 260 : undefined,
+                            borderRadius: reactMore ? 14 : 999,
+                            justifyContent: isMine ? "flex-end" : "flex-start",
+                          }}
+                        >
+                          {(reactMore ? REACTION_MORE : REACTION_PRESETS).map((e, i) => (
+                            <button
+                              key={`${e}-${i}`}
+                              onClick={() => void react(m.id, e)}
+                              style={{
+                                border: "none", background: "transparent", cursor: "pointer",
+                                fontSize: 18, lineHeight: "22px", padding: "1px 3px",
+                              }}
+                            >
+                              {e}
+                            </button>
+                          ))}
+                          {!reactMore && (
+                            <button
+                              onClick={() => setReactMore(true)}
+                              title="More emoji"
+                              style={{
+                                border: "1px solid #e5e7eb", background: "#f9fafb", cursor: "pointer",
+                                borderRadius: 999, width: 24, height: 24, fontSize: 15, lineHeight: "20px",
+                                color: "#6b7280", fontWeight: 700,
+                              }}
+                            >
+                              +
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>

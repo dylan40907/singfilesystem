@@ -50,7 +50,7 @@ export default function ChatParticipantsModal({
         next ? `${myName} renamed the group to "${next}"` : `${myName} removed the group name`
       );
       onChanged();
-    } catch (e: any) { setErr(e?.message ?? "Could not rename"); }
+    } catch (e) { setErr((e as Error)?.message ?? "Could not rename"); }
     finally { setBusy(false); }
   }
 

@@ -381,6 +381,20 @@ export async function postSystemMessage(
 /** The quick-pick row, matching what staff already use in Connecteam. */
 export const REACTION_PRESETS = ["👍", "😍", "😂", "😮", "😔", "🎉"];
 
+/**
+ * What the "+" opens. Neither the browser nor React Native can summon the OS
+ * emoji keyboard on demand, so we ship our own grid rather than promise a
+ * system picker that only appears on some platforms.
+ */
+export const REACTION_MORE = [
+  "👍", "👎", "❤️", "🔥", "👏", "🙏", "💯", "✅",
+  "😀", "😄", "😊", "😍", "🥰", "😘", "😎", "🤩",
+  "😂", "🤣", "😅", "😉", "🙃", "🤔", "🤗", "🤝",
+  "😮", "😲", "😱", "😳", "🥺", "😢", "😭", "😔",
+  "😴", "🤒", "🎉", "🎊", "🌟", "⭐", "💪", "🙌",
+  "🍀", "☕", "🍰", "🎂", "🚀", "📌", "⏰", "❓",
+];
+
 export type ChatReaction = { message_id: string; user_id: string; emoji: string };
 
 /** Reactions for a page of messages, keyed by message id. */
