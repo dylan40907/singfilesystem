@@ -7,6 +7,7 @@ import {
   fetchPickableUsers,
   postSystemMessage,
   removeMember,
+  renameConversation,
   userDisplayName,
 } from "@/lib/chat";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
@@ -21,6 +22,7 @@ export default function ChatParticipantsModal({
   members,
   myId,
   canManage,
+  currentName,
   onClose,
   onChanged,
 }: {
@@ -28,10 +30,29 @@ export default function ChatParticipantsModal({
   members: ChatUserLite[];
   myId: string;
   canManage: boolean;
+  currentName: string | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
   useEscapeKey(onClose);
+  const [nameDraft, setNameDraft] = useState(currentName ?? "");
+
+  async function saveName() {
+    const next = nameDraft.trim();
+    if (busy || next === (currentName ?? "").trim()) return;
+    setBusy(true); setErr("");
+    try {
+      await renameConversation(conversationId, next);
+      // Logged in the thread like member changes, so the rename isn't a mystery
+      // to whoever scrolls back later.
+      await postSystemMessage(
+        conversationId, myId,
+        next ? `${myName} renamed the group to "${next}"` : `${myName} removed the group name`
+      );
+      onChanged();
+    } catch (e: any) { setErr(e?.message ?? "Could not rename"); }
+    finally { setBusy(false); }
+  }
 
   const [pickable, setPickable] = useState<ChatUserLite[]>([]);
   const [search, setSearch] = useState("");
@@ -90,11 +111,35 @@ export default function ChatParticipantsModal({
     >
       <div className="card" style={{ width: "min(460px, 100%)", maxHeight: "82vh", display: "flex", flexDirection: "column" }}>
         <div className="row-between" style={{ marginBottom: 8 }}>
-          <div style={{ fontWeight: 900, fontSize: 16 }}>Participants</div>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Group</div>
           <button className="btn" onClick={onClose}>Close</button>
         </div>
 
         {err ? <div style={{ color: "#b91c1c", fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{err}</div> : null}
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 800, fontSize: 12, color: "#6b7280", marginBottom: 6 }}>GROUP NAME</div>
+          {canManage ? (
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                className="input"
+                value={nameDraft}
+                placeholder="Name this chat"
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void saveName(); } }}
+              />
+              <button
+                className="btn btn-primary"
+                disabled={busy || nameDraft.trim() === (currentName ?? "").trim()}
+                onClick={() => void saveName()}
+              >
+                Save
+              </button>
+            </div>
+          ) : (
+            <div style={{ fontWeight: 600 }}>{currentName?.trim() || <span className="subtle">Unnamed group</span>}</div>
+          )}
+        </div>
 
         <div style={{ overflowY: "auto", flex: 1, minHeight: 0 }}>
           <div style={{ fontWeight: 800, fontSize: 12, color: "#6b7280", margin: "4px 0 6px" }}>

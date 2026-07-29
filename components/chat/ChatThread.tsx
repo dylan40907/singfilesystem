@@ -9,8 +9,8 @@ import {
 } from "@/lib/chat";
 import { fetchMyProfile } from "@/lib/teachers";
 import {
-  DraftMention, activeMentionQuery, draftToStored, insertMention, mentionLabel,
-  parseMentions, storedToDraft,
+  DraftMention, EVERYONE_ID, EVERYONE_LABEL, activeMentionQuery, draftToStored, insertMention,
+  mentionLabel, parseMentions, storedToDraft,
 } from "@/lib/mentions";
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
@@ -276,12 +276,21 @@ export default function ChatThread({
   const mentionMatches = useMemo(() => {
     if (!mention) return [] as ChatUserLite[];
     const q = mention.query.toLowerCase();
-    return conversation.members
+    const people = conversation.members
       .filter((m) => m.id !== myId)
       // Deactivated staff stay visible on their old messages but aren't taggable.
       .filter((m) => !inactiveStaff.has(m.id))
       .filter((m) => !q || userDisplayName(m).toLowerCase().includes(q))
       .slice(0, 6);
+
+    // "@everyone" rides along as a pseudo-member so the existing pick/insert
+    // path needs no special case. Group chats only — in a DM it's just the
+    // other person.
+    if (conversation.is_group && (!q || EVERYONE_ID.startsWith(q))) {
+      const everyone = { id: EVERYONE_ID, full_name: EVERYONE_ID, username: null, email: null } as unknown as ChatUserLite;
+      return [everyone, ...people].slice(0, 7);
+    }
+    return people;
   }, [mention, conversation.members, myId, inactiveStaff]);
 
   useEffect(() => {
@@ -470,6 +479,7 @@ export default function ChatThread({
           members={conversation.members}
           myId={myId}
           canManage={canManageMembers}
+          currentName={conversation.name ?? null}
           onClose={() => setParticipantsOpen(false)}
           onChanged={onMembersChanged}
         />
@@ -656,7 +666,7 @@ export default function ChatThread({
                                     background: isMine ? "rgba(255,255,255,0.22)" : "#e0e7ff",
                                   }}
                                 >
-                                  @{nameFor(seg.userId)}
+                                  {seg.type === "everyone" ? EVERYONE_LABEL : `@${nameFor(seg.userId)}`}
                                 </span>
                               )
                             )

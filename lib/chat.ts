@@ -376,6 +376,73 @@ export async function postSystemMessage(
     .eq("id", conversationId);
 }
 
+// ── Reactions ───────────────────────────────────────────────────────────────
+
+/** The quick-pick row, matching what staff already use in Connecteam. */
+export const REACTION_PRESETS = ["👍", "😍", "😂", "😮", "😔", "🎉"];
+
+export type ChatReaction = { message_id: string; user_id: string; emoji: string };
+
+/** Reactions for a page of messages, keyed by message id. */
+export async function fetchReactions(messageIds: string[]): Promise<Map<string, ChatReaction[]>> {
+  const out = new Map<string, ChatReaction[]>();
+  if (messageIds.length === 0) return out;
+  const { data, error } = await supabase
+    .from("chat_message_reactions")
+    .select("message_id, user_id, emoji")
+    .in("message_id", messageIds);
+  if (error) throw error;
+  for (const r of (data ?? []) as ChatReaction[]) {
+    out.set(r.message_id, [...(out.get(r.message_id) ?? []), r]);
+  }
+  return out;
+}
+
+/**
+ * Add or remove my reaction. The primary key makes re-adding the same emoji a
+ * no-op, so this can be driven straight from a tap without tracking state.
+ */
+export async function toggleReaction(messageId: string, userId: string, emoji: string, on: boolean): Promise<void> {
+  if (on) {
+    const { error } = await supabase
+      .from("chat_message_reactions")
+      .upsert({ message_id: messageId, user_id: userId, emoji }, { onConflict: "message_id,user_id,emoji" });
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("chat_message_reactions")
+      .delete()
+      .eq("message_id", messageId).eq("user_id", userId).eq("emoji", emoji);
+    if (error) throw error;
+  }
+}
+
+/** Group reactions into { emoji, count, mine } for rendering the pills. */
+export function summarizeReactions(
+  list: ChatReaction[] | undefined,
+  myId: string
+): { emoji: string; count: number; mine: boolean }[] {
+  const by = new Map<string, { count: number; mine: boolean }>();
+  for (const r of list ?? []) {
+    const cur = by.get(r.emoji) ?? { count: 0, mine: false };
+    cur.count += 1;
+    if (r.user_id === myId) cur.mine = true;
+    by.set(r.emoji, cur);
+  }
+  return [...by.entries()]
+    .map(([emoji, v]) => ({ emoji, ...v }))
+    .sort((a, b) => b.count - a.count || a.emoji.localeCompare(b.emoji));
+}
+
+/** Rename a group. RLS lets any member write; the app gates by role. */
+export async function renameConversation(conversationId: string, name: string): Promise<void> {
+  const { error } = await supabase
+    .from("chat_conversations")
+    .update({ name: name.trim() || null })
+    .eq("id", conversationId);
+  if (error) throw error;
+}
+
 /** Add members to a group. RLS allows any member; the app gates by role. */
 export async function addMembers(conversationId: string, userIds: string[]): Promise<void> {
   const ids = [...new Set(userIds)];

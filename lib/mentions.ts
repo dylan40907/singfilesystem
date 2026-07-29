@@ -13,12 +13,22 @@
 
 export type MentionSegment =
   | { type: "text"; text: string }
-  | { type: "mention"; userId: string };
+  | { type: "mention"; userId: string }
+  | { type: "everyone" };
 
 /** A mention the user picked while composing: the visible label + who it is. */
 export type DraftMention = { text: string; userId: string };
 
-const MENTION_RE = /<@([0-9a-fA-F-]{36})>/g;
+/**
+ * "@everyone" is stored as `<@everyone>` — deliberately not a uuid, so it can
+ * never collide with a person. It doesn't change who is notified (every member
+ * already gets a notification for every message); it marks the message as
+ * addressed to the whole group so it reads that way.
+ */
+export const EVERYONE_ID = "everyone";
+export const EVERYONE_LABEL = "@everyone";
+
+const MENTION_RE = /<@(everyone|[0-9a-fA-F-]{36})>/g;
 
 export function mentionToken(userId: string): string {
   return `<@${userId}>`;
@@ -33,11 +43,16 @@ export function parseMentions(content: string): MentionSegment[] {
   let m: RegExpExecArray | null;
   while ((m = MENTION_RE.exec(text)) !== null) {
     if (m.index > last) out.push({ type: "text", text: text.slice(last, m.index) });
-    out.push({ type: "mention", userId: m[1] });
+    out.push(m[1] === EVERYONE_ID ? { type: "everyone" } : { type: "mention", userId: m[1] });
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push({ type: "text", text: text.slice(last) });
   return out;
+}
+
+/** True when the message is addressed to the whole group. */
+export function mentionsEveryone(content: string): boolean {
+  return parseMentions(content).some((s) => s.type === "everyone");
 }
 
 /** Every user id mentioned in a stored message. */
@@ -50,7 +65,11 @@ export function mentionedIds(content: string): string[] {
 /** Render a stored body as plain text (tokens → "@Name"), for previews. */
 export function mentionsToPlainText(content: string, nameFor: (id: string) => string | null): string {
   return parseMentions(content)
-    .map((s) => (s.type === "text" ? s.text : `@${nameFor(s.userId) ?? "someone"}`))
+    .map((s) =>
+      s.type === "text" ? s.text
+        : s.type === "everyone" ? EVERYONE_LABEL
+        : `@${nameFor(s.userId) ?? "someone"}`
+    )
     .join("");
 }
 
@@ -118,6 +137,10 @@ export function storedToDraft(
   const draft = parseMentions(content)
     .map((s) => {
       if (s.type === "text") return s.text;
+      if (s.type === "everyone") {
+        mentions.push({ text: EVERYONE_LABEL, userId: EVERYONE_ID });
+        return EVERYONE_LABEL;
+      }
       const label = mentionLabel(nameFor(s.userId) ?? "someone");
       mentions.push({ text: label, userId: s.userId });
       return label;
