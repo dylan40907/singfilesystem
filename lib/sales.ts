@@ -325,10 +325,8 @@ export async function logActionAndSetNext(
       next_action_type: next.type,
       next_action_note: next.note.trim(),
       next_action_assigned_to: next.assigned_to,
-      // Re-arm both reminder tracks for the new date.
-      alert_due_sent_for: null,
-      alert_nag_sent_for: null,
-      overdue_alert_last_at: null,
+      // Re-arm reminders for the new date.
+      last_reminded_on: null,
     })
     .eq("id", leadId);
   if (naErr) throw naErr;
@@ -362,9 +360,7 @@ export async function setNextAction(
       next_action_type: input.type,
       next_action_note: input.note,
       next_action_assigned_to: input.assigned_to,
-      alert_due_sent_for: null,
-      alert_nag_sent_for: null,
-      overdue_alert_last_at: null,
+      last_reminded_on: null,
     })
     .eq("id", leadId);
   if (error) throw error;
@@ -380,7 +376,7 @@ export async function clearNextAction(leadId: string): Promise<void> {
     .update({
       next_action_date: null, next_action_type: null,
       next_action_note: null, next_action_assigned_to: null,
-      overdue_alert_last_at: null,
+      last_reminded_on: null,
     })
     .eq("id", leadId);
   if (error) throw error;

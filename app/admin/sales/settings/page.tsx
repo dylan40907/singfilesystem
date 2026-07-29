@@ -16,7 +16,16 @@ type Settings = {
   mailchimp_tag: string;
   mailchimp_last_sync_at: string | null;
   mailchimp_last_result: string | null;
+  reminder_time: string;
+  reminder_tz: string;
 };
+
+const REMINDER_ZONES = [
+  { value: "America/Los_Angeles", label: "Pacific" },
+  { value: "America/Denver", label: "Mountain" },
+  { value: "America/Chicago", label: "Central" },
+  { value: "America/New_York", label: "Eastern" },
+];
 
 export default function SalesSettingsPage() {
   const { profile } = useCampusFilter();
@@ -110,6 +119,40 @@ export default function SalesSettingsPage() {
           <h1 className="h1" style={{ margin: 0 }}>Sales settings</h1>
         </div>
         {status ? <span className="badge badge-pink">{status}</span> : null}
+      </div>
+
+      {/* ── Follow-up reminders ─────────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 4 }}>Follow-up reminders</div>
+        <div className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
+          On the day a follow-up is due, the assignee and the admins get a notification in the portal and on the
+          HR app. If nothing is logged, it repeats every <strong>working</strong> day until it is — a Friday
+          reminder comes back on Monday, not at the weekend. No emails are sent.
+        </div>
+
+        {settings && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14 }}>
+            <div>
+              <label style={lbl}>Send reminders at</label>
+              <input
+                className="input"
+                type="time"
+                defaultValue={(settings.reminder_time ?? "09:00").slice(0, 5)}
+                onBlur={(e) => void saveSettings({ reminder_time: e.target.value || "09:00" })}
+              />
+            </div>
+            <div>
+              <label style={lbl}>Time zone</label>
+              <select
+                className="select"
+                value={settings.reminder_tz ?? "America/Los_Angeles"}
+                onChange={(e) => void saveSettings({ reminder_tz: e.target.value })}
+              >
+                {REMINDER_ZONES.map((z) => <option key={z.value} value={z.value}>{z.label}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Sources ─────────────────────────────────────────────────────── */}

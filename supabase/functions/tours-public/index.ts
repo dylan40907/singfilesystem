@@ -386,18 +386,23 @@ Deno.serve(async (req) => {
   return json(400, { error: "Unknown request." });
 });
 
-/** In-app notification (which also pushes to the HR app) + email, to the configured list. */
+/**
+ * Tells staff about a booking through the portal bell, which also pushes to the
+ * HR app. Deliberately NOT email: not every staff account has an address, so
+ * email would reach some people and silently miss others. Parents still get
+ * emailed — that's their only channel.
+ */
 async function notifyStaff(
   db: ReturnType<typeof createClient>,
   title: string, message: string,
-  leadId: string | null, tourId: string, portal: string
+  leadId: string | null, tourId: string, _portal: string
 ) {
   const { data: recips } = await db
     .from("sales_tour_notify")
-    .select("user_id, user_profiles(full_name, email, is_active)");
+    .select("user_id, user_profiles(is_active)");
 
   for (const r of recips ?? []) {
-    const p = (r as Record<string, unknown>).user_profiles as { email: string | null; is_active: boolean } | null;
+    const p = (r as Record<string, unknown>).user_profiles as { is_active: boolean } | null;
     if (!p?.is_active) continue;
     await db.rpc("app_notify", {
       p_user_id: r.user_id,
@@ -406,12 +411,5 @@ async function notifyStaff(
       p_body: message,
       p_data: { lead_id: leadId, tour_id: tourId },
     });
-    if (p.email) {
-      await sendMail({
-        to: p.email,
-        subject: `${title} — ${message.split(" ")[0]}`,
-        text: `${message}\n\n${portal}/admin/sales/tours\n\n— SING Sales`,
-      });
-    }
   }
 }

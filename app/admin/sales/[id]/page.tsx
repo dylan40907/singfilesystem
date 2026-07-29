@@ -351,157 +351,6 @@ export default function SalesLeadPage() {
         </div>
       )}
 
-      {/* ── Next action ─────────────────────────────────────────────────── */}
-      <div
-        className="card"
-        style={{
-          borderColor: naState === "overdue" ? "#fecaca" : naState === "today" ? "#fed7aa" : undefined,
-          background: naState === "overdue" ? "#fef2f2" : naState === "today" ? "#fffbeb" : undefined,
-        }}
-      >
-        <div className="row-between" style={{ flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-          <div style={{ fontWeight: 900, fontSize: 15 }}>Next action</div>
-          {lead.next_action_date && (
-            <div style={{ fontWeight: 800, color: naState === "overdue" ? "#b91c1c" : naState === "today" ? "#b45309" : "#374151" }}>
-              {lead.next_action_type ? ACTION_TYPE_LABEL[lead.next_action_type] : "Follow up"} · {fmtDate(lead.next_action_date)}
-              {naState === "overdue" ? " · overdue" : naState === "today" ? " · today" : ""}
-            </div>
-          )}
-        </div>
-
-        {lead.status !== "active" ? (
-          <div className="subtle">
-            Follow-ups are paused because this lead is {SALES_STATUS_LABEL[lead.status].toLowerCase()}. Re-open it to schedule another.
-          </div>
-        ) : (
-          <>
-            {lead.next_action_note && (
-              <div style={{ marginBottom: 6, color: "#374151" }}>{lead.next_action_note}</div>
-            )}
-            {lead.next_action_assigned_to && (
-              <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>
-                Assigned to <strong>{staffName(lead.next_action_assigned_to)}</strong>
-              </div>
-            )}
-
-            {lead.next_action_date && !logOpen && (
-              <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-                <button className="btn btn-primary" onClick={openLogForm}>✓ Mark done &amp; log it</button>
-                <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                  You’ll record what happened and set the next follow-up together.
-                </span>
-              </div>
-            )}
-
-            {logOpen ? (
-              <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, background: "#fff" }}>
-                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>1 · What happened</div>
-                <div style={grid3}>
-                  <div>
-                    <label style={lbl}>Date</label>
-                    <input className="input" type="date" value={logDate} onChange={(e) => setLogDate(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={lbl}>Type</label>
-                    <select className="select" value={logKind} onChange={(e) => setLogKind(e.target.value as ActivityKind)}>
-                      {(["call", "email", "tour", "text", "note", "other"] as ActivityKind[]).map((k) => (
-                        <option key={k} value={k}>{ACTIVITY_KIND_LABEL[k]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={lbl}>Who handled it</label>
-                    <select className="select" value={logHandledBy} onChange={(e) => setLogHandledBy(e.target.value)}>
-                      <option value="">— Choose —</option>
-                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <label style={lbl}>Notes</label>
-                <textarea
-                  className="textarea"
-                  style={{ minHeight: 70 }}
-                  value={logNote}
-                  onChange={(e) => setLogNote(e.target.value)}
-                  placeholder="Toured with Lynn, will decide by Friday…"
-                />
-
-                <div style={{ fontWeight: 800, fontSize: 13, margin: "16px 0 10px" }}>
-                  2 · What’s next <span className="subtle" style={{ fontWeight: 500 }}>(required)</span>
-                </div>
-                <div style={grid3}>
-                  <div>
-                    <label style={lbl}>Date</label>
-                    <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={lbl}>Action</label>
-                    <select className="select" value={nextType} onChange={(e) => setNextType(e.target.value as ActionType)}>
-                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
-                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={lbl}>Assign to</label>
-                    <select className="select" value={nextAssignee} onChange={(e) => setNextAssignee(e.target.value)}>
-                      <option value="">— Choose —</option>
-                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <label style={lbl}>What needs doing</label>
-                <input className="input" value={nextNote} onChange={(e) => setNextNote(e.target.value)} placeholder="Call to confirm start date" />
-
-                <div className="row" style={{ gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                  <button className="btn btn-primary" onClick={() => void submitLogAndNext()} disabled={logBusy}>
-                    {logBusy ? "Saving…" : "Save both"}
-                  </button>
-                  <button className="btn" onClick={() => setLogOpen(false)} disabled={logBusy}>Cancel</button>
-                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                    To close the lead instead, use Convert or Mark inactive above.
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div style={grid3}>
-                  <div>
-                    <label style={lbl}>Date</label>
-                    <input className="input" type="date" value={naDate} onChange={(e) => setNaDate(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={lbl}>Action</label>
-                    <select className="select" value={naType} onChange={(e) => setNaType(e.target.value as ActionType)}>
-                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
-                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={lbl}>Assign to</label>
-                    <select className="select" value={naAssignee} onChange={(e) => setNaAssignee(e.target.value)}>
-                      <option value="">— Choose —</option>
-                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <label style={lbl}>What needs doing</label>
-                <input className="input" value={naNote} onChange={(e) => setNaNote(e.target.value)} placeholder="What needs doing?" />
-                <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-                  <button className="btn btn-primary" onClick={() => void saveNextAction()} disabled={naBusy}>
-                    {naBusy ? "Saving…" : lead.next_action_date ? "Update next action" : "Set next action"}
-                  </button>
-                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                    Reminders go to the assignee and the admins on the day, then every 48 hours until it’s logged.
-                  </span>
-                </div>
-              </>
-            )}
-          </>
-        )}
-      </div>
-
       {/* ── Details ─────────────────────────────────────────────────────── */}
       <div className="card">
         <div className="row-between" style={{ marginBottom: 12 }}>
@@ -645,21 +494,166 @@ export default function SalesLeadPage() {
         )}
       </div>
 
-      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} onSplit={(id) => router.push(`/admin/sales/${id}`)} />
-
-      {/* ── History ─────────────────────────────────────────────────────── */}
-      <div className="card">
-        <div className="row-between" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ fontWeight: 900, fontSize: 15 }}>History</div>
-          {lead.status === "active" && !logOpen && (
-            <button className="btn" onClick={openLogForm}>+ Log an action</button>
+      {/* ── Next action ─────────────────────────────────────────────────── */}
+      <div
+        className="card"
+        style={{
+          borderColor: naState === "overdue" ? "#fecaca" : naState === "today" ? "#fed7aa" : undefined,
+          background: naState === "overdue" ? "#fef2f2" : naState === "today" ? "#fffbeb" : undefined,
+        }}
+      >
+        <div className="row-between" style={{ flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+          <div style={{ fontWeight: 900, fontSize: 15 }}>Follow-up</div>
+          {lead.next_action_date && (
+            <div style={{ fontWeight: 800, color: naState === "overdue" ? "#b91c1c" : naState === "today" ? "#b45309" : "#374151" }}>
+              {lead.next_action_type ? ACTION_TYPE_LABEL[lead.next_action_type] : "Follow up"} · {fmtDate(lead.next_action_date)}
+              {naState === "overdue" ? " · overdue" : naState === "today" ? " · today" : ""}
+            </div>
           )}
         </div>
-        {lead.status === "active" && (
-          <div className="subtle" style={{ fontSize: 12, marginBottom: 6 }}>
-            Logging an action also sets the next one — that’s how a lead never goes quiet.
+
+        {lead.status !== "active" ? (
+          <div className="subtle">
+            Follow-ups are paused because this lead is {SALES_STATUS_LABEL[lead.status].toLowerCase()}. Re-open it to schedule another.
           </div>
+        ) : (
+          <>
+            {lead.next_action_note && (
+              <div style={{ marginBottom: 6, color: "#374151" }}>{lead.next_action_note}</div>
+            )}
+            {lead.next_action_assigned_to && (
+              <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>
+                Assigned to <strong>{staffName(lead.next_action_assigned_to)}</strong>
+              </div>
+            )}
+
+            {lead.next_action_date && !logOpen && (
+              <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+                <button className="btn btn-primary" onClick={openLogForm}>✓ Mark done &amp; log it</button>
+                <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                  You’ll record what happened and set the next follow-up together.
+                </span>
+              </div>
+            )}
+
+            {logOpen ? (
+              <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, background: "#fff" }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>1 · What happened</div>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={logDate} onChange={(e) => setLogDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Type</label>
+                    <select className="select" value={logKind} onChange={(e) => setLogKind(e.target.value as ActivityKind)}>
+                      {(["call", "email", "tour", "text", "note", "other"] as ActivityKind[]).map((k) => (
+                        <option key={k} value={k}>{ACTIVITY_KIND_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Who handled it</label>
+                    <select className="select" value={logHandledBy} onChange={(e) => setLogHandledBy(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>Notes</label>
+                <textarea
+                  className="textarea"
+                  style={{ minHeight: 70 }}
+                  value={logNote}
+                  onChange={(e) => setLogNote(e.target.value)}
+                  placeholder="Toured with Lynn, will decide by Friday…"
+                />
+
+                <div style={{ fontWeight: 800, fontSize: 13, margin: "16px 0 10px" }}>
+                  2 · What’s next <span className="subtle" style={{ fontWeight: 500 }}>(required)</span>
+                </div>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Action</label>
+                    <select className="select" value={nextType} onChange={(e) => setNextType(e.target.value as ActionType)}>
+                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
+                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Assign to</label>
+                    <select className="select" value={nextAssignee} onChange={(e) => setNextAssignee(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>What needs doing</label>
+                <input className="input" value={nextNote} onChange={(e) => setNextNote(e.target.value)} placeholder="Call to confirm start date" />
+
+                <div className="row" style={{ gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" onClick={() => void submitLogAndNext()} disabled={logBusy}>
+                    {logBusy ? "Saving…" : "Save both"}
+                  </button>
+                  <button className="btn" onClick={() => setLogOpen(false)} disabled={logBusy}>Cancel</button>
+                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                    To close the lead instead, use Convert or Mark inactive above.
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={grid3}>
+                  <div>
+                    <label style={lbl}>Date</label>
+                    <input className="input" type="date" value={naDate} onChange={(e) => setNaDate(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={lbl}>Action</label>
+                    <select className="select" value={naType} onChange={(e) => setNaType(e.target.value as ActionType)}>
+                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
+                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={lbl}>Assign to</label>
+                    <select className="select" value={naAssignee} onChange={(e) => setNaAssignee(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
+                    </select>
+                  </div>
+                </div>
+                <label style={lbl}>What needs doing</label>
+                <input className="input" value={naNote} onChange={(e) => setNaNote(e.target.value)} placeholder="What needs doing?" />
+                <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                  <button className="btn btn-primary" onClick={() => void saveNextAction()} disabled={naBusy}>
+                    {naBusy ? "Saving…" : lead.next_action_date ? "Update next action" : "Set next action"}
+                  </button>
+                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                    The assignee and the admins are reminded on the day, then every working day until it’s logged.
+                  </span>
+                </div>
+              </>
+            )}
+          </>
         )}
+
+        {/* History lives inside the same card: logging an action is what sets
+            the next one, so showing them as separate sections implied a choice
+            that no longer exists. */}
+        <div style={{ borderTop: "1px solid #e5e7eb", marginTop: 20, paddingTop: 16 }}>
+          <div className="row-between" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+            <div style={{ fontWeight: 900, fontSize: 15 }}>History</div>
+            {lead.status === "active" && !logOpen && (
+              <button className="btn btn-primary" onClick={openLogForm}>+ Log an action</button>
+            )}
+          </div>
 
         <div style={{ marginTop: 6 }}>
           {activities.length === 0 ? (
@@ -697,7 +691,10 @@ export default function SalesLeadPage() {
             </div>
           )}
         </div>
+        </div>
       </div>
+
+      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} onSplit={(id) => router.push(`/admin/sales/${id}`)} />
 
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="btn" style={{ color: "#991b1b" }} onClick={() => void removeLead()}>Delete lead</button>
