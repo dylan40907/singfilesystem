@@ -282,6 +282,27 @@ export default function ChatThread({
     return m ? userDisplayName(m) : "someone";
   };
 
+  /** "Lynn Tien, Dylan (Admin)" — who put this emoji on this message. */
+  const whoReacted = (messageId: string, emoji: string) => {
+    const names = (reactions.get(messageId) ?? [])
+      .filter((r) => r.emoji === emoji)
+      .map((r) => (r.user_id === myId ? "You" : nameFor(r.user_id)));
+    return names.length ? `${emoji}  ${names.join(", ")}` : emoji;
+  };
+
+  /**
+   * Jump to the message a reply is quoting, and flash it so the eye lands in
+   * the right place after the scroll.
+   */
+  const jumpToMessage = (id: string) => {
+    const el = document.getElementById(`chat-msg-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.style.transition = "background 120ms";
+    el.style.background = "#fdf2f8";
+    setTimeout(() => { el.style.background = ""; }, 1200);
+  };
+
   /** Members matching the in-progress @query, for the composer dropdown. */
   const mentionMatches = useMemo(() => {
     if (!mention) return [] as ChatUserLite[];
@@ -662,10 +683,12 @@ export default function ChatThread({
                   </div>
                 )}
                 <div
+                  id={`chat-msg-${m.id}`}
                   style={{
                     display: "flex",
                     justifyContent: isMine ? "flex-end" : "flex-start",
                     marginBottom: 4,
+                    borderRadius: 12,
                   }}
                   onMouseEnter={() => setHoverId(m.id)}
                   onMouseLeave={() => setHoverId((cur) => (cur === m.id ? null : cur))}
@@ -716,9 +739,16 @@ export default function ChatThread({
                           const src = messages.find((x) => x.id === m.reply_to_id);
                           return (
                             <div
+                              onClick={(e) => {
+                                if (!src) return;
+                                e.stopPropagation();
+                                jumpToMessage(src.id);
+                              }}
+                              title={src ? "Go to the original message" : undefined}
                               style={{
                                 borderLeft: `3px solid ${isMine ? "rgba(255,255,255,0.75)" : "#e6178d"}`,
                                 paddingLeft: 8, marginBottom: 6, opacity: 0.95,
+                                cursor: src ? "pointer" : "default",
                               }}
                             >
                               <div style={{ fontSize: 11.5, fontWeight: 800, color: isMine ? "rgba(255,255,255,0.92)" : "#e6178d" }}>
@@ -857,7 +887,10 @@ export default function ChatThread({
                             <button
                               key={r.emoji}
                               onClick={() => void react(m.id, r.emoji)}
-                              title={r.mine ? "Remove your reaction" : "React"}
+                              // Hovering is the desktop equivalent of the app's
+                              // long-press: it says who reacted without needing
+                              // a second tap target on a very small control.
+                              title={`${whoReacted(m.id, r.emoji)}\n(click to ${r.mine ? "remove yours" : "add yours"})`}
                               style={{
                                 display: "inline-flex", alignItems: "center", gap: 3,
                                 border: r.mine ? "1.5px solid #e6178d" : "1px solid #e5e7eb",
