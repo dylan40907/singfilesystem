@@ -11,7 +11,7 @@ import {
 import { fetchMyProfile } from "@/lib/teachers";
 import {
   DraftMention, EVERYONE_ID, EVERYONE_LABEL, activeMentionQuery, draftToStored, insertMention,
-  mentionLabel, parseMentions, storedToDraft,
+  mentionLabel, mentionsToPlainText, parseMentions, storedToDraft,
 } from "@/lib/mentions";
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
@@ -247,6 +247,8 @@ export default function ChatThread({
   const [reactions, setReactions] = useState<Map<string, ChatReaction[]>>(new Map());
   const [reactFor, setReactFor] = useState<string | null>(null);
   const [reactMore, setReactMore] = useState(false);
+  // Which message just showed its "Copied" confirmation.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [viewerRole, setViewerRole] = useState<string | null>(null);
   // @-mention autocomplete
@@ -749,6 +751,23 @@ export default function ChatThread({
                           title="Add a reaction"
                         >
                           React
+                        </button>
+                      ) : null}
+                      {!m.deleted_at && m.content?.trim() && hoverId === m.id ? (
+                        <button
+                          onClick={async () => {
+                            try {
+                              // Copy what's on screen, not the raw <@uuid> tokens.
+                              await navigator.clipboard.writeText(mentionsToPlainText(m.content, nameFor));
+                              setCopiedId(m.id);
+                              setTimeout(() => setCopiedId((c) => (c === m.id ? null : c)), 1200);
+                            } catch {
+                              setError("Your browser blocked the copy.");
+                            }
+                          }}
+                          style={msgActionBtn}
+                        >
+                          {copiedId === m.id ? "Copied" : "Copy"}
                         </button>
                       ) : null}
                       {isMine && !m.deleted_at && hoverId === m.id ? (
