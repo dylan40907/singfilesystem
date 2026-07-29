@@ -146,7 +146,9 @@ Deno.serve(async (req) => {
 
   let q = admin
     .from("sales_leads")
-    .select("id, parent_first_name, parent_last_name, email, status, city, campus_id")
+    // Only what the Mailchimp payload needs. (Campus is deliberately absent:
+    // a lead can be considering both, so it isn't a single value.)
+    .select("id, parent_first_name, parent_last_name, email, status")
     .not("email", "is", null);
   if (body?.lead_id) q = q.eq("id", String(body.lead_id));
   else q = q.in("status", statuses);
