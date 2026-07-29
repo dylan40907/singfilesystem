@@ -12,6 +12,8 @@ type Settings = {
   mailchimp_server_prefix: string | null;
   mailchimp_audience_id: string | null;
   mailchimp_sync_statuses: string[];
+  mailchimp_status_if_new: "transactional" | "pending" | "subscribed";
+  mailchimp_tag: string;
   mailchimp_last_sync_at: string | null;
   mailchimp_last_result: string | null;
 };
@@ -174,6 +176,29 @@ export default function SalesSettingsPage() {
                   placeholder="a1b2c3d4e5"
                   defaultValue={settings.mailchimp_audience_id ?? ""}
                   onBlur={(e) => void saveSettings({ mailchimp_audience_id: e.target.value.trim() || null })}
+                />
+              </div>
+              <div>
+                <label style={lbl}>How new contacts are added</label>
+                <select
+                  className="select"
+                  value={settings.mailchimp_status_if_new}
+                  onChange={(e) => void saveSettings({ mailchimp_status_if_new: e.target.value as Settings["mailchimp_status_if_new"] })}
+                >
+                  <option value="transactional">On the list, but not receiving campaigns</option>
+                  <option value="pending">Ask them to confirm (double opt-in)</option>
+                  <option value="subscribed">Subscribed straight away</option>
+                </select>
+                <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                  Only affects people who aren’t on the list yet — existing subscribers are never changed.
+                </div>
+              </div>
+              <div>
+                <label style={lbl}>Tag applied to synced contacts</label>
+                <input
+                  className="input"
+                  defaultValue={settings.mailchimp_tag}
+                  onBlur={(e) => void saveSettings({ mailchimp_tag: e.target.value.trim() || "CRM Lead" })}
                 />
               </div>
               <div>

@@ -141,6 +141,9 @@ export default function SalesImportPage() {
               new Date().toISOString().slice(0, 10),
             notes: l.notes,
             staff_name: l.staff_name,
+            // Flags the row as historical, which keeps the Mailchimp trigger
+            // from pushing years of old addresses into the newsletter audience.
+            imported_at: new Date().toISOString(),
             converted_at: l.status === "enrolled" ? new Date().toISOString() : null,
             created_by: uid,
           })

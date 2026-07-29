@@ -21,6 +21,8 @@ type Settings = {
   mailchimp_server_prefix: string | null;
   mailchimp_audience_id: string | null;
   mailchimp_sync_statuses: string[];
+  mailchimp_status_if_new: "transactional" | "pending" | "subscribed";
+  mailchimp_tag: string;
 };
 
 function json(status: number, body: unknown) {
@@ -160,24 +162,39 @@ Deno.serve(async (req) => {
     if (!email || !email.includes("@")) continue;
 
     const hash = subscriberHash(email);
+    // PUT is add-or-update — it never removes anyone. `status_if_new` applies
+    // ONLY to contacts not already on the list, so everyone already subscribed
+    // keeps exactly the status they have.
     const res = await fetch(`${base}/lists/${audience}/members/${hash}`, {
-      method: "PUT", // upsert
+      method: "PUT",
       headers: mcHeaders,
       body: JSON.stringify({
         email_address: email,
-        // Never flip an existing contact to subscribed — that is the caller's
-        // consent decision, not ours. New contacts land as transactional.
-        status_if_new: "transactional",
+        status_if_new: settings.mailchimp_status_if_new ?? "transactional",
         merge_fields: {
           FNAME: l.parent_first_name ?? "",
           LNAME: l.parent_last_name ?? "",
         },
-        tags: [`sing-${l.status}`],
       }),
     });
 
-    if (res.ok) synced += 1;
-    else failures.push(`${email}: ${res.status} ${(await res.text()).slice(0, 140)}`);
+    if (!res.ok) {
+      failures.push(`${email}: ${res.status} ${(await res.text()).slice(0, 140)}`);
+      continue;
+    }
+    synced += 1;
+
+    // Tags need their own endpoint: the `tags` field on the member PUT is only
+    // honoured when the contact is created, so it would silently skip anyone
+    // already on the list.
+    const tag = (settings.mailchimp_tag ?? "CRM Lead").trim();
+    if (tag) {
+      await fetch(`${base}/lists/${audience}/members/${hash}/tags`, {
+        method: "POST",
+        headers: mcHeaders,
+        body: JSON.stringify({ tags: [{ name: tag, status: "active" }] }),
+      }).catch(() => { /* tagging is a nicety — never fail a sync over it */ });
+    }
   }
 
   await admin.from("sales_settings").update({
