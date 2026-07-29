@@ -33,6 +33,8 @@ export type ChatMessage = {
   edited_at?: string | null;
   deleted_at?: string | null;
   message_type?: "user" | "system";
+  /** The message this one replies to, if any. */
+  reply_to_id?: string | null;
 };
 
 export type ChatAttachment = {
@@ -44,7 +46,7 @@ export type ChatAttachment = {
 };
 
 const MSG_COLS =
-  "id, conversation_id, sender_id, content, created_at, attachment_path, attachment_name, attachment_type, attachment_size, attachment_kind, edited_at, deleted_at, message_type";
+  "id, conversation_id, sender_id, content, created_at, attachment_path, attachment_name, attachment_type, attachment_size, attachment_kind, edited_at, deleted_at, message_type, reply_to_id";
 
 export type ChatUserLite = {
   id: string;
@@ -212,7 +214,8 @@ export async function sendMessage(
   conversationId: string,
   senderId: string,
   content: string,
-  attachment?: ChatAttachment | null
+  attachment?: ChatAttachment | null,
+  replyToId?: string | null
 ): Promise<ChatMessage> {
   const trimmed = content.trim();
   if (!trimmed && !attachment) throw new Error("Message cannot be empty");
@@ -222,6 +225,7 @@ export async function sendMessage(
       conversation_id: conversationId,
       sender_id: senderId,
       content: trimmed,
+      reply_to_id: replyToId ?? null,
       ...(attachment ?? {}),
     })
     .select(MSG_COLS)

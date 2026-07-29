@@ -249,6 +249,8 @@ export default function ChatThread({
   const [reactMore, setReactMore] = useState(false);
   // Which message just showed its "Copied" confirmation.
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // The message being replied to (null = composing normally).
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [viewerRole, setViewerRole] = useState<string | null>(null);
   // @-mention autocomplete
@@ -451,11 +453,14 @@ export default function ChatThread({
     }
 
     try {
-      const msg = await sendMessage(conversation.id, myId, draftToStored(draft, draftMentions));
+      const msg = await sendMessage(
+        conversation.id, myId, draftToStored(draft, draftMentions), null, replyTo?.id ?? null
+      );
       // Optimistically add (the realtime sub may also add it; we dedupe)
       setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
       setDraft("");
       setDraftMentions([]);
+      setReplyTo(null);
       onMessageSent();
     } catch (e: any) {
       setError(e?.message ?? "Failed to send");
@@ -706,6 +711,32 @@ export default function ChatThread({
                           whiteSpace: "pre-wrap",
                         }}
                       >
+                        {(() => {
+                          if (!m.reply_to_id) return null;
+                          const src = messages.find((x) => x.id === m.reply_to_id);
+                          return (
+                            <div
+                              style={{
+                                borderLeft: `3px solid ${isMine ? "rgba(255,255,255,0.75)" : "#e6178d"}`,
+                                paddingLeft: 8, marginBottom: 6, opacity: 0.95,
+                              }}
+                            >
+                              <div style={{ fontSize: 11.5, fontWeight: 800, color: isMine ? "rgba(255,255,255,0.92)" : "#e6178d" }}>
+                                {src ? nameFor(src.sender_id) : "Message"}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 12.5, color: isMine ? "rgba(255,255,255,0.85)" : "#6b7280",
+                                  display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden",
+                                }}
+                              >
+                                {src
+                                  ? mentionsToPlainText(src.content, nameFor) || "Attachment"
+                                  : "Message unavailable"}
+                              </div>
+                            </div>
+                          );
+                        })()}
                         {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
                         {m.content?.trim()
                           ? parseMentions(m.content).map((seg, si) =>
@@ -751,6 +782,14 @@ export default function ChatThread({
                           title="Add a reaction"
                         >
                           React
+                        </button>
+                      ) : null}
+                      {!m.deleted_at && hoverId === m.id ? (
+                        <button
+                          onClick={() => { setReplyTo(m); draftRef.current?.focus(); }}
+                          style={msgActionBtn}
+                        >
+                          Reply
                         </button>
                       ) : null}
                       {!m.deleted_at && m.content?.trim() && hoverId === m.id ? (
@@ -910,6 +949,24 @@ export default function ChatThread({
             <span style={{ fontSize: 12, fontWeight: 800, color: "#e6178d" }}>✎ Editing message</span>
             <button
               onClick={() => { setEditing(null); setDraft(""); setDraftMentions([]); }}
+              style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#6b7280" }}
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {replyTo && !editing && (
+          <div className="row-between" style={{
+            marginBottom: 8, padding: "6px 10px", borderRadius: 8, gap: 10,
+            background: "#fdf2f8", border: "1px solid #f9d9ec",
+          }}>
+            <span style={{ fontSize: 12, color: "#9d174d", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              <strong style={{ fontWeight: 800 }}>↩ Replying to {nameFor(replyTo.sender_id)}</strong>
+              {replyTo.content?.trim() ? ` · ${mentionsToPlainText(replyTo.content, nameFor)}` : ""}
+            </span>
+            <button
+              onClick={() => setReplyTo(null)}
               style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#6b7280" }}
             >
               Cancel
