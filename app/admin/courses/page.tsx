@@ -434,7 +434,12 @@ export default function AdminCoursesPage() {
           </div>
         )}
 
-        {loading ? (
+        {/* Only the very first load blanks the list. Every mutation re-runs
+            reload(), and swapping the rows for a placeholder collapsed the page
+            to nothing — the browser then clamped the scroll to 0, so adding or
+            deleting anything threw you back to the top. Keeping the previous
+            rows on screen while the refetch runs holds your place. */}
+        {loading && courses.length === 0 ? (
           <div className="subtle">Loading…</div>
         ) : grouped.length === 0 ? (
           <div className="subtle" style={{ padding: 20, textAlign: "center" }}>

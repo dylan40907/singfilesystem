@@ -80,6 +80,21 @@ function subscriberHash(email: string): string {
   return md5(new TextEncoder().encode(email.trim().toLowerCase()));
 }
 
+/**
+ * One lead can carry several addresses in a single field — "mum@x.com,
+ * dad@y.com" is normal for a household, and the import produced plenty of
+ * them. Sending the raw string to Mailchimp is rejected as one invalid
+ * address, so every parent on the lead silently missed the list.
+ */
+function splitEmails(raw: string | null): string[] {
+  return (raw ?? "")
+    .split(/[,;/]|\s+/)
+    .map((e) => e.trim().replace(/^[<(]|[>)]$/g, ""))
+    .filter((e) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e))
+    // Same address twice on one lead should only cost one API call.
+    .filter((e, i, all) => all.findIndex((o) => o.toLowerCase() === e.toLowerCase()) === i);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return json(204, {});
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
@@ -160,42 +175,42 @@ Deno.serve(async (req) => {
   const failures: string[] = [];
 
   for (const l of leads ?? []) {
-    const email = (l.email ?? "").trim();
-    if (!email || !email.includes("@")) continue;
-
-    const hash = subscriberHash(email);
-    // PUT is add-or-update — it never removes anyone. `status_if_new` applies
-    // ONLY to contacts not already on the list, so everyone already subscribed
-    // keeps exactly the status they have.
-    const res = await fetch(`${base}/lists/${audience}/members/${hash}`, {
-      method: "PUT",
-      headers: mcHeaders,
-      body: JSON.stringify({
-        email_address: email,
-        status_if_new: settings.mailchimp_status_if_new ?? "transactional",
-        merge_fields: {
-          FNAME: l.parent_first_name ?? "",
-          LNAME: l.parent_last_name ?? "",
-        },
-      }),
-    });
-
-    if (!res.ok) {
-      failures.push(`${email}: ${res.status} ${(await res.text()).slice(0, 140)}`);
-      continue;
-    }
-    synced += 1;
-
-    // Tags need their own endpoint: the `tags` field on the member PUT is only
-    // honoured when the contact is created, so it would silently skip anyone
-    // already on the list.
-    const tag = (settings.mailchimp_tag ?? "CRM Lead").trim();
-    if (tag) {
-      await fetch(`${base}/lists/${audience}/members/${hash}/tags`, {
-        method: "POST",
+    // Every address on the lead gets its own contact, each one tagged.
+    for (const email of splitEmails(l.email)) {
+      const hash = subscriberHash(email);
+      // PUT is add-or-update — it never removes anyone. `status_if_new` applies
+      // ONLY to contacts not already on the list, so everyone already subscribed
+      // keeps exactly the status they have.
+      const res = await fetch(`${base}/lists/${audience}/members/${hash}`, {
+        method: "PUT",
         headers: mcHeaders,
-        body: JSON.stringify({ tags: [{ name: tag, status: "active" }] }),
-      }).catch(() => { /* tagging is a nicety — never fail a sync over it */ });
+        body: JSON.stringify({
+          email_address: email,
+          status_if_new: settings.mailchimp_status_if_new ?? "transactional",
+          merge_fields: {
+            FNAME: l.parent_first_name ?? "",
+            LNAME: l.parent_last_name ?? "",
+          },
+        }),
+      });
+
+      if (!res.ok) {
+        failures.push(`${email}: ${res.status} ${(await res.text()).slice(0, 140)}`);
+        continue;
+      }
+      synced += 1;
+
+      // Tags need their own endpoint: the `tags` field on the member PUT is only
+      // honoured when the contact is created, so it would silently skip anyone
+      // already on the list.
+      const tag = (settings.mailchimp_tag ?? "CRM Lead").trim();
+      if (tag) {
+        await fetch(`${base}/lists/${audience}/members/${hash}/tags`, {
+          method: "POST",
+          headers: mcHeaders,
+          body: JSON.stringify({ tags: [{ name: tag, status: "active" }] }),
+        }).catch(() => { /* tagging is a nicety — never fail a sync over it */ });
+      }
     }
   }
 
