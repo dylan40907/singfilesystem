@@ -18,6 +18,9 @@ import { useDialog } from "@/components/ui/useDialog";
 
 type PreviewTarget = { url: string; kind: PreviewKind; name: string; type: string | null };
 
+/** How tall the composer may grow before it starts scrolling instead. */
+const COMPOSER_MAX_HEIGHT = 220;
+
 // Renders a message attachment inline; clicking opens the full-screen lightbox.
 function ChatAttachment({
   message,
@@ -249,6 +252,20 @@ export default function ChatThread({
   const [reactMore, setReactMore] = useState(false);
   // Which message just showed its "Copied" confirmation.
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  /**
+   * The composer grows with its content instead of scrolling inside one line,
+   * the way iMessage does on desktop. Measuring needs the height reset first —
+   * scrollHeight can only report growth, never shrink, against a fixed height.
+   */
+  useEffect(() => {
+    const el = draftRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  }, [draft, editing]);
   // The message being replied to (null = composing normally).
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [participantsOpen, setParticipantsOpen] = useState(false);
@@ -1101,8 +1118,10 @@ export default function ChatThread({
               border: "1.5px solid #e5e7eb",
               fontSize: 14,
               fontFamily: "inherit",
+              lineHeight: 1.45,
               resize: "none",
-              maxHeight: 140,
+              maxHeight: COMPOSER_MAX_HEIGHT,
+              overflowY: "hidden",
               outline: "none",
             }}
           />
