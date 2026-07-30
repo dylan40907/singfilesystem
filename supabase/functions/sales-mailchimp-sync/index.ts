@@ -172,6 +172,7 @@ Deno.serve(async (req) => {
   if (error) return json(500, { error: error.message });
 
   let synced = 0;
+  let promoted = 0;
   const failures: string[] = [];
 
   for (const l of leads ?? []) {
@@ -200,6 +201,27 @@ Deno.serve(async (req) => {
       }
       synced += 1;
 
+      // `status_if_new` only applies to contacts that weren't on the list, so
+      // anyone synced before the setting changed would stay non-subscribed
+      // forever. The PUT response tells us where they actually landed, so we
+      // can promote them without an extra lookup.
+      //
+      // Only transactional → subscribed. Never touch someone who unsubscribed,
+      // was cleaned, or is mid double-opt-in: re-subscribing those without
+      // their say-so is exactly what we must not do.
+      if ((settings.mailchimp_status_if_new ?? "transactional") === "subscribed") {
+        const member = await res.json().catch(() => null);
+        if (member?.status === "transactional") {
+          const up = await fetch(`${base}/lists/${audience}/members/${hash}`, {
+            method: "PATCH",
+            headers: mcHeaders,
+            body: JSON.stringify({ status: "subscribed" }),
+          });
+          if (up.ok) promoted += 1;
+          else failures.push(`${email} (promote): ${up.status} ${(await up.text()).slice(0, 140)}`);
+        }
+      }
+
       // Tags need their own endpoint: the `tags` field on the member PUT is only
       // honoured when the contact is created, so it would silently skip anyone
       // already on the list.
@@ -216,8 +238,11 @@ Deno.serve(async (req) => {
 
   await admin.from("sales_settings").update({
     mailchimp_last_sync_at: new Date().toISOString(),
-    mailchimp_last_result: `${synced} synced, ${failures.length} failed`,
+    mailchimp_last_result:
+      `${synced} synced` +
+      (promoted ? `, ${promoted} newly subscribed` : "") +
+      `, ${failures.length} failed`,
   }).eq("id", true);
 
-  return json(200, { ok: true, synced, failed: failures.length, failures: failures.slice(0, 10) });
+  return json(200, { ok: true, synced, promoted, failed: failures.length, failures: failures.slice(0, 10) });
 });
