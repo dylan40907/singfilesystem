@@ -6,11 +6,12 @@ import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import {
-  Course, CourseSegment, CourseStatus, CourseWithMeta,
+  Course, CourseSegment, CourseStatus, CourseWithMeta, ScriptKind,
   archiveCourses, assignToCourses, createCourse, createSegment, deleteCourse, deleteSegment,
   fetchCourses, fetchSegments, moveCourseToSegment, remindIncomplete, setCourseStatus,
   updateCourse, updateSegment,
 } from "@/lib/courses";
+import { ensureSegmentMirrors, mirrorInBackground, relockMirror, syncAllMirrors, unlockMirror } from "@/lib/courseMirror";
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
 import CourseProgressPanel from "@/components/courses/CourseProgressPanel";
@@ -50,6 +51,15 @@ export default function AdminCoursesPage() {
   // Admins can be assigned courses too — "My Courses" lets them take them here.
   const [takingMine, setTakingMine] = useState(false);
   const [tab, setTab] = useState<"active" | "archived">("active");
+  /**
+   * Traditional is where everything is authored. Simplified is a mirror of it,
+   * so this toggle changes what you're looking at, never where you're working.
+   * It exists on the Courses tab only — Groups and Progress deliberately show
+   * both scripts side by side, since you assign and track them together.
+   */
+  const [script, setScript] = useState<ScriptKind>("trad");
+  const isSimp = script === "simp";
+  const [resyncing, setResyncing] = useState(false);
   // multi-select + bulk
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
@@ -84,7 +94,7 @@ export default function AdminCoursesPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [cs, segs] = await Promise.all([fetchCourses(), fetchSegments()]);
+      const [cs, segs] = await Promise.all([fetchCourses(undefined, script), fetchSegments(script)]);
       setCourses(cs);
       setSegments(segs);
     } catch (e: any) {
@@ -92,11 +102,62 @@ export default function AdminCoursesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [script]);
 
   useEffect(() => {
     if (authzd) reload();
   }, [authzd, reload]);
+
+  /**
+   * After any Traditional edit, rebuild that course's Simplified copy. Runs in
+   * the background so a slow conversion never holds up the admin's next click;
+   * anything that goes wrong surfaces in the status badge.
+   */
+  const mirror = useCallback((sourceCourseId: string) => {
+    if (isSimp) return; // editing an unlocked mirror — nothing downstream of it
+    mirrorInBackground(sourceCourseId, setStatus);
+  }, [isSimp]);
+
+  /** Rebuild every mirror — the first pass, and the repair button afterwards. */
+  async function resyncEverything() {
+    setResyncing(true);
+    setStatus("Rebuilding the Simplified copies…");
+    try {
+      const { synced, unlocked } = await syncAllMirrors();
+      await reload();
+      setStatus(
+        `✅ ${synced} course(s) synced` +
+        (unlocked ? ` · ${unlocked} left alone (unlocked)` : "")
+      );
+    } catch (e) {
+      setStatus("Resync error: " + ((e as Error)?.message ?? "unknown"));
+    } finally {
+      setResyncing(false);
+    }
+  }
+
+  async function toggleLock(c: CourseWithMeta) {
+    try {
+      if (c.synced) {
+        await unlockMirror(c.id);
+        await reload();
+        setStatus(`🔓 "${c.title}" unlocked — it no longer follows the Traditional version.`);
+        return;
+      }
+      const ok = await confirm(
+        `Relock "${c.title}" and resync it with the Traditional version?\n\n` +
+        `Every change made to this Simplified copy while it was unlocked will be lost. ` +
+        `It will be rebuilt as a converted copy of the Traditional course as it stands right now.`,
+        { title: "Relock & resync", confirmLabel: "Relock & resync", danger: true }
+      );
+      if (!ok) return;
+      await relockMirror(c.id);
+      await reload();
+      setStatus(`🔒 "${c.title}" relocked and resynced.`);
+    } catch (e) {
+      setStatus("Lock error: " + ((e as Error)?.message ?? "unknown"));
+    }
+  }
 
   /** Remember where we were, then hand off to the course. */
   function openCourse(id: string) {
@@ -154,6 +215,7 @@ export default function AdminCoursesPage() {
     setCreating(true);
     try {
       const course = await createCourse(newTitle.trim(), newSegmentId || null);
+      mirror(course.id); // so it shows up in the Simplified view straight away
       setCreateOpen(false);
       setNewTitle("");
       setNewSegmentId("");
@@ -169,6 +231,7 @@ export default function AdminCoursesPage() {
     if (!segName.trim()) return;
     try {
       const seg = await createSegment(segName.trim(), segColor);
+      await ensureSegmentMirrors().catch(() => {});
       setSegments((s) => [...s, seg]);
       setSegName("");
       setSegOpen(false);
@@ -181,6 +244,8 @@ export default function AdminCoursesPage() {
     if (!segEdit || !segEdit.name.trim()) return;
     try {
       await updateSegment(segEdit.id, { name: segEdit.name.trim(), color: segEdit.color });
+      // Segment headers have their own Simplified copies; a rename must carry.
+      await ensureSegmentMirrors().catch(() => {});
       setSegEdit(null);
       await reload();
     } catch (e: any) {
@@ -224,6 +289,7 @@ export default function AdminCoursesPage() {
   async function changeStatus(c: Course, next: CourseStatus) {
     try {
       await setCourseStatus(c.id, next);
+      mirror(c.id);
       await reload();
       setStatus(next === "published" ? "✅ Published." : next === "archived" ? "Archived." : "Moved to draft.");
     } catch (e: any) {
@@ -268,7 +334,7 @@ export default function AdminCoursesPage() {
     const ids = Array.from(selected);
     setBulkBusy(true);
     try {
-      for (const id of ids) await setCourseStatus(id, "published");
+      for (const id of ids) { await setCourseStatus(id, "published"); mirror(id); }
       clearSelection();
       await reload();
       setStatus(`✅ Published ${ids.length} course(s).`);
@@ -284,7 +350,7 @@ export default function AdminCoursesPage() {
     if (ids.length === 0) return; // nothing published selected → no-op
     setBulkBusy(true);
     try {
-      for (const id of ids) await setCourseStatus(id, "draft");
+      for (const id of ids) { await setCourseStatus(id, "draft"); mirror(id); }
       clearSelection();
       await reload();
       setStatus(`Unpublished ${ids.length} course(s).`);
@@ -306,6 +372,7 @@ export default function AdminCoursesPage() {
     try {
       if (next === "archived") await archiveCourses(ids);
       else for (const id of ids) await setCourseStatus(id, "draft");
+      ids.forEach(mirror);
       clearSelection();
       await reload();
       setStatus(next === "archived" ? "Archived." : "Restored to draft.");
@@ -320,6 +387,7 @@ export default function AdminCoursesPage() {
     if (!moveCourse) return;
     try {
       await moveCourseToSegment(moveCourse.course.id, moveCourse.segmentId || null);
+      mirror(moveCourse.course.id);
       setMoveCourse(null);
       await reload();
       setStatus("Moved.");
@@ -347,7 +415,7 @@ export default function AdminCoursesPage() {
     Promise.all(
       reindexed
         .filter((c) => prevPos.get(c.id) !== c.position)
-        .map((c) => updateCourse(c.id, { position: c.position }))
+        .map((c) => updateCourse(c.id, { position: c.position }).then(() => mirror(c.id)))
     ).catch(() => setStatus("Reorder failed to save."));
   }
 
@@ -408,10 +476,41 @@ export default function AdminCoursesPage() {
               Archived ({courses.filter((c) => c.status === "archived").length})
             </button>
           </div>
+          {/* Authoring lives in Traditional. In Simplified the only actions are
+              resyncing and unlocking, so the create buttons aren't offered. */}
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn" onClick={() => setSegOpen(true)}>+ Add segment</button>
-            <button className="btn btn-primary" onClick={() => setCreateOpen(true)}>+ Add course</button>
+            {isSimp ? (
+              <button className="btn" onClick={resyncEverything} disabled={resyncing}>
+                {resyncing ? "Resyncing…" : "⟳ Resync all from Traditional"}
+              </button>
+            ) : (
+              <>
+                <button className="btn" onClick={() => setSegOpen(true)}>+ Add segment</button>
+                <button className="btn btn-primary" onClick={() => setCreateOpen(true)}>+ Add course</button>
+              </>
+            )}
           </div>
+        </div>
+
+        {/* Script switch — Courses tab only. */}
+        <div className="row" style={{ gap: 6, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            className={`btn${!isSimp ? " btn-primary" : ""}`}
+            onClick={() => { setScript("trad"); clearSelection(); }}
+          >
+            繁 Traditional
+          </button>
+          <button
+            className={`btn${isSimp ? " btn-primary" : ""}`}
+            onClick={() => { setScript("simp"); clearSelection(); }}
+          >
+            简 Simplified
+          </button>
+          <span className="subtle" style={{ fontSize: 12, marginLeft: 6 }}>
+            {isSimp
+              ? "Copies of the Traditional courses. Locked ones update automatically when the Traditional version changes."
+              : "The courses you author. Every change here updates its Simplified copy."}
+          </span>
         </div>
 
         {selected.size > 0 && (
@@ -420,15 +519,18 @@ export default function AdminCoursesPage() {
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
               <button className="btn" disabled={bulkBusy} onClick={() => setBulkAssignOpen(true)}>Assign…</button>
               <button className="btn" disabled={bulkBusy} onClick={bulkRemind}>🔔 Remind not-completed</button>
-              {tab !== "archived" && (
+              {/* Assigning and reminding are per-course and belong to the mirror.
+                  Publish state and archiving come from Traditional, so they're
+                  offered there only. */}
+              {!isSimp && tab !== "archived" && (
                 <button className="btn" disabled={bulkBusy} onClick={bulkPublish}>Publish</button>
               )}
-              {tab !== "archived" && (
+              {!isSimp && tab !== "archived" && (
                 <button className="btn" disabled={bulkBusy} onClick={bulkUnpublish}>Unpublish</button>
               )}
-              {tab === "archived"
+              {!isSimp && (tab === "archived"
                 ? <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("draft")}>Restore</button>
-                : <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("archived")}>Archive</button>}
+                : <button className="btn" disabled={bulkBusy} onClick={() => bulkSetStatus("archived")}>Archive</button>)}
               <button className="btn" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
             </div>
           </div>
@@ -443,7 +545,11 @@ export default function AdminCoursesPage() {
           <div className="subtle">Loading…</div>
         ) : grouped.length === 0 ? (
           <div className="subtle" style={{ padding: 20, textAlign: "center" }}>
-            {tab === "archived" ? "No archived courses." : "No courses or segments yet. Add a segment or a course to start."}
+            {tab === "archived"
+              ? "No archived courses."
+              : isSimp
+                ? "Nothing here yet. Simplified copies are created from the Traditional courses — press “Resync all from Traditional”."
+                : "No courses or segments yet. Add a segment or a course to start."}
           </div>
         ) : (
           grouped.map((g, i) => (
@@ -453,7 +559,7 @@ export default function AdminCoursesPage() {
                   <span style={{ width: 12, height: 12, borderRadius: 999, background: g.segment?.color ?? "#9ca3af", display: "inline-block" }} />
                   <span style={{ fontWeight: 800, color: g.segment?.color ?? "#6b7280" }}>{g.segment?.name ?? "Uncategorized"}</span>
                 </div>
-                {g.segment && (() => {
+                {g.segment && !isSimp && (() => {
                   const sIdx = sortedSegments.findIndex((s) => s.id === g.segment!.id);
                   return (
                     <div className="row" style={{ gap: 6 }}>
@@ -499,27 +605,71 @@ export default function AdminCoursesPage() {
                             style={{ background: "none", border: "none", cursor: "pointer", color: "#111827", fontWeight: 700, padding: 0, textAlign: "left" }}>
                             {c.title}
                           </button>
+                          {isSimp && !c.synced && (
+                            <span
+                              title="Edited by hand — it no longer follows the Traditional version"
+                              style={{ marginLeft: 8, fontSize: 11, fontWeight: 800, color: "#9a3412", background: "#ffedd5", padding: "2px 8px", borderRadius: 999 }}
+                            >
+                              🔓 Unlocked
+                            </span>
+                          )}
                         </td>
                         <td style={td}><StatusBadge status={c.status} /></td>
                         <td style={td}>{c.assignedCount}</td>
                         <td style={td}>{new Date(c.created_at).toLocaleDateString()}</td>
                         <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                          <button className="btn" onClick={() => reorderCourse(g.items, ci, -1)} disabled={ci === 0} style={miniBtn}>↑</button>
-                          <button className="btn" onClick={() => reorderCourse(g.items, ci, 1)} disabled={ci === g.items.length - 1} style={miniBtn}>↓</button>
-                          <button className="btn" onClick={() => openCourse(c.id)} style={miniBtn}>Edit</button>
-                          <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
-                          {c.status !== "published" && c.status !== "archived" && (
-                            <button className="btn" onClick={() => changeStatus(c, "published")} style={miniBtn}>Publish</button>
-                          )}
-                          {c.status === "published" && (
-                            <button className="btn" onClick={() => changeStatus(c, "draft")} style={miniBtn}>Unpublish</button>
-                          )}
-                          {c.status !== "archived" ? (
-                            <button className="btn" onClick={() => changeStatus(c, "archived")} style={miniBtn}>Archive</button>
+                          {isSimp ? (
+                            /* A mirror follows its source for everything structural.
+                               Order, publish state, segment and existence all come
+                               from Traditional — offering them here would let the
+                               two drift and silently undo the order set over there.
+                               Unlocking opens up content editing, and nothing else. */
+                            <>
+                              <button className="btn" style={miniBtn} disabled title="Set in the Traditional view">↑</button>
+                              <button className="btn" style={miniBtn} disabled title="Set in the Traditional view">↓</button>
+                              <button
+                                className="btn"
+                                style={miniBtn}
+                                onClick={() => openCourse(c.id)}
+                                disabled={c.synced}
+                                title={c.synced ? "Locked to the Traditional version — unlock to edit" : "Edit this Simplified copy"}
+                              >
+                                Edit
+                              </button>
+                              <button className="btn" style={miniBtn} disabled title="Move it in the Traditional view">Move</button>
+                              <button className="btn" style={miniBtn} disabled title="Publish it in the Traditional view">
+                                {c.status === "published" ? "Unpublish" : "Publish"}
+                              </button>
+                              <button className="btn" style={miniBtn} disabled title="Archive it in the Traditional view">Archive</button>
+                              <button
+                                className="btn"
+                                style={{ ...miniBtn, color: c.synced ? "#6b7280" : "#9d174d", fontWeight: 700 }}
+                                onClick={() => toggleLock(c)}
+                                title={c.synced ? "Stop following the Traditional version so this can be edited" : "Discard the edits and rebuild from Traditional"}
+                              >
+                                {c.synced ? "🔒 Unlock" : "🔓 Relock"}
+                              </button>
+                            </>
                           ) : (
-                            <button className="btn" onClick={() => changeStatus(c, "draft")} style={miniBtn}>Restore</button>
+                            <>
+                              <button className="btn" onClick={() => reorderCourse(g.items, ci, -1)} disabled={ci === 0} style={miniBtn}>↑</button>
+                              <button className="btn" onClick={() => reorderCourse(g.items, ci, 1)} disabled={ci === g.items.length - 1} style={miniBtn}>↓</button>
+                              <button className="btn" onClick={() => openCourse(c.id)} style={miniBtn}>Edit</button>
+                              <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
+                              {c.status !== "published" && c.status !== "archived" && (
+                                <button className="btn" onClick={() => changeStatus(c, "published")} style={miniBtn}>Publish</button>
+                              )}
+                              {c.status === "published" && (
+                                <button className="btn" onClick={() => changeStatus(c, "draft")} style={miniBtn}>Unpublish</button>
+                              )}
+                              {c.status !== "archived" ? (
+                                <button className="btn" onClick={() => changeStatus(c, "archived")} style={miniBtn}>Archive</button>
+                              ) : (
+                                <button className="btn" onClick={() => changeStatus(c, "draft")} style={miniBtn}>Restore</button>
+                              )}
+                              <button className="btn" onClick={() => handleDelete(c)} style={{ ...miniBtn, color: "#991b1b" }}>🗑</button>
+                            </>
                           )}
-                          <button className="btn" onClick={() => handleDelete(c)} style={{ ...miniBtn, color: "#991b1b" }}>🗑</button>
                         </td>
                       </tr>
                     ))}

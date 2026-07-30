@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { sendReminder } from "@/lib/courses";
+import { ScriptKind, sendReminder } from "@/lib/courses";
+import ScriptTag from "@/components/courses/ScriptTag";
 
 type PickUser = { id: string; full_name: string | null; username: string | null; email: string | null; role: string | null };
-type Item = { courseId: string; title: string; status: string };
+type Item = { courseId: string; title: string; status: string; script: ScriptKind };
 type Row = { user: PickUser; items: Item[]; completed: number; total: number };
 
 const nameOf = (u: { full_name: string | null; username: string | null; email: string | null }) =>
@@ -24,22 +25,27 @@ export default function CourseProgressPanel() {
     const [{ data: users }, { data: assigns }, { data: courses }] = await Promise.all([
       supabase.from("user_profiles").select("id, full_name, username, email, role").eq("is_active", true).order("full_name"),
       supabase.from("course_assignments").select("course_id, user_id, status"),
-      supabase.from("courses").select("id, title, status"),
+      // Both scripts: a Simplified copy is assigned and tracked in its own right.
+      supabase.from("courses").select("id, title, status, script"),
     ]);
     // Only count courses that are still active (not archived).
     const courseById = new Map(
-      (courses ?? []).filter((c: any) => c.status !== "archived").map((c: any) => [c.id, c.title as string])
+      (courses ?? [])
+        .filter((c: any) => c.status !== "archived")
+        .map((c: any) => [c.id, { title: c.title as string, script: (c.script ?? "trad") as ScriptKind }])
     );
     const byUser = new Map<string, Item[]>();
     (assigns ?? []).forEach((a: any) => {
-      const title = courseById.get(a.course_id);
-      if (!title) return;
+      const course = courseById.get(a.course_id);
+      if (!course) return;
       const arr = byUser.get(a.user_id) ?? [];
-      arr.push({ courseId: a.course_id, title, status: a.status });
+      arr.push({ courseId: a.course_id, title: course.title, status: a.status, script: course.script });
       byUser.set(a.user_id, arr);
     });
     const built: Row[] = (users ?? []).map((u: any) => {
-      const items = (byUser.get(u.id) ?? []).sort((x, y) => x.title.localeCompare(y.title));
+      const items = (byUser.get(u.id) ?? []).sort(
+        (x, y) => x.title.localeCompare(y.title) || x.script.localeCompare(y.script)
+      );
       return { user: u, items, completed: items.filter((i) => i.status === "completed").length, total: items.length };
     });
     setRows(built);
@@ -116,8 +122,11 @@ export default function CourseProgressPanel() {
                 {open && r.total > 0 && (
                   <div style={{ borderTop: "1px solid #f1f5f9", padding: "8px 14px", display: "grid", gap: 6, background: "#fafafa" }}>
                     {r.items.map((i) => (
-                      <div key={i.courseId} className="row-between" style={{ padding: "4px 0" }}>
-                        <span>{i.title}</span>
+                      <div key={i.courseId} className="row-between" style={{ padding: "4px 0", gap: 10 }}>
+                        <span className="row" style={{ gap: 8, alignItems: "center", minWidth: 0 }}>
+                          <span style={{ overflowWrap: "anywhere" }}>{i.title}</span>
+                          <ScriptTag script={i.script} />
+                        </span>
                         <StatusPill status={i.status} />
                       </div>
                     ))}

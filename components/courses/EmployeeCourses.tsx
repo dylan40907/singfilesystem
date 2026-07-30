@@ -6,6 +6,7 @@ import {
   FullCourse, MyCourse, fetchCourseFull, fetchMyCourses,
 } from "@/lib/courses";
 import CourseTaker from "./CourseTaker";
+import ScriptTag from "./ScriptTag";
 
 export default function EmployeeCourses({ onTakingChange }: { onTakingChange?: (taking: boolean) => void }) {
   const [myId, setMyId] = useState<string | null>(null);
@@ -67,7 +68,11 @@ export default function EmployeeCourses({ onTakingChange }: { onTakingChange?: (
               <div className="row" style={{ gap: 10, minWidth: 0 }}>
                 {mc.segment && <span style={{ width: 10, height: 10, borderRadius: 999, background: mc.segment.color }} />}
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700 }}>{mc.course.title}</div>
+                  <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 700 }}>{mc.course.title}</span>
+                    {/* Someone can be assigned both scripts of the same course. */}
+                    <ScriptTag script={mc.course.script ?? "trad"} />
+                  </div>
                   <div className="subtle" style={{ fontSize: 12 }}>{mc.segment?.name ?? "Course"}</div>
                 </div>
               </div>

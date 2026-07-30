@@ -7,12 +7,22 @@ export type AssignmentStatus = "not_started" | "in_progress" | "completed";
 export type ObjectType =
   | "text" | "image" | "video" | "pdf" | "youtube" | "file" | "link" | "audio" | "quiz";
 
+/** Courses exist in two scripts. Traditional is authored; Simplified mirrors it. */
+export type ScriptKind = "trad" | "simp";
+
+export const SCRIPT_LABEL: Record<ScriptKind, string> = {
+  trad: "Traditional",
+  simp: "Simplified",
+};
+
 export type CourseSegment = {
   id: string;
   name: string;
   color: string;
   position: number;
   created_at: string;
+  script: ScriptKind;
+  source_segment_id: string | null;
 };
 
 export type Course = {
@@ -25,6 +35,11 @@ export type Course = {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  script: ScriptKind;
+  /** Set on Simplified mirrors: the Traditional course they're built from. */
+  source_course_id: string | null;
+  /** Mirrors only: true = rebuilt from the source, false = unlocked for editing. */
+  synced: boolean;
 };
 
 export type CourseSection = {
@@ -33,6 +48,7 @@ export type CourseSection = {
   title: string;
   position: number;
   created_at: string;
+  source_section_id: string | null;
 };
 
 export type CourseObject = {
@@ -45,6 +61,7 @@ export type CourseObject = {
   settings: Record<string, any>;
   position: number;
   created_at: string;
+  source_object_id: string | null;
 };
 
 export type CourseAssignment = {
@@ -92,22 +109,28 @@ export type CourseWithMeta = Course & {
 
 // ─── Segments ────────────────────────────────────────────────────────────────
 
-export async function fetchSegments(): Promise<CourseSegment[]> {
-  const { data } = await supabase
+/** Omit `script` to get both — callers that only render one view filter it. */
+export async function fetchSegments(script?: ScriptKind): Promise<CourseSegment[]> {
+  let q = supabase
     .from("course_segments")
     .select("*")
     .order("position", { ascending: true })
     .order("created_at", { ascending: true });
+  if (script) q = q.eq("script", script);
+  const { data } = await q;
   return (data ?? []) as CourseSegment[];
 }
 
+/** Segments are only ever authored in Traditional; the mirror is derived. */
 export async function createSegment(name: string, color: string): Promise<CourseSegment> {
   const { data: last } = await supabase
-    .from("course_segments").select("position").order("position", { ascending: false }).limit(1);
+    .from("course_segments").select("position")
+    .eq("script", "trad")
+    .order("position", { ascending: false }).limit(1);
   const position = ((last?.[0]?.position as number | undefined) ?? 0) + 1;
   const { data, error } = await supabase
     .from("course_segments")
-    .insert({ name: name.trim(), color, position })
+    .insert({ name: name.trim(), color, position, script: "trad" })
     .select("*")
     .single();
   if (error) throw error;
@@ -144,16 +167,27 @@ async function nextCoursePosition(segmentId: string | null): Promise<number> {
   return ((data?.[0]?.position as number | undefined) ?? 0) + 1;
 }
 
+/** The Traditional course a mirror was built from, or null if it isn't a mirror. */
+export async function fetchMirrorSource(courseId: string): Promise<Course | null> {
+  const { data: me } = await supabase
+    .from("courses").select("source_course_id").eq("id", courseId).maybeSingle();
+  const sourceId = (me?.source_course_id as string | null) ?? null;
+  if (!sourceId) return null;
+  const { data } = await supabase.from("courses").select("*").eq("id", sourceId).maybeSingle();
+  return (data as Course) ?? null;
+}
+
 /** Courses (optionally filtered by status) with segment + assignment counts.
  *  Ordered by manual position (then created_at), so within a segment they follow
  *  the admin's chosen order and new courses land at the bottom. */
-export async function fetchCourses(status?: CourseStatus): Promise<CourseWithMeta[]> {
+export async function fetchCourses(status?: CourseStatus, script?: ScriptKind): Promise<CourseWithMeta[]> {
   let q = supabase
     .from("courses")
     .select("*")
     .order("position", { ascending: true })
     .order("created_at", { ascending: true });
   if (status) q = q.eq("status", status);
+  if (script) q = q.eq("script", script);
   const { data: courses } = await q;
   const list = (courses ?? []) as Course[];
   if (list.length === 0) return [];
@@ -182,7 +216,8 @@ export async function createCourse(title: string, segmentId: string | null): Pro
   const position = await nextCoursePosition(segmentId);
   const { data, error } = await supabase
     .from("courses")
-    .insert({ title: title.trim(), segment_id: segmentId, position, created_by: auth.user?.id ?? null })
+    // Authoring only ever happens in Traditional; the Simplified copy is derived.
+    .insert({ title: title.trim(), segment_id: segmentId, position, created_by: auth.user?.id ?? null, script: "trad" })
     .select("*")
     .single();
   if (error) throw error;

@@ -14,6 +14,10 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
   const [uploading, setUploading] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState("");
+  // The <a> the caret is currently sitting in, so an existing link can be read
+  // and changed instead of only ever being created.
+  const [activeLink, setActiveLink] = useState<{ href: string; text: string } | null>(null);
+  const activeLinkEl = useRef<HTMLAnchorElement | null>(null);
   // pt size shown in the picker: the current selection's size, "" when the
   // selection spans multiple sizes (or the editor isn't focused).
   const [curSize, setCurSize] = useState("");
@@ -51,6 +55,61 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     document.addEventListener("selectionchange", onSel);
     return () => document.removeEventListener("selectionchange", onSel);
   }, []);
+
+  // Track which link the caret is inside. A link's URL is otherwise invisible
+  // in a contentEditable — clicking it does nothing and hovering shows nothing —
+  // so the only way to change one was to delete it and retype it blind.
+  useEffect(() => {
+    function onSel() {
+      const el = ref.current;
+      if (!el) return;
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const node = sel.getRangeAt(0).startContainer;
+      if (!el.contains(node)) return;
+      let n: HTMLElement | null = node.nodeType === 3 ? node.parentElement : (node as HTMLElement);
+      while (n && n !== el && n.tagName !== "A") n = n.parentElement;
+      const anchor = n && n.tagName === "A" ? (n as HTMLAnchorElement) : null;
+      activeLinkEl.current = anchor;
+      setActiveLink(
+        anchor
+          ? { href: anchor.getAttribute("href") ?? "", text: anchor.textContent ?? "" }
+          : null
+      );
+    }
+    document.addEventListener("selectionchange", onSel);
+    return () => document.removeEventListener("selectionchange", onSel);
+  }, []);
+
+  /** Put the selection around an entire anchor, so execCommand acts on all of it. */
+  function selectWholeLink(anchor: HTMLAnchorElement) {
+    const range = document.createRange();
+    range.selectNodeContents(anchor);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    savedRange.current = range.cloneRange();
+  }
+
+  function editActiveLink() {
+    const anchor = activeLinkEl.current;
+    if (!anchor) return;
+    ref.current?.focus();
+    selectWholeLink(anchor);
+    setLinkUrl(anchor.getAttribute("href") ?? "");
+    setLinkOpen(true);
+  }
+
+  function removeActiveLink() {
+    const anchor = activeLinkEl.current;
+    if (!anchor) return;
+    ref.current?.focus();
+    selectWholeLink(anchor);
+    document.execCommand("unlink");
+    activeLinkEl.current = null;
+    setActiveLink(null);
+    emit();
+  }
 
   function exec(cmd: string, arg?: string) {
     ref.current?.focus();
@@ -107,7 +166,9 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     }
   }
 
+  /** The toolbar button: edits the link you're in, otherwise creates a new one. */
   function openLink() {
+    if (activeLinkEl.current) { editActiveLink(); return; }
     saveSelection();
     setLinkUrl("");
     setLinkOpen(true);
@@ -118,6 +179,8 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     if (!url) return;
     ref.current?.focus();
     restoreSelection();
+    // createLink over an existing anchor rewrites its href, so this covers both
+    // "add a link" and "change this link's URL".
     document.execCommand("createLink", false, url);
     emit();
   }
@@ -155,6 +218,37 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         .rte-content h2 { font-size: 1.4em; font-weight: 800; margin: 0.4em 0; }
         .rte-content img { max-width: 100%; }
       `}</style>
+      {/* Caret inside a link → show where it points, with a way to change it. */}
+      {activeLink && (
+        <div
+          className="row"
+          style={{
+            gap: 8, alignItems: "center", flexWrap: "wrap",
+            padding: "6px 10px", background: "#eff6ff",
+            borderBottom: "1px solid #bfdbfe", fontSize: 12,
+          }}
+        >
+          <span style={{ fontWeight: 800, color: "#1e40af", flexShrink: 0 }}>🔗 Link</span>
+          <a
+            href={activeLink.href || undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={activeLink.href}
+            style={{ color: "#1d4ed8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 320 }}
+          >
+            {activeLink.href || "(no address)"}
+          </a>
+          <button type="button" className="btn" onMouseDown={(e) => e.preventDefault()} onClick={editActiveLink}
+            style={{ ...btnStyle, height: 24, minWidth: 0, padding: "0 10px", fontSize: 12 }}>
+            Edit
+          </button>
+          <button type="button" className="btn" onMouseDown={(e) => e.preventDefault()} onClick={removeActiveLink}
+            style={{ ...btnStyle, height: 24, minWidth: 0, padding: "0 10px", fontSize: 12, color: "#991b1b" }}>
+            Remove
+          </button>
+        </div>
+      )}
+
       <div
         ref={ref}
         className="rte-content"
@@ -169,12 +263,19 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         <div onMouseDown={(e) => { if (e.currentTarget === e.target) setLinkOpen(false); }}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
           <div className="card" style={{ width: "100%", maxWidth: 400 }}>
-            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>Add link</div>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 10 }}>
+              {activeLink ? "Edit link" : "Add link"}
+            </div>
+            {activeLink?.text ? (
+              <div className="subtle" style={{ fontSize: 12, marginBottom: 8 }}>
+                Linked text: <b>{activeLink.text}</b>
+              </div>
+            ) : null}
             <input className="input" autoFocus value={linkUrl} onChange={(e) => setLinkUrl(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") confirmLink(); }} placeholder="https://…" />
             <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
               <button className="btn" onClick={() => setLinkOpen(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={confirmLink}>Add link</button>
+              <button className="btn btn-primary" onClick={confirmLink}>{activeLink ? "Save link" : "Add link"}</button>
             </div>
           </div>
         </div>

@@ -12,6 +12,7 @@ import {
 } from "@/lib/courses";
 import ObjectEditorModal, { ObjectDraft } from "@/components/courses/ObjectEditorModal";
 import CoursePeoplePanel from "@/components/courses/CoursePeoplePanel";
+import { mirrorInBackground, relockMirror, unlockMirror } from "@/lib/courseMirror";
 
 const OBJECT_TYPES: { type: ObjectType; label: string; icon: string }[] = [
   { type: "text", label: "Text", icon: "📝" },
@@ -57,6 +58,41 @@ export default function CourseBuilderPage() {
 
   useEffect(() => { if (authzd) reload(); }, [authzd, reload]);
 
+  // A Simplified mirror is read-only while it's locked to its Traditional
+  // source — otherwise an edit here would be silently overwritten by the next
+  // change made over there.
+  const isMirror = full?.course.script === "simp";
+  const readOnly = !!isMirror && !!full?.course.synced;
+
+  /** Push this course's edits into its Simplified copy. No-op on a mirror. */
+  const mirror = useCallback(() => {
+    if (isMirror) return;
+    mirrorInBackground(courseId, setStatus);
+  }, [courseId, isMirror]);
+
+  async function unlockThis() {
+    try {
+      await unlockMirror(courseId);
+      await reload();
+      setStatus("🔓 Unlocked — this copy no longer follows the Traditional version.");
+    } catch (e) { setStatus("Could not unlock: " + ((e as Error)?.message ?? "unknown")); }
+  }
+
+  async function relockThis() {
+    const ok = await confirm(
+      "Relock this course and resync it with the Traditional version?\n\n" +
+      "Every change made to this Simplified copy while it was unlocked will be lost. " +
+      "It will be rebuilt as a converted copy of the Traditional course as it stands right now.",
+      { title: "Relock & resync", confirmLabel: "Relock & resync", danger: true }
+    );
+    if (!ok) return;
+    try {
+      await relockMirror(courseId);
+      await reload();
+      setStatus("🔒 Relocked and resynced with the Traditional version.");
+    } catch (e) { setStatus("Could not relock: " + ((e as Error)?.message ?? "unknown")); }
+  }
+
   const objectsBySection = useMemo(() => {
     const map = new Map<string, CourseObject[]>();
     (full?.objects ?? []).forEach((o) => {
@@ -71,6 +107,7 @@ export default function CourseBuilderPage() {
   async function saveTitle() {
     if (!full || titleDraft.trim() === full.course.title) return;
     await updateCourse(courseId, { title: titleDraft.trim() || "Untitled course" });
+    mirror();
     await reload();
   }
 
@@ -86,6 +123,7 @@ export default function CourseBuilderPage() {
       await updateSection(sectionModal.id, { title: name });
     }
     setSectionModal(null);
+    mirror();
     await reload();
   }
   // Reorders update local state immediately (no reload) and persist a clean
@@ -103,12 +141,13 @@ export default function CourseBuilderPage() {
       (full?.sections ?? [])
         .filter((x) => posById.get(x.id) !== x.position)
         .map((x) => updateSection(x.id, { position: posById.get(x.id)! }))
-    ).catch(() => setStatus("Reorder failed to save."));
+    ).then(mirror).catch(() => setStatus("Reorder failed to save."));
   }
   async function removeSection(s: CourseSection) {
     const ok = await confirm(`Delete section "${s.title}" and all its objects?`, { title: "Delete section", confirmLabel: "Delete", danger: true });
     if (!ok) return;
     await deleteSection(s.id);
+    mirror();
     await reload();
   }
 
@@ -126,6 +165,7 @@ export default function CourseBuilderPage() {
       setStatus("Could not add object: " + (e?.message ?? "unknown"));
       return;
     }
+    mirror();
     await reload();
     setEditor({
       sectionId,
@@ -141,6 +181,7 @@ export default function CourseBuilderPage() {
     setEditor(null);
     if (e?.isNew && e.objectId) {
       await deleteObject(e.objectId);
+      mirror();
       await reload();
     }
   }
@@ -156,12 +197,14 @@ export default function CourseBuilderPage() {
       await createObject({ courseId, sectionId: editor.sectionId, type: d.type, title: d.title, content: d.content, settings: d.settings, position: pos });
     }
     setEditor(null);
+    mirror();
     await reload();
   }
   async function removeObject(o: CourseObject) {
     const ok = await confirm("Delete this object?", { title: "Delete", confirmLabel: "Delete", danger: true });
     if (!ok) return;
     await deleteObject(o.id);
+    mirror();
     await reload();
   }
   function moveObject(o: CourseObject, dir: -1 | 1) {
@@ -177,11 +220,12 @@ export default function CourseBuilderPage() {
       list
         .filter((x) => posById.get(x.id) !== x.position)
         .map((x) => updateObject(x.id, { position: posById.get(x.id)! }))
-    ).catch(() => setStatus("Reorder failed to save."));
+    ).then(mirror).catch(() => setStatus("Reorder failed to save."));
   }
 
   async function changeStatus(next: CourseStatus) {
     await setCourseStatus(courseId, next);
+    mirror();
     await reload();
     setStatus(next === "published" ? "✅ Published — assignees can now take it." : "Moved to draft.");
   }
@@ -201,7 +245,13 @@ export default function CourseBuilderPage() {
           <StatusBadge status={course.status} />
         </div>
         <div className="row" style={{ gap: 8 }}>
-          {course.status !== "published" ? (
+          {isMirror ? (
+            /* Publish state belongs to the Traditional course — this copy
+               follows it, so offering it here would let the two disagree. */
+            course.synced
+              ? <button className="btn" onClick={unlockThis}>🔒 Unlock to edit</button>
+              : <button className="btn" onClick={relockThis} style={{ color: "#9d174d", fontWeight: 800 }}>🔓 Relock &amp; resync</button>
+          ) : course.status !== "published" ? (
             <button className="btn btn-primary" onClick={() => changeStatus("published")}>Publish</button>
           ) : (
             <button className="btn" onClick={() => changeStatus("draft")}>Unpublish</button>
@@ -209,12 +259,28 @@ export default function CourseBuilderPage() {
         </div>
       </div>
 
+      {isMirror && (
+        <div
+          style={{
+            padding: "10px 14px", borderRadius: 12, fontSize: 13, fontWeight: 600,
+            background: readOnly ? "#eff6ff" : "#fff7ed",
+            border: `1px solid ${readOnly ? "#bfdbfe" : "#fed7aa"}`,
+            color: readOnly ? "#1e40af" : "#9a3412",
+          }}
+        >
+          {readOnly
+            ? "简 Simplified copy — locked to the Traditional version. It updates automatically whenever the Traditional course changes. Unlock it to edit by hand."
+            : "简 Simplified copy — unlocked. Your edits stay, and this course no longer follows the Traditional version. Relocking rebuilds it and discards them."}
+        </div>
+      )}
+
       <input
         className="input"
         value={titleDraft}
         onChange={(e) => setTitleDraft(e.target.value)}
         onBlur={saveTitle}
-        style={{ fontSize: 22, fontWeight: 900, border: "none", padding: "6px 0", background: "transparent" }}
+        readOnly={readOnly}
+        style={{ fontSize: 22, fontWeight: 900, border: "none", padding: "6px 0", background: "transparent", color: readOnly ? "#4b5563" : undefined }}
         placeholder="Course title"
       />
 
@@ -228,7 +294,13 @@ export default function CourseBuilderPage() {
         <div className="card"><CoursePeoplePanel courseId={courseId} /></div>
       ) : (
         <div className="card">
-          {sections.length === 0 && <div className="subtle" style={{ padding: 12 }}>No sections yet. Add one to start building.</div>}
+          {sections.length === 0 && (
+            <div className="subtle" style={{ padding: 12 }}>
+              {readOnly
+                ? "Nothing here yet — this copy fills in as soon as the Traditional course has content."
+                : "No sections yet. Add one to start building."}
+            </div>
+          )}
 
           {sections.sort((a, b) => a.position - b.position).map((s, si, arr) => {
             const objs = objectsBySection.get(s.id) ?? [];
@@ -239,12 +311,14 @@ export default function CourseBuilderPage() {
                     <span style={{ fontSize: 18, flexShrink: 0 }}>📖</span>
                     <span style={{ fontWeight: 800, fontSize: 15, overflowWrap: "anywhere", wordBreak: "break-word" }}>{s.title || "Untitled section"}</span>
                   </div>
-                  <div className="row" style={{ gap: 6, flexShrink: 0 }}>
-                    <button className="btn" onClick={() => moveSection(s, -1)} disabled={si === 0} style={icoBtn}>↑</button>
-                    <button className="btn" onClick={() => moveSection(s, 1)} disabled={si === arr.length - 1} style={icoBtn}>↓</button>
-                    <button className="btn" onClick={() => renameSection(s)} style={mini}>Rename</button>
-                    <button className="btn" onClick={() => removeSection(s)} style={{ ...mini, color: "#991b1b" }}>Delete</button>
-                  </div>
+                  {!readOnly && (
+                    <div className="row" style={{ gap: 6, flexShrink: 0 }}>
+                      <button className="btn" onClick={() => moveSection(s, -1)} disabled={si === 0} style={icoBtn}>↑</button>
+                      <button className="btn" onClick={() => moveSection(s, 1)} disabled={si === arr.length - 1} style={icoBtn}>↓</button>
+                      <button className="btn" onClick={() => renameSection(s)} style={mini}>Rename</button>
+                      <button className="btn" onClick={() => removeSection(s)} style={{ ...mini, color: "#991b1b" }}>Delete</button>
+                    </div>
+                  )}
                 </div>
 
                 {objs.map((o, i) => (
@@ -256,16 +330,18 @@ export default function CourseBuilderPage() {
                         {o.title?.trim() || `Untitled ${objTypeLabel(o.type).toLowerCase()}`}
                       </span>
                     </div>
-                    <div className="row" style={{ gap: 4, flexShrink: 0 }}>
-                      <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>
-                      <button className="btn" onClick={() => moveObject(o, 1)} disabled={i === objs.length - 1} style={icoBtn}>↓</button>
-                      <button className="btn" onClick={() => openEditObject(o)} style={icoBtn}>✏️</button>
-                      <button className="btn" onClick={() => removeObject(o)} style={icoBtn}>🗑</button>
-                    </div>
+                    {!readOnly && (
+                      <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+                        <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>
+                        <button className="btn" onClick={() => moveObject(o, 1)} disabled={i === objs.length - 1} style={icoBtn}>↓</button>
+                        <button className="btn" onClick={() => openEditObject(o)} style={icoBtn}>✏️</button>
+                        <button className="btn" onClick={() => removeObject(o)} style={icoBtn}>🗑</button>
+                      </div>
+                    )}
                   </div>
                 ))}
 
-                <div style={{ position: "relative" }}>
+                <div style={{ position: "relative", display: readOnly ? "none" : undefined }}>
                   <button className="btn" style={{ width: "100%", marginTop: 6, color: "#2563eb", fontWeight: 700 }} onClick={() => setPickerSection(pickerSection === s.id ? null : s.id)}>
                     + Add object
                   </button>
@@ -287,7 +363,7 @@ export default function CourseBuilderPage() {
             );
           })}
 
-          <button className="btn btn-primary" onClick={addSection}>+ Add section</button>
+          {!readOnly && <button className="btn btn-primary" onClick={addSection}>+ Add section</button>}
         </div>
       )}
 
