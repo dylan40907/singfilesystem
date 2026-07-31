@@ -3805,9 +3805,9 @@ function EmployeePerformanceReviewsTab({
                       </span>
                     </div>
 
-                  {/* Notes (freeform) */}
+                  {/* Notes (freeform). pre-wrap keeps the author's line breaks. */}
                   {r.notes ? (
-                    <div style={{ marginTop: 4 }}>
+                    <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
                       {r.notes}
                     </div>
                   ) : null}

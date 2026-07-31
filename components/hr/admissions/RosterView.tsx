@@ -51,12 +51,18 @@ export default function RosterView({
   campusId,
   myUserId,
   readOnly = false,
+  maxMonthsAhead,
+  hideProspective = false,
 }: {
   campusId: string;
   myUserId: string | null;
   /** Viewers below admin browse the roster but can't change it. RLS refuses
    *  their writes regardless; this just keeps the controls out of the way. */
   readOnly?: boolean;
+  /** Trim the grid to the current month plus this many. Undefined = full range. */
+  maxMonthsAhead?: number;
+  /** Hide waitlisted children shown alongside enrolled ones as future arrivals. */
+  hideProspective?: boolean;
 }) {
   const { confirm, modal: dialog } = useDialog();
 
@@ -95,7 +101,15 @@ export default function RosterView({
   const programById = useMemo(() => Object.fromEntries(programs.map((p) => [p.id, p])), [programs]);
   const roomById = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r])), [rooms]);
   const roomOrder = useMemo(() => new Map(rooms.map((r, i) => [r.id, i])), [rooms]);
-  const months = useMemo(() => buildMonths(monthCount), [monthCount]);
+  const months = useMemo(() => {
+    const all = buildMonths(monthCount);
+    if (maxMonthsAhead === undefined) return all;
+    // Window on the current month rather than the roster's start month, so a
+    // teacher sees now and the near future instead of years of history.
+    const cur = currentLAMonthISO();
+    const from = Math.max(0, all.indexOf(cur));
+    return all.slice(from, from + maxMonthsAhead + 1);
+  }, [monthCount, maxMonthsAhead]);
   // A split month contributes two columns: the 1st and the 16th.
   const columns = useMemo(() => {
     const out: string[] = [];
@@ -176,7 +190,9 @@ export default function RosterView({
   const rows = useMemo<Row[]>(() => {
     const q = search.trim().toLowerCase();
     const rosterRows: Row[] = entries.filter((e) => e.status === sub).map((e) => ({ kind: "roster", entry: e }));
-    const prospective: Row[] = sub === "enrolled" ? wlEntries.map((e) => ({ kind: "prospective", entry: e })) : [];
+    const prospective: Row[] = sub === "enrolled" && !hideProspective
+      ? wlEntries.map((e) => ({ kind: "prospective", entry: e }))
+      : [];
     let all = [...rosterRows, ...prospective];
     if (q) all = all.filter((r) => fullName(r.entry).toLowerCase().includes(q));
     const sortValue = (r: Row, key: string): string | number => {
@@ -206,7 +222,7 @@ export default function RosterView({
       if (c === 0 && sort.key.startsWith("room:")) c = compareForSort(sortValue(a, baseSort.key), sortValue(b, baseSort.key), baseSort.dir);
       return c !== 0 ? c : fullName(a.entry).toLowerCase().localeCompare(fullName(b.entry).toLowerCase());
     });
-  }, [entries, wlEntries, sub, search, sort, baseSort, colIndex, seriesByEntry, roomOrder]);
+  }, [entries, wlEntries, sub, search, sort, baseSort, colIndex, seriesByEntry, roomOrder, hideProspective]);
 
   const rowWithdrawMonth = (r: Row): string | null => (r.kind === "roster" ? (r.entry as RosterEntry).withdrawal_month : null);
   const cellActive = (r: Row, monthIso: string) => { const wd = rowWithdrawMonth(r); return !wd || monthIso <= wd; };
@@ -488,9 +504,11 @@ export default function RosterView({
                     </th>
                   );
                 })}
-                <th style={{ ...th, minWidth: 120, verticalAlign: "top" }}>
-                  <button className="btn" style={{ fontSize: 12 }} onClick={() => setAddMonthsOpen(true)}>+ Add months</button>
-                </th>
+                {!readOnly && (
+                  <th style={{ ...th, minWidth: 120, verticalAlign: "top" }}>
+                    <button className="btn" style={{ fontSize: 12 }} onClick={() => setAddMonthsOpen(true)}>+ Add months</button>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>

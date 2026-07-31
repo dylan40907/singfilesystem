@@ -18,6 +18,12 @@ export default function AdmissionsPage() {
 
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const isSupervisor = me?.role === "supervisor";
+  /**
+   * Teachers get the roster for their own campus and nothing else: no waitlist
+   * (those children aren't theirs yet) and a short forward window, since a
+   * teacher planning their class doesn't need next year's projections.
+   */
+  const isTeacherView = !!me && !isSupervisor && !isCampusAdmin && me.role !== "admin";
   // Every active account may read the roster; only admins, campus admins and
   // supervisors may change it. The database enforces the same split, so the
   // read-only mode below is convenience rather than the actual gate.
@@ -41,25 +47,34 @@ export default function AdmissionsPage() {
     if (isCampusAdmin && lockedCampusId) setSelectedCampusId(lockedCampusId);
   }, [isCampusAdmin, lockedCampusId]);
 
-  // Supervisors: resolve their campus from HR (via a security-definer RPC, so it
-  // works regardless of hr_employees row-level access).
+  // Supervisors and teachers: resolve their campus from HR (via a
+  // security-definer RPC, so it works regardless of hr_employees row access).
+  const needsCampusLookup = !!me && (me.role === "supervisor" || isTeacherView);
   useEffect(() => {
-    if (me?.role !== "supervisor") return;
+    if (!needsCampusLookup || !me) return;
     (async () => {
-      const { data } = await supabase.rpc("current_supervisor_campus");
+      const rpc = me.role === "supervisor" ? "current_supervisor_campus" : "current_employee_campus";
+      const { data } = await supabase.rpc(rpc);
       setSupCampusId((data as string | null) ?? null);
       setSupLoaded(true);
     })();
-  }, [me?.role]);
+  }, [needsCampusLookup, me]);
 
-  const activeCampusId = isCampusAdmin ? lockedCampusId : isSupervisor ? supCampusId : selectedCampusId;
+  const activeCampusId = isCampusAdmin
+    ? lockedCampusId
+    // A teacher with a campus on their record goes straight there; one without
+    // falls through to the picker rather than seeing an empty page.
+    : isSupervisor || isTeacherView
+      ? supCampusId ?? selectedCampusId
+      : selectedCampusId;
   const activeCampus = campuses.find((c) => c.id === activeCampusId) ?? null;
   // Admins with more than one campus get an in-tab "Change campus" control.
   // Campus admins and supervisors are pinned to their own site; everyone else
   // who gets as far as the picker may move between campuses.
-  const canSwitch = !isCampusAdmin && !isSupervisor && campuses.length > 1;
-  // Wait for the supervisor's campus lookup before deciding what to show.
-  const stillLoading = loading || (isSupervisor && !supLoaded);
+  // A teacher pinned to their own campus can't wander to the other one.
+  const canSwitch = !isCampusAdmin && !isSupervisor && !(isTeacherView && supCampusId) && campuses.length > 1;
+  // Wait for the campus lookup before deciding what to show.
+  const stillLoading = loading || !me || (needsCampusLookup && !supLoaded);
 
   if (me && !canUse) {
     return (
@@ -146,16 +161,28 @@ export default function AdmissionsPage() {
               )}
             </div>
 
-            <div className="row" style={{ gap: 4, background: "#f3f4f6", padding: 4, borderRadius: 12 }}>
-              <TabButton active={tab === "roster"} onClick={() => setTab("roster")}>Roster</TabButton>
-              <TabButton active={tab === "waitlist"} onClick={() => setTab("waitlist")}>Waitlist</TabButton>
-            </div>
+            {/* Teachers get the roster only — waitlisted children aren't in
+                anyone's class yet, so that list isn't theirs to see. */}
+            {!isTeacherView && (
+              <div className="row" style={{ gap: 4, background: "#f3f4f6", padding: 4, borderRadius: 12 }}>
+                <TabButton active={tab === "roster"} onClick={() => setTab("roster")}>Roster</TabButton>
+                <TabButton active={tab === "waitlist"} onClick={() => setTab("waitlist")}>Waitlist</TabButton>
+              </div>
+            )}
           </div>
 
-          {tab === "waitlist" ? (
+          {tab === "waitlist" && !isTeacherView ? (
             <WaitlistView campusId={activeCampusId} myUserId={me?.id ?? null} readOnly={readOnly} />
           ) : (
-            <RosterView campusId={activeCampusId} myUserId={me?.id ?? null} readOnly={readOnly} />
+            <RosterView
+              campusId={activeCampusId}
+              myUserId={me?.id ?? null}
+              readOnly={readOnly}
+              // Current month plus the next three — far enough to plan a class,
+              // not far enough to be a projection of the whole school year.
+              maxMonthsAhead={isTeacherView ? 3 : undefined}
+              hideProspective={isTeacherView}
+            />
           )}
         </>
       )}

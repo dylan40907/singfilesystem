@@ -2323,9 +2323,11 @@ async function loadReviewForSelection(empId: string, ft: ReviewFormType, y: numb
                       </span>
                     </div>
 
-                  {/* Notes (freeform) */}
+                  {/* Notes (freeform). pre-wrap keeps the line breaks the
+                      author typed — without it the whole note collapses into
+                      one run-on paragraph once the scorecard is saved. */}
                   {r.notes ? (
-                    <div style={{ marginTop: 4 }}>
+                    <div style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
                       {r.notes}
                     </div>
                   ) : null}
@@ -3364,6 +3366,8 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
 
   const [employmentType, setEmploymentType] = useState<"full_time" | "part_time">("part_time");
   const [isActive, setIsActive] = useState(true);
+  /** Admin-set: keep this record out of every supervisor's view. */
+  const [hiddenFromSupervisors, setHiddenFromSupervisors] = useState(false);
 
   const [benefitInput, setBenefitInput] = useState("");
   const [benefits, setBenefits] = useState<string[]>([]);
@@ -4799,6 +4803,7 @@ async function addMeetingType() {
 
         setEmploymentType(emp.employment_type === "full_time" ? "full_time" : "part_time");
         setIsActive(!!emp.is_active);
+        setHiddenFromSupervisors(!!(emp as { hidden_from_supervisors?: boolean }).hidden_from_supervisors);
 
         setBenefits(Array.isArray(emp.benefits) ? emp.benefits : []);
         setHasInsurance(!!emp.has_insurance);
@@ -5087,6 +5092,7 @@ async function resetTimeOffHoursToDefault() {
         job_level_id: jobLevelId || null,
         campus_id: campusId || null,
         insurance_sheet_doc: insuranceDoc,
+        hidden_from_supervisors: hiddenFromSupervisors,
 };
 
       const { error } = await supabase.from("hr_employees").update(payload).eq("id", employeeId);
@@ -5518,6 +5524,25 @@ async function resetTimeOffHoursToDefault() {
                             <option value="active">Active</option>
                             <option value="inactive">Inactive</option>
                           </Select>
+                        </div>
+                        {/* Admin-only: some records need to stay between the
+                            employee and the admins. Enforced by RLS, so a
+                            locked record disappears from a supervisor's
+                            directory, reviews and time off alike. */}
+                        <div>
+                          <FieldLabel>Supervisor visibility</FieldLabel>
+                          <Select
+                            value={hiddenFromSupervisors ? "hidden" : "visible"}
+                            onChange={(e) => setHiddenFromSupervisors(e.target.value === "hidden")}
+                          >
+                            <option value="visible">Visible to supervisors</option>
+                            <option value="hidden">🔒 Hidden from supervisors</option>
+                          </Select>
+                          {hiddenFromSupervisors && (
+                            <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
+                              Supervisors won&apos;t see this person anywhere — directory, scorecards or time off.
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -6185,7 +6210,7 @@ async function resetTimeOffHoursToDefault() {
                   </div>
 
                   {r.notes ? (
-                    <div className="subtle" style={{ marginTop: 4 }}>
+                    <div className="subtle" style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
                       {r.notes}
                     </div>
                   ) : (
@@ -6292,7 +6317,7 @@ async function resetTimeOffHoursToDefault() {
                   <div style={{ fontWeight: 900 }}>{formatYmd(r.occurred_on)}</div>
 
                   {r.notes ? (
-                    <div className="subtle" style={{ marginTop: 4 }}>
+                    <div className="subtle" style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>
                       {r.notes}
                     </div>
                   ) : (
