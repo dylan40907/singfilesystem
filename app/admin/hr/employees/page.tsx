@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import { roleLabel, roleBadgeStyle, roleRank } from "@/lib/roles";
 import AddUserModal from "@/components/hr/AddUserModal";
@@ -57,6 +58,20 @@ export default function EmployeesPage() {
   const [exportMonth, setExportMonth] = useState<number>(new Date().getMonth() + 1);
   const [exportBusy, setExportBusy] = useState(false);
 
+  // Export monthly scorecards for every active employee over a month range.
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkFromMonth, setBulkFromMonth] = useState<number>(1);
+  const [bulkFromYear, setBulkFromYear] = useState<number>(new Date().getFullYear());
+  const [bulkToMonth, setBulkToMonth] = useState<number>(new Date().getMonth() + 1);
+  const [bulkToYear, setBulkToYear] = useState<number>(new Date().getFullYear());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
+
+  // House rule: every popup closes on Escape — but not mid-export, or the
+  // workbook would keep building with nowhere to land.
+  useEscapeKey(() => setBulkOpen(false), bulkOpen && !bulkBusy);
+  useEscapeKey(() => setExportOpen(false), exportOpen && !exportBusy);
+
   type SortKey = "name" | "campus" | "jobLevel" | "role" | "active";
   const defaultDirForKey: Record<SortKey, "asc" | "desc"> = {
     name: "asc",
@@ -102,6 +117,305 @@ export default function EmployeesPage() {
     if (total >= 18) return "FFFFF2CC";
     if (total >= 15) return "FFFCE5CD";
     return "FFF8CBAD";
+  }
+
+  const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+  // Row shapes for the bulk scorecard export.
+  type BulkEmp = {
+    id: string;
+    legal_first_name: string | null;
+    legal_middle_name: string | null;
+    legal_last_name: string | null;
+  };
+  type BulkReview = { id: string; employee_id: string; form_id: string; period_month: number; period_year: number };
+  type BulkQuestion = { id: string; form_id: string; question_text: string; sort_order: number; kind: string | null };
+  type BulkAnswer = { review_id: string; question_id: string; score: number | null };
+
+  /** Inclusive list of {year, month} from one month to another, across year ends. */
+  function monthRange(fromY: number, fromM: number, toY: number, toM: number) {
+    const out: { year: number; month: number; label: string }[] = [];
+    let y = fromY;
+    let m = fromM;
+    // Guard against a reversed or absurd range producing an endless loop.
+    for (let guard = 0; guard < 600; guard++) {
+      if (y > toY || (y === toY && m > toM)) break;
+      out.push({ year: y, month: m, label: `${MONTH_NAMES[m - 1]} ${String(y).slice(2)}` });
+      m += 1;
+      if (m > 12) { m = 1; y += 1; }
+    }
+    return out;
+  }
+
+  /**
+   * One workbook, one sheet per active employee: questions down the side,
+   * the chosen months across the top. Same layout as the single-employee
+   * "Export Monthly Reviews by Year", so the two read the same way — this one
+   * just spans an arbitrary month range and covers everyone at once.
+   */
+  async function exportAllMonthlyScorecards() {
+    const months = monthRange(bulkFromYear, bulkFromMonth, bulkToYear, bulkToMonth);
+    if (months.length === 0) {
+      await alert("The end month is before the start month.");
+      return;
+    }
+
+    setBulkBusy(true);
+    setBulkProgress("Loading employees…");
+    try {
+      // Active employees only, respecting the campus filter that's on screen.
+      let empQ = supabase
+        .from("hr_employees")
+        .select("id, legal_first_name, legal_middle_name, legal_last_name, campus_id, is_active")
+        .eq("is_active", true);
+      empQ = applyCampusFilterToQuery(empQ, campusFilter, "campus_id");
+      const { data: empRows, error: empErr } = await empQ;
+      if (empErr) throw empErr;
+
+      const employees = ((empRows ?? []) as BulkEmp[]).sort((a, b) =>
+        `${a.legal_last_name ?? ""} ${a.legal_first_name ?? ""}`.trim()
+          .localeCompare(`${b.legal_last_name ?? ""} ${b.legal_first_name ?? ""}`.trim())
+      );
+      if (employees.length === 0) {
+        await alert("No active employees to export.");
+        return;
+      }
+
+      // Every published monthly review in the window, for everyone, in one go.
+      const firstY = months[0].year;
+      const lastY = months[months.length - 1].year;
+      setBulkProgress("Loading reviews…");
+      const { data: revRows, error: revErr } = await supabase
+        .from("hr_reviews")
+        .select("id, employee_id, form_id, period_month, period_year")
+        .eq("form_type", "monthly")
+        .eq("published", true)
+        .gte("period_year", firstY)
+        .lte("period_year", lastY)
+        .in("employee_id", employees.map((e) => e.id));
+      if (revErr) throw revErr;
+
+      const inWindow = new Set(months.map((m) => `${m.year}-${m.month}`));
+      const reviews = ((revRows ?? []) as BulkReview[])
+        .filter((r) => inWindow.has(`${r.period_year}-${Number(r.period_month)}`));
+
+      if (reviews.length === 0) {
+        await alert("No published monthly scorecards in that range.");
+        return;
+      }
+
+      // Questions for every form used in the window.
+      const formIds = Array.from(new Set(reviews.map((r) => r.form_id).filter(Boolean)));
+      const { data: qRows, error: qErr } = await supabase
+        .from("hr_review_questions")
+        .select("id, form_id, question_text, sort_order, is_active, kind")
+        .in("form_id", formIds)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+      if (qErr) throw qErr;
+      const questionsByForm = new Map<string, BulkQuestion[]>();
+      for (const q of (qRows ?? []) as BulkQuestion[]) {
+        if ((q.kind ?? "question") !== "question") continue;
+        const arr = questionsByForm.get(q.form_id) ?? [];
+        arr.push(q);
+        questionsByForm.set(q.form_id, arr);
+      }
+
+      // Answers, chunked — `in` on a few thousand ids is asking for a 414.
+      setBulkProgress("Loading scores…");
+      const scoreByReviewQ = new Map<string, number>();
+      const reviewIds = reviews.map((r) => r.id);
+      for (let i = 0; i < reviewIds.length; i += 200) {
+        const { data: ans, error: ansErr } = await supabase
+          .from("hr_review_answers")
+          .select("review_id, question_id, score")
+          .in("review_id", reviewIds.slice(i, i + 200));
+        if (ansErr) throw ansErr;
+        for (const a of (ans ?? []) as BulkAnswer[]) {
+          if (typeof a.score !== "number") continue;
+          scoreByReviewQ.set(`${a.review_id}:${a.question_id}`, a.score);
+        }
+      }
+
+      const reviewsByEmployee = new Map<string, BulkReview[]>();
+      for (const r of reviews) {
+        const arr = reviewsByEmployee.get(r.employee_id) ?? [];
+        arr.push(r);
+        reviewsByEmployee.set(r.employee_id, arr);
+      }
+
+      setBulkProgress("Building workbook…");
+      const ExcelJSMod = await import("exceljs");
+      const ExcelJS = ExcelJSMod.default ?? ExcelJSMod;
+      const wb = new ExcelJS.Workbook();
+
+      const rangeLabel = `${MONTH_NAMES[months[0].month - 1]} ${months[0].year} - ${MONTH_NAMES[months[months.length - 1].month - 1]} ${months[months.length - 1].year}`;
+
+      // Summary sheet first: per-employee monthly totals, so the whole team
+      // can be compared without clicking through every tab.
+      const summary = wb.addWorksheet("Summary");
+      summary.columns = [{ width: 34 }, ...months.map(() => ({ width: 9 })), { width: 12 }];
+      summary.getCell(1, 1).value = `Monthly Scorecards — ${rangeLabel}`;
+      summary.getCell(1, 1).font = { bold: true, size: 14 };
+      summary.getCell(2, 1).value = "Employee";
+      summary.getCell(2, 1).font = { bold: true };
+      months.forEach((m, i) => {
+        const c = summary.getCell(2, 2 + i);
+        c.value = m.label;
+        c.font = { bold: true };
+        c.alignment = { horizontal: "center" };
+      });
+      summary.getCell(2, 2 + months.length).value = "Average";
+      summary.getCell(2, 2 + months.length).font = { bold: true };
+
+      const usedSheetNames = new Set<string>();
+      let summaryRow = 3;
+      let sheetsWritten = 0;
+
+      for (const emp of employees) {
+        const mine = reviewsByEmployee.get(emp.id) ?? [];
+        const name = [emp.legal_first_name, emp.legal_middle_name, emp.legal_last_name]
+          .map((s) => (s ?? "").trim()).filter(Boolean).join(" ") || "(Unnamed)";
+
+        // Totals per month for the summary row.
+        const totalsByMonth = new Map<string, number>();
+        for (const m of months) {
+          const rev = mine.find((r) => r.period_year === m.year && Number(r.period_month) === m.month);
+          if (!rev) continue;
+          const qs = questionsByForm.get(rev.form_id) ?? [];
+          let sum = 0;
+          let any = false;
+          for (const q of qs) {
+            const s = scoreByReviewQ.get(`${rev.id}:${q.id}`);
+            if (typeof s === "number") { sum += s; any = true; }
+          }
+          if (any) totalsByMonth.set(`${m.year}-${m.month}`, sum);
+        }
+
+        summary.getCell(summaryRow, 1).value = name;
+        months.forEach((m, i) => {
+          const t = totalsByMonth.get(`${m.year}-${m.month}`);
+          if (t === undefined) return;
+          const cell = summary.getCell(summaryRow, 2 + i);
+          cell.value = t;
+          cell.alignment = { horizontal: "center" };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: totalsFillForMonthly(t) } };
+        });
+        const vals = Array.from(totalsByMonth.values());
+        if (vals.length) {
+          const avgCell = summary.getCell(summaryRow, 2 + months.length);
+          avgCell.value = Number((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1));
+          avgCell.font = { bold: true };
+          avgCell.alignment = { horizontal: "center" };
+        }
+        summaryRow += 1;
+
+        // Employees with nothing published in the window still appear on the
+        // summary (as a blank row) — that absence is the point — but they don't
+        // get an empty tab of their own.
+        if (mine.length === 0) continue;
+
+        // Excel sheet names: 31 chars, no []:*?/\ , and must be unique.
+        const base = (name.replace(/[[\]:*?/\\]/g, " ").trim() || "Employee").slice(0, 28);
+        let sheetName = base;
+        let n = 2;
+        while (usedSheetNames.has(sheetName.toLowerCase())) sheetName = `${base} ${n++}`;
+        usedSheetNames.add(sheetName.toLowerCase());
+
+        const ws = wb.addWorksheet(sheetName);
+        ws.columns = [{ width: 4 }, { width: 70 }, ...months.map(() => ({ width: 8 })), { width: 16 }];
+
+        ws.mergeCells(1, 2, 1, 2 + months.length);
+        ws.getCell(1, 2).value = `Monthly Scorecards for ${name} — ${rangeLabel}`;
+        ws.getCell(1, 2).font = { bold: true, size: 14 };
+
+        ws.getCell(2, 2).value = "Questions";
+        ws.getCell(2, 2).font = { bold: true };
+        months.forEach((m, i) => {
+          const c = ws.getCell(2, 3 + i);
+          c.value = m.label;
+          c.font = { bold: true };
+          c.alignment = { horizontal: "center" };
+        });
+
+        // The question list comes from the forms this employee was actually
+        // reviewed on. If the form changed mid-range, each question still lands
+        // on its own row and only fills the months that used that form.
+        const orderedQuestions: BulkQuestion[] = [];
+        const seenQ = new Set<string>();
+        for (const m of months) {
+          const rev = mine.find((r) => r.period_year === m.year && Number(r.period_month) === m.month);
+          if (!rev) continue;
+          for (const q of questionsByForm.get(rev.form_id) ?? []) {
+            if (seenQ.has(q.id)) continue;
+            seenQ.add(q.id);
+            orderedQuestions.push(q);
+          }
+        }
+
+        orderedQuestions.forEach((q, idx) => {
+          const rowNum = 3 + idx;
+          ws.getCell(rowNum, 1).value = idx + 1;
+          ws.getCell(rowNum, 2).value = q.question_text;
+          ws.getCell(rowNum, 2).alignment = { wrapText: true };
+          months.forEach((m, i) => {
+            const rev = mine.find((r) => r.period_year === m.year && Number(r.period_month) === m.month);
+            if (!rev) return;
+            const s = scoreByReviewQ.get(`${rev.id}:${q.id}`);
+            if (typeof s !== "number") return;
+            const cell = ws.getCell(rowNum, 3 + i);
+            cell.value = s;
+            cell.alignment = { horizontal: "center" };
+          });
+        });
+
+        const totalsRow = 3 + orderedQuestions.length;
+        ws.getCell(totalsRow, 2).value = "Totals";
+        ws.getCell(totalsRow, 2).font = { bold: true };
+        months.forEach((m, i) => {
+          const t = totalsByMonth.get(`${m.year}-${m.month}`);
+          if (t === undefined) return;
+          const cell = ws.getCell(totalsRow, 3 + i);
+          cell.value = t;
+          cell.font = { bold: true };
+          cell.alignment = { horizontal: "center" };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: totalsFillForMonthly(t) } };
+        });
+
+        const avgCol = 3 + months.length;
+        ws.getCell(totalsRow - 1, avgCol).value = "Current Average";
+        ws.getCell(totalsRow - 1, avgCol).font = { bold: true };
+        if (vals.length) {
+          ws.getCell(totalsRow, avgCol).value = Number((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1));
+          ws.getCell(totalsRow, avgCol).font = { bold: true };
+        }
+
+        const legend: [string, string][] = [
+          ["22 - 24 (3.5% Teachers/TA, 4% for office)", "FFB7E1CD"],
+          ["18 - 21 (2.5% Teachers/TA, 3% for office)", "FFFFF2CC"],
+          ["15 - 17 (1% Teachers/TA, 1.5% for office)", "FFFCE5CD"],
+          ["14 and below (0%)", "FFF8CBAD"],
+        ];
+        legend.forEach(([text, argb], i) => {
+          const rr = totalsRow + 2 + i;
+          ws.getCell(rr, 2).value = text;
+          ws.getCell(rr, 2).fill = { type: "pattern", pattern: "solid", fgColor: { argb } };
+        });
+
+        sheetsWritten += 1;
+        setBulkProgress(`Building workbook… ${sheetsWritten} employee(s)`);
+      }
+
+      const buf = await wb.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      downloadBlob(`Monthly Scorecards - All Active - ${rangeLabel}.xlsx`, blob);
+      setBulkOpen(false);
+    } catch (e) {
+      await alert((e as Error)?.message ?? "Failed to export scorecards.");
+    } finally {
+      setBulkBusy(false);
+      setBulkProgress("");
+    }
   }
 
   async function loadJobLevels() {
@@ -457,6 +771,9 @@ export default function EmployeesPage() {
           <button type="button" className="btn" onClick={() => void openExportModal()}>
             Export by Job Role by Month
           </button>
+          <button type="button" className="btn" onClick={() => setBulkOpen(true)}>
+            Export All Scorecards
+          </button>
           <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
             + Add user
           </button>
@@ -565,6 +882,96 @@ export default function EmployeesPage() {
           onClose={() => setAddOpen(false)}
           onCreated={() => { setAddOpen(false); void loadEmployees(); }}
         />
+      ) : null}
+
+      {bulkOpen ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onMouseDown={(e) => { if (e.currentTarget === e.target && !bulkBusy) setBulkOpen(false); }}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 260,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 14,
+          }}
+        >
+          <div style={{ background: "white", borderRadius: 16, padding: 16, width: "min(560px, 96vw)" }}>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 4 }}>Export All Scorecards</div>
+            <div style={{ color: "#6b7280", fontSize: 13, marginBottom: 12 }}>
+              Published monthly scorecards for every active employee, one sheet each, plus a summary sheet.
+            </div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontWeight: 850, marginBottom: 6 }}>From</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <select
+                      value={bulkFromMonth}
+                      onChange={(e) => setBulkFromMonth(Number(e.target.value))}
+                      style={{ flex: 1, padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 12 }}
+                    >
+                      {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      value={bulkFromYear}
+                      onChange={(e) => setBulkFromYear(Number(e.target.value))}
+                      style={{ width: 96, padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 12 }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ flex: 1, minWidth: 200 }}>
+                  <div style={{ fontWeight: 850, marginBottom: 6 }}>To</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <select
+                      value={bulkToMonth}
+                      onChange={(e) => setBulkToMonth(Number(e.target.value))}
+                      style={{ flex: 1, padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 12 }}
+                    >
+                      {MONTH_NAMES.map((n, i) => <option key={n} value={i + 1}>{n}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      value={bulkToYear}
+                      onChange={(e) => setBulkToYear(Number(e.target.value))}
+                      style={{ width: 96, padding: "10px 12px", border: "1px solid #e5e7eb", borderRadius: 12 }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {(() => {
+                const n = monthRange(bulkFromYear, bulkFromMonth, bulkToYear, bulkToMonth).length;
+                return (
+                  <div style={{ fontSize: 13, color: n === 0 ? "#b91c1c" : "#6b7280", fontWeight: 600 }}>
+                    {n === 0
+                      ? "The end month is before the start month."
+                      : `${n} month${n === 1 ? "" : "s"} will be included.`}
+                  </div>
+                );
+              })()}
+
+              {bulkBusy && bulkProgress ? (
+                <div style={{ fontSize: 13, color: "#9d174d", fontWeight: 700 }}>{bulkProgress}</div>
+              ) : null}
+
+              <div className="row" style={{ gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                <button type="button" className="btn" onClick={() => setBulkOpen(false)} disabled={bulkBusy}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void exportAllMonthlyScorecards()}
+                  disabled={bulkBusy || monthRange(bulkFromYear, bulkFromMonth, bulkToYear, bulkToMonth).length === 0}
+                >
+                  {bulkBusy ? "Exporting…" : "Export (.xlsx)"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {exportOpen ? (
