@@ -16,12 +16,15 @@ export default function PlansSection({
   campusFilter,
   defaultCampusId,
   isCampusAdmin,
+  readOnly = false,
 }: {
   onSelectSchedule: (id: string) => void;
   campuses: Campus[];
   campusFilter: CampusFilter;
   defaultCampusId: string;
   isCampusAdmin: boolean;
+  /** Supervisors browse plans but don't create them. */
+  readOnly?: boolean;
 }) {
   const [plans, setPlans] = useState<(Schedule & { campus_id?: string | null })[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,9 +111,11 @@ export default function PlansSection({
             General room plans — not tied to a week, and never counted toward hours.
           </div>
         </div>
-        <button className="btn btn-pink" onClick={() => setShowForm((v) => !v)}>
-          {showForm ? "Cancel" : "+ New Plan"}
-        </button>
+        {!readOnly && (
+          <button className="btn btn-pink" onClick={() => setShowForm((v) => !v)}>
+            {showForm ? "Cancel" : "+ New Plan"}
+          </button>
+        )}
       </div>
 
       {showForm && (

@@ -25,7 +25,6 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
     pathname === "/admin/hr" || pathname.startsWith("/admin/hr/") ||
     pathname === "/admin/courses" || pathname.startsWith("/admin/courses/");
   const isLearning = pathname === "/admin/learning" || pathname.startsWith("/admin/learning/");
-  const isSchedules = pathname === "/schedules" || pathname.startsWith("/schedules/");
   const isStudents = pathname === "/admin/students" || pathname.startsWith("/admin/students/");
   const isSales = pathname === "/admin/sales" || pathname.startsWith("/admin/sales/");
 
@@ -69,19 +68,6 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
             { href: "/admin/sales/settings", label: "Settings", tab: "settings" },
           ]}
         />
-        <div className="page">
-          <div className="container">{children}</div>
-        </div>
-      </CampusProvider>
-    );
-  }
-
-  // Supervisor schedules view: uses the standard Navbar but needs CampusProvider
-  // because it mounts ScheduleGridEditor, which calls useCampusFilter().
-  if (isSchedules) {
-    return (
-      <CampusProvider>
-        <Navbar />
         <div className="page">
           <div className="container">{children}</div>
         </div>

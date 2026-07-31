@@ -171,6 +171,7 @@ export default function ScheduleListView({ onSelectSchedule, readOnly = false }:
         campusFilter={campusFilter}
         defaultCampusId={defaultCreateCampusId}
         isCampusAdmin={isCampusAdmin}
+        readOnly={readOnly}
       />
 
       <div

@@ -70,10 +70,8 @@ export default function Navbar() {
 
   const isActive = !!profile?.is_active;
 
-  const isSupervisor = !!profile?.is_active && profile.role === "supervisor";
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
-  const showSchedules = !!sessionEmail && isSupervisor;
   // App (learning) page: full admins, campus admins, + "App Supervisors" (the flag).
   const showApp = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || !!profile?.can_manage_learning);
 
@@ -171,7 +169,6 @@ export default function Navbar() {
   }, []);
 
   const activeTab = useMemo(() => {
-    if (pathname.startsWith("/schedules")) return "schedules";
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname.startsWith("/admin/learning")) return "learning";
     if (pathname === "/chat" || pathname.startsWith("/chat/")) return "chat";
@@ -200,7 +197,6 @@ export default function Navbar() {
             {/* Desktop nav links */}
             <div className="row hide-mobile" style={{ marginLeft: 14, gap: 6, flexWrap: "wrap" }}>
               <NavLink href="/" label="Home" active={activeTab === "home"} />
-              {showSchedules && <NavLink href="/schedules" label="Schedules" active={activeTab === "schedules"} />}
               {showHr && !(isAdmin || isCampusAdmin) && <NavLink href="/hr" label="HR" active={activeTab === "hr"} />}
               {showApp && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
             </div>
@@ -248,7 +244,6 @@ export default function Navbar() {
         {menuOpen && (
           <div className="nav-mobile-panel hide-desktop">
             <Link href="/" className={`nav-mobile-link${activeTab === "home" ? " active" : ""}`}>Home</Link>
-            {showSchedules && <Link href="/schedules" className={`nav-mobile-link${activeTab === "schedules" ? " active" : ""}`}>Schedules</Link>}
             {showHr && !(isAdmin || isCampusAdmin) && <Link href="/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
             {showApp && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
             {showChat && (
