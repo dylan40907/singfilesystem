@@ -12,6 +12,7 @@ import {
   updateCourse, updateSegment,
 } from "@/lib/courses";
 import { ensureSegmentMirrors, mirrorInBackground, relockMirror, syncAllMirrors, unlockMirror } from "@/lib/courseMirror";
+import { exportAllCoursesPdf, exportCoursePdf } from "@/lib/coursePdf";
 import AssignPeopleModal from "@/components/courses/AssignPeopleModal";
 import CourseGroupsPanel from "@/components/courses/CourseGroupsPanel";
 import CourseProgressPanel from "@/components/courses/CourseProgressPanel";
@@ -79,6 +80,23 @@ export default function AdminCoursesPage() {
   }
   const isSimp = script === "simp";
   const [resyncing, setResyncing] = useState(false);
+  /** PDF export progress — a handbook takes a while, so it reports as it goes. */
+  const [pdf, setPdf] = useState<{ label: string; done: number; total: number } | null>(null);
+
+  async function runPdf(job: () => Promise<void>) {
+    if (pdf) return; // one export at a time
+    setPdf({ label: "Starting…", done: 0, total: 1 });
+    try {
+      await job();
+      setStatus("✅ PDF downloaded.");
+    } catch (e) {
+      setStatus("PDF error: " + ((e as Error)?.message ?? "unknown"));
+    } finally {
+      setPdf(null);
+    }
+  }
+
+  const onPdfProgress = (label: string, done: number, total: number) => setPdf({ label, done, total });
   // multi-select + bulk
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
@@ -498,6 +516,14 @@ export default function AdminCoursesPage() {
           {/* Authoring lives in Traditional. In Simplified the only actions are
               resyncing and unlocking, so the create buttons aren't offered. */}
           <div className="row" style={{ gap: 8 }}>
+            <button
+              className="btn"
+              disabled={!!pdf}
+              title={`Every ${isSimp ? "Simplified" : "Traditional"} course in one PDF, grouped by segment`}
+              onClick={() => void runPdf(() => exportAllCoursesPdf(script, onPdfProgress))}
+            >
+              📕 Export all {isSimp ? "Simplified" : "Traditional"} to PDF
+            </button>
             {isSimp ? (
               <button className="btn" onClick={resyncEverything} disabled={resyncing}>
                 {resyncing ? "Resyncing…" : "⟳ Resync all from Traditional"}
@@ -656,6 +682,15 @@ export default function AdminCoursesPage() {
                               <button className="btn" style={miniBtn} disabled title="Archive it in the Traditional view">Archive</button>
                               <button
                                 className="btn"
+                                style={miniBtn}
+                                disabled={!!pdf}
+                                title="Download this course as a PDF"
+                                onClick={() => void runPdf(() => exportCoursePdf(c.id, onPdfProgress))}
+                              >
+                                📕 PDF
+                              </button>
+                              <button
+                                className="btn"
                                 style={{ ...miniBtn, color: c.synced ? "#6b7280" : "#9d174d", fontWeight: 700 }}
                                 onClick={() => toggleLock(c)}
                                 title={c.synced ? "Stop following the Traditional version so this can be edited" : "Discard the edits and rebuild from Traditional"}
@@ -669,6 +704,15 @@ export default function AdminCoursesPage() {
                               <button className="btn" onClick={() => reorderCourse(g.items, ci, 1)} disabled={ci === g.items.length - 1} style={miniBtn}>↓</button>
                               <button className="btn" onClick={() => openCourse(c.id)} style={miniBtn}>Edit</button>
                               <button className="btn" onClick={() => setMoveCourse({ course: c, segmentId: c.segment_id ?? "" })} style={miniBtn}>Move</button>
+                              <button
+                                className="btn"
+                                style={miniBtn}
+                                disabled={!!pdf}
+                                title="Download this course as a PDF"
+                                onClick={() => void runPdf(() => exportCoursePdf(c.id, onPdfProgress))}
+                              >
+                                📕 PDF
+                              </button>
                               {c.status !== "published" && c.status !== "archived" && (
                                 <button className="btn" onClick={() => changeStatus(c, "published")} style={miniBtn}>Publish</button>
                               )}
@@ -694,6 +738,35 @@ export default function AdminCoursesPage() {
           ))
         )}
       </div>
+      )}
+
+      {/* A handbook can run to hundreds of pages and fetch every image and
+          video frame, so the export says what it's doing rather than looking
+          frozen. Deliberately not dismissable — closing it wouldn't stop the
+          work, and the file arrives on its own. */}
+      {pdf && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 400,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+        }}>
+          <div className="card" style={{ width: "min(440px, 96vw)" }}>
+            <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 6 }}>Building PDF…</div>
+            <div className="subtle" style={{ fontSize: 13, marginBottom: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {pdf.label}
+            </div>
+            <div style={{ height: 8, borderRadius: 999, background: "#f3f4f6", overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${Math.min(100, Math.round((pdf.done / Math.max(1, pdf.total)) * 100))}%`,
+                background: "#e6178d",
+                transition: "width 0.2s",
+              }} />
+            </div>
+            <div className="subtle" style={{ fontSize: 12, marginTop: 8 }}>
+              {pdf.total > 1 ? `${pdf.done} of ${pdf.total} course(s)` : "Working…"}
+            </div>
+          </div>
+        </div>
       )}
 
       {bulkAssignOpen && (
