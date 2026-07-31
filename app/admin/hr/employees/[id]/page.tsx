@@ -110,6 +110,8 @@ type EmployeeRow = {
   rate: number;
   employment_type: "full_time" | "part_time";
   is_active: boolean;
+  /** Admin-set lock keeping this record out of every supervisor's view. */
+  hidden_from_supervisors: boolean;
 
   benefits: string[];
 
@@ -524,6 +526,7 @@ function normalizeEmployee(raw: any): EmployeeRow {
     rate: Number(raw.rate ?? 0),
     employment_type: raw.employment_type === "full_time" ? "full_time" : "part_time",
     is_active: !!raw.is_active,
+    hidden_from_supervisors: !!raw.hidden_from_supervisors,
 
     benefits: Array.isArray(raw.benefits) ? raw.benefits : [],
 
@@ -597,6 +600,7 @@ async function fetchEmployeeData(employeeId: string) {
       created_at,
       updated_at,
       hours_pin,
+      hidden_from_supervisors,
       job_level:hr_job_levels!hr_employees_job_level_id_fkey(id,name),
       campus:hr_campuses!hr_employees_campus_id_fkey(id,name)
     `
@@ -4803,7 +4807,7 @@ async function addMeetingType() {
 
         setEmploymentType(emp.employment_type === "full_time" ? "full_time" : "part_time");
         setIsActive(!!emp.is_active);
-        setHiddenFromSupervisors(!!(emp as { hidden_from_supervisors?: boolean }).hidden_from_supervisors);
+        setHiddenFromSupervisors(!!emp.hidden_from_supervisors);
 
         setBenefits(Array.isArray(emp.benefits) ? emp.benefits : []);
         setHasInsurance(!!emp.has_insurance);
