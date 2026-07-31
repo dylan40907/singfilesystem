@@ -3329,6 +3329,21 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const canManageAccount =
     viewerRole === "admin" ||
     (viewerRole === "campus_admin" && linkedProfile?.role !== "admin" && linkedProfile?.role !== "campus_admin");
+
+  // Supervisors read this page; they never write to it. Their one exception is
+  // administering monthly scorecards, which the review panel handles and the
+  // database allows through its own policy.
+  const viewerIsSupervisor = viewerRole === "supervisor";
+  const readOnlyRecord = viewerIsSupervisor;
+  /**
+   * A supervisor must not open an admin's, campus admin's or another
+   * supervisor's record. RLS already refuses the underlying rows, but the page
+   * would render a confusing half-empty shell, so it's stopped here too.
+   */
+  const blockedFromRecord =
+    viewerIsSupervisor &&
+    !!linkedProfile?.role &&
+    ["admin", "campus_admin", "supervisor"].includes(linkedProfile.role);
   // form state (mirrors your modal)
   const [legalFirst, setLegalFirst] = useState("");
   const [legalMiddle, setLegalMiddle] = useState("");
@@ -5106,6 +5121,25 @@ async function resetTimeOffHoursToDefault() {
     );
   }
 
+  if (blockedFromRecord) {
+    return (
+      <main className="stack">
+        <div className="container">
+          <div className="card" style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 900, color: "#b00020" }}>Not available</div>
+            <div className="subtle" style={{ marginTop: 6 }}>
+              This record belongs to an admin or supervisor account.{" "}
+              <Link href="/admin/hr/employees" style={{ textDecoration: "underline" }}>
+                Back to Employees
+              </Link>
+              .
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   const titleName = employee
     ? [employee.legal_first_name, employee.legal_middle_name, employee.legal_last_name].filter(Boolean).join(" ")
     : "Employee";
@@ -5163,17 +5197,31 @@ async function resetTimeOffHoursToDefault() {
         </div>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <EmployeeAccountActions
-            profileId={linkedProfileId}
-            role={linkedProfile?.role ?? null}
-            isActive={!!linkedProfile?.is_active}
-            displayName={titleName}
-            canManage={canManageAccount}
-            onChanged={async () => { await reloadLinkedProfile(); }}
-          />
-          <button className="btn btn-primary" onClick={() => void saveChanges()} disabled={loading}>
-            Save
-          </button>
+          {!readOnlyRecord && (
+            <>
+              <EmployeeAccountActions
+                profileId={linkedProfileId}
+                role={linkedProfile?.role ?? null}
+                isActive={!!linkedProfile?.is_active}
+                displayName={titleName}
+                canManage={canManageAccount}
+                onChanged={async () => { await reloadLinkedProfile(); }}
+              />
+              <button className="btn btn-primary" onClick={() => void saveChanges()} disabled={loading}>
+                Save
+              </button>
+            </>
+          )}
+          {readOnlyRecord && (
+            <span
+              style={{
+                padding: "8px 14px", borderRadius: 999, fontSize: 13, fontWeight: 800,
+                background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af",
+              }}
+            >
+              View only
+            </span>
+          )}
         </div>
       </div>
 

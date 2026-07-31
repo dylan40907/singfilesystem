@@ -23,8 +23,7 @@ export function modeHome(mode: PortalMode, profile: TeacherProfile | null): stri
     case "curriculum":
       return "/";
     case "hr":
-      // Supervisors don't get the Employees tab — send them to Attendance.
-      return profile?.role === "supervisor" ? "/admin/hr/attendance" : "/admin/hr/employees";
+      return "/admin/hr/employees";
     case "students":
       return "/admin/students/admissions";
     case "sales":
@@ -41,8 +40,10 @@ export function availableModes(profile: TeacherProfile | null): PortalMode[] {
   const isSupervisor = role === "supervisor";
 
   const modes: PortalMode[] = ["curriculum"];
-  // Students mirrors admissions access: admins, campus admins, supervisors.
-  if (isAdmin || isCampusAdmin || isSupervisor) modes.push("hr", "students");
+  if (isAdmin || isCampusAdmin || isSupervisor) modes.push("hr");
+  // Students is readable by every active account — teachers need to look up the
+  // children they teach. Editing stays with admins; see canEditStudents().
+  modes.push("students");
   // Sales tracks prospective families, not enrolled ones — supervisors work
   // those leads too, and campus scoping doesn't apply since a family may end up
   // at either campus (or neither).

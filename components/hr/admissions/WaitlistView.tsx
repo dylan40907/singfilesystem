@@ -22,7 +22,16 @@ const OFFER_PILL: Record<OfferStatus, { color: string; bg: string; border: strin
   denied: { color: "#b91c1c", bg: "#fef2f2", border: "#fca5a5" },
 };
 
-export default function WaitlistView({ campusId, myUserId }: { campusId: string; myUserId: string | null }) {
+export default function WaitlistView({
+  campusId,
+  myUserId,
+  readOnly = false,
+}: {
+  campusId: string;
+  myUserId: string | null;
+  /** See RosterView — RLS is the real gate, this keeps the controls out of sight. */
+  readOnly?: boolean;
+}) {
   const { confirm, modal: dialog } = useDialog();
 
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
@@ -156,8 +165,8 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
             onChange={(e) => setSearch(e.target.value)}
             style={{ width: 150 }}
           />
-          <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Manage rooms</button>
-          <button className="btn btn-primary" onClick={() => setEntryModal({ mode: "create" })}>+ Add to waitlist</button>
+          {!readOnly && <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Manage rooms</button>}
+          {!readOnly && <button className="btn btn-primary" onClick={() => setEntryModal({ mode: "create" })}>+ Add to waitlist</button>}
         </div>
       </div>
 
@@ -174,7 +183,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
           <div style={{ fontWeight: 800 }}>
             {sub === "active" ? "No one on the waitlist yet" : sub === "admitted" ? "No admitted entries yet" : "Nothing removed"}
           </div>
-          {sub === "active" && (
+          {sub === "active" && !readOnly && (
             <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setEntryModal({ mode: "create" })}>
               + Add the first student
             </button>
@@ -310,9 +319,15 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                     {sub === "active" ? (
                       <td style={{ ...td, right: 0, position: "sticky", background: rowBg, boxShadow: "-2px 0 5px -2px rgba(0,0,0,0.12)" }}>
                         <div className="row" style={{ gap: 6 }}>
-                          <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setAdmitFor(e)}>Admit</button>
-                          <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setEntryModal({ mode: "edit", entry: e })}>Edit</button>
-                          <button className="btn" style={{ padding: "4px 10px", fontSize: 12, color: "#b91c1c" }} onClick={() => void removeFromWaitlist(e)}>Remove</button>
+                          {readOnly ? (
+                            <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setEntryModal({ mode: "edit", entry: e })}>View</button>
+                          ) : (
+                            <>
+                              <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setAdmitFor(e)}>Admit</button>
+                              <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setEntryModal({ mode: "edit", entry: e })}>Edit</button>
+                              <button className="btn" style={{ padding: "4px 10px", fontSize: 12, color: "#b91c1c" }} onClick={() => void removeFromWaitlist(e)}>Remove</button>
+                            </>
+                          )}
                         </div>
                       </td>
                     ) : (
@@ -322,7 +337,7 @@ export default function WaitlistView({ campusId, myUserId }: { campusId: string;
                         <td style={{ ...td, right: 0, position: "sticky", background: rowBg }}>
                           <div className="row" style={{ gap: 6 }}>
                             <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setEntryModal({ mode: "edit", entry: e })}>View</button>
-                            {sub === "removed" && (
+                            {sub === "removed" && !readOnly && (
                               <button className="btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => void restoreEntry(e)}>Restore</button>
                             )}
                           </div>

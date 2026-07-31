@@ -47,7 +47,17 @@ function cellBackground(roomColor: string | undefined, prospective: boolean, pro
   return roomColor + (dimmed ? "22" : "55"); // hex alpha: ~13% (dim) vs ~33% (vibrant)
 }
 
-export default function RosterView({ campusId, myUserId }: { campusId: string; myUserId: string | null }) {
+export default function RosterView({
+  campusId,
+  myUserId,
+  readOnly = false,
+}: {
+  campusId: string;
+  myUserId: string | null;
+  /** Viewers below admin browse the roster but can't change it. RLS refuses
+   *  their writes regardless; this just keeps the controls out of the way. */
+  readOnly?: boolean;
+}) {
   const { confirm, modal: dialog } = useDialog();
 
   const [entries, setEntries] = useState<RosterEntry[]>([]);
@@ -406,12 +416,12 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
         <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {status ? <span className="badge">{status}</span> : null}
           <input className="input" placeholder="Search name…" value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: 150 }} />
-          <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Rooms</button>
-          <button className="btn" onClick={() => setProgramsOpen(true)}>📋 Programs</button>
+          {!readOnly && <button className="btn" onClick={() => setRoomsOpen(true)}>🚪 Rooms</button>}
+          {!readOnly && <button className="btn" onClick={() => setProgramsOpen(true)}>📋 Programs</button>}
           {pastCount > 0 && (
             <button className="btn" onClick={() => setShowPast((p) => !p)}>{showPast ? "Hide past" : `Show past · ${pastCount}`}</button>
           )}
-          <button className="btn btn-primary" onClick={() => setEntryModal({})}>+ Add student</button>
+          {!readOnly && <button className="btn btn-primary" onClick={() => setEntryModal({})}>+ Add student</button>}
         </div>
       </div>
 
@@ -426,7 +436,7 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
       ) : rows.length === 0 ? (
         <div className="card">
           <div style={{ fontWeight: 800 }}>{sub === "enrolled" ? "No students yet" : "No withdrawn students"}</div>
-          {sub === "enrolled" && <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setEntryModal({})}>+ Add student</button>}
+          {sub === "enrolled" && !readOnly && <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => setEntryModal({})}>+ Add student</button>}
         </div>
       ) : (
         <div style={{ overflow: "auto", maxHeight: "76vh", border: "1.5px solid #e5e7eb", borderRadius: 12 }}>
@@ -497,16 +507,18 @@ export default function RosterView({ campusId, myUserId }: { campusId: string; m
                     {/* Name (frozen) */}
                     <td style={{ ...td, ...frozenPad, position: "sticky", left: 0, width: NAME_W, minWidth: NAME_W, background: frozenBg, zIndex: 3 }}>
                       <div style={{ fontWeight: 700 }}>{fullName(r.entry)}</div>
-                      <div className="row" style={{ gap: 6, marginTop: 4 }}>
-                        <button className="btn" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => (r.kind === "roster" ? setEntryModal({ entry: r.entry }) : setWlEntryModal({ entry: r.entry }))}>Edit</button>
-                        {r.kind === "prospective" ? (
-                          <button className="btn btn-primary" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => void admitProspective(r.entry)}>Admit</button>
-                        ) : sub === "withdrawn" ? (
-                          <button className="btn" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => void restore(r.entry)}>Restore</button>
-                        ) : (
-                          <button className="btn" style={{ padding: "2px 9px", fontSize: 11, color: "#b91c1c" }} onClick={() => setWithdrawFor(r.entry)}>Withdraw</button>
-                        )}
-                      </div>
+                      {!readOnly && (
+                        <div className="row" style={{ gap: 6, marginTop: 4 }}>
+                          <button className="btn" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => (r.kind === "roster" ? setEntryModal({ entry: r.entry }) : setWlEntryModal({ entry: r.entry }))}>Edit</button>
+                          {r.kind === "prospective" ? (
+                            <button className="btn btn-primary" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => void admitProspective(r.entry)}>Admit</button>
+                          ) : sub === "withdrawn" ? (
+                            <button className="btn" style={{ padding: "2px 9px", fontSize: 11 }} onClick={() => void restore(r.entry)}>Restore</button>
+                          ) : (
+                            <button className="btn" style={{ padding: "2px 9px", fontSize: 11, color: "#b91c1c" }} onClick={() => setWithdrawFor(r.entry)}>Withdraw</button>
+                          )}
+                        </div>
+                      )}
                     </td>
                     {/* DOB (frozen) */}
                     <td style={{ ...td, ...frozenPad, position: "sticky", left: NAME_W, width: DOB_W, minWidth: DOB_W, background: frozenBg, zIndex: 3 }}>{fmtDate(r.entry.date_of_birth) || "—"}</td>

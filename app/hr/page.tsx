@@ -1349,8 +1349,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
           <button className={`hr-mobile-tab${activeTab === "attendance" ? " active" : ""}`} onClick={() => setActiveTab("attendance")}>Attendance</button>
           {employee && <button className={`hr-mobile-tab${activeTab === "documents" ? " active" : ""}`} onClick={() => setActiveTab("documents")}>Documents</button>}
           <button className={`hr-mobile-tab${activeTab === "reviews" ? " active" : ""}`} onClick={() => setActiveTab("reviews")}>Reviews</button>
-          {isSupervisor && <button className={`hr-mobile-tab${activeTab === "meetings" ? " active" : ""}`} onClick={() => setActiveTab("meetings")}>Meetings</button>}
-          {canReviewOthers && <button className={`hr-mobile-tab${activeTab === "employeeReviews" ? " active" : ""}`} onClick={() => setActiveTab("employeeReviews")}>Employee Reviews</button>}
+          {/* Meetings and Employee Reviews used to live here as supervisor-only
+              subtabs. They're now the real HR Portal pages, reachable from the
+              mode switcher, so this page is purely self-service again. */}
           <button className={`hr-mobile-tab${activeTab === "schedule" ? " active" : ""}`} onClick={() => setActiveTab("schedule")}>Schedule</button>
           <button className={`hr-mobile-tab${activeTab === "leave" ? " active" : ""}`} onClick={() => setActiveTab("leave")}>Leave</button>
           <button className={`hr-mobile-tab${activeTab === "timesheetLog" ? " active" : ""}`} onClick={() => setActiveTab("timesheetLog")}>Timesheet Log</button>
@@ -1373,16 +1374,6 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             <TabButton active={activeTab === "reviews"} onClick={() => setActiveTab("reviews")}>
               Performance Reviews
             </TabButton>
-            {isSupervisor ? (
-              <TabButton active={activeTab === "meetings"} onClick={() => setActiveTab("meetings")}>
-                Meetings
-              </TabButton>
-            ) : null}
-            {canReviewOthers ? (
-              <TabButton active={activeTab === "employeeReviews"} onClick={() => setActiveTab("employeeReviews")}>
-                Employee Reviews
-              </TabButton>
-            ) : null}
             <TabButton active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
               Schedule
             </TabButton>

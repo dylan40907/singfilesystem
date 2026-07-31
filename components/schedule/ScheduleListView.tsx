@@ -16,11 +16,13 @@ import { useCampusFilter, applyCampusFilterToQuery } from "@/lib/CampusContext";
 
 interface ScheduleListViewProps {
   onSelectSchedule: (id: string) => void;
+  /** Supervisors can read every schedule but create or change none. */
+  readOnly?: boolean;
 }
 
 type ScheduleWithCampus = Schedule & { campus_id?: string | null };
 
-export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewProps) {
+export default function ScheduleListView({ onSelectSchedule, readOnly = false }: ScheduleListViewProps) {
   const { filter: campusFilter, campuses, isCampusAdmin, lockedCampusId } = useCampusFilter();
 
   const [schedules, setSchedules] = useState<ScheduleWithCampus[]>([]);
@@ -184,12 +186,14 @@ export default function ScheduleListView({ onSelectSchedule }: ScheduleListViewP
           <button className="btn" onClick={openMySchedule}>
             My Schedule
           </button>
-          <button
-            className="btn btn-pink"
-            onClick={() => setShowNewForm(!showNewForm)}
-          >
-            {showNewForm ? "Cancel" : "+ New Schedule"}
-          </button>
+          {!readOnly && (
+            <button
+              className="btn btn-pink"
+              onClick={() => setShowNewForm(!showNewForm)}
+            >
+              {showNewForm ? "Cancel" : "+ New Schedule"}
+            </button>
+          )}
         </div>
       </div>
 

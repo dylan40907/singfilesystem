@@ -8,6 +8,7 @@ import { useDialog } from "@/components/ui/useDialog";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import { roleLabel, roleBadgeStyle, roleRank } from "@/lib/roles";
+import { canSeeEmployeeWithRole, canUseHrPortal, hasAdminAccess } from "@/lib/hrAccess";
 import AddUserModal from "@/components/hr/AddUserModal";
 
 type CampusRow = { id: string; name: string };
@@ -627,7 +628,9 @@ export default function EmployeesPage() {
 
   const { filter: campusFilter, isCampusAdmin } = useCampusFilter();
 
-  async function loadEmployees() {
+  /** `viewer` is passed in because state hasn't settled on first load yet. */
+  async function loadEmployees(viewer?: TeacherProfile | null) {
+    const meProfile = viewer ?? me;
     setError("");
     try {
       let q = supabase
@@ -672,13 +675,13 @@ export default function EmployeesPage() {
       }
 
       // Campus admins are peers of other campus admins and below full admins —
-      // they must not see (or be able to manage) either.
-      if (isCampusAdmin) {
-        list = list.filter((r) => {
-          const role = r.profile_id ? metaById.get(r.profile_id)?.role : null;
-          return role !== "admin" && role !== "campus_admin";
-        });
-      }
+      // they must not see (or be able to manage) either. Supervisors see only
+      // non-privileged staff. One rule, in lib/hrAccess, so this can't drift
+      // from what the database enforces.
+      list = list.filter((r) => {
+        const role = r.profile_id ? metaById.get(r.profile_id)?.role : null;
+        return canSeeEmployeeWithRole(meProfile, role);
+      });
 
       setProfileMeta(metaById);
       setRows(list);
@@ -694,12 +697,12 @@ export default function EmployeesPage() {
         const prof = await fetchMyProfile();
         setMe(prof);
 
-        if (prof?.role !== "admin" && prof?.role !== "campus_admin") {
-          setError("Access denied: admin only.");
+        if (!canUseHrPortal(prof)) {
+          setError("Access denied: HR access required.");
           return;
         }
 
-        await loadEmployees();
+        await loadEmployees(prof);
         await loadJobLevels();
       } finally {
         setLoading(false);
@@ -710,9 +713,8 @@ export default function EmployeesPage() {
 
   // Reload when the campus filter changes (after initial mount)
   useEffect(() => {
-    if (!me) return;
-    if (me.role !== "admin" && me.role !== "campus_admin") return;
-    loadEmployees();
+    if (!canUseHrPortal(me)) return;
+    loadEmployees(me);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campusFilter]);
 
@@ -764,7 +766,11 @@ export default function EmployeesPage() {
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
           <div style={{ fontWeight: 900, fontSize: 26 }}>Employees</div>
-          <div style={{ color: "#6b7280" }}>Directory (click an employee to view / edit)</div>
+          <div style={{ color: "#6b7280" }}>
+            {hasAdminAccess(me)
+              ? "Directory (click an employee to view / edit)"
+              : "Directory — view only. Shows the staff you supervise."}
+          </div>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -774,9 +780,12 @@ export default function EmployeesPage() {
           <button type="button" className="btn" onClick={() => setBulkOpen(true)}>
             Export All Scorecards
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
-            + Add user
-          </button>
+          {/* Supervisors read this directory; they don't create accounts. */}
+          {hasAdminAccess(me) && (
+            <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
+              + Add user
+            </button>
+          )}
         </div>
       </div>
 

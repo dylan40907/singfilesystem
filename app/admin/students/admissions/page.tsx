@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { canEditStudents } from "@/lib/hrAccess";
 import { useCampusFilter } from "@/lib/CampusContext";
 import WaitlistView from "@/components/hr/admissions/WaitlistView";
 import RosterView from "@/components/hr/admissions/RosterView";
@@ -13,11 +14,15 @@ export default function AdmissionsPage() {
   // We read the campus *list* and role info from context, but Admissions keeps
   // its OWN campus selection — it deliberately does not touch the global top-bar
   // picker (which drives the other HR tabs).
-  const { loading, campuses, isCampusAdmin, isTrueAdmin, lockedCampusId } = useCampusFilter();
+  const { loading, campuses, isCampusAdmin, lockedCampusId } = useCampusFilter();
 
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const isSupervisor = me?.role === "supervisor";
-  const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin" || me.role === "supervisor");
+  // Every active account may read the roster; only admins, campus admins and
+  // supervisors may change it. The database enforces the same split, so the
+  // read-only mode below is convenience rather than the actual gate.
+  const canUse = !!me?.is_active;
+  const readOnly = !canEditStudents(me);
 
   const [tab, setTab] = useState<Tab>("roster");
 
@@ -50,7 +55,9 @@ export default function AdmissionsPage() {
   const activeCampusId = isCampusAdmin ? lockedCampusId : isSupervisor ? supCampusId : selectedCampusId;
   const activeCampus = campuses.find((c) => c.id === activeCampusId) ?? null;
   // Admins with more than one campus get an in-tab "Change campus" control.
-  const canSwitch = isTrueAdmin && campuses.length > 1;
+  // Campus admins and supervisors are pinned to their own site; everyone else
+  // who gets as far as the picker may move between campuses.
+  const canSwitch = !isCampusAdmin && !isSupervisor && campuses.length > 1;
   // Wait for the supervisor's campus lookup before deciding what to show.
   const stillLoading = loading || (isSupervisor && !supLoaded);
 
@@ -72,6 +79,17 @@ export default function AdmissionsPage() {
         <div className="subtle">
           Campus waitlist &amp; roster. Each campus is kept completely separate.
         </div>
+        {readOnly && (
+          <div
+            style={{
+              padding: "8px 14px", borderRadius: 12, fontSize: 13, fontWeight: 700,
+              background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af",
+              alignSelf: "flex-start",
+            }}
+          >
+            👁 View only — you can browse the roster and waitlist but not change them.
+          </div>
+        )}
       </div>
 
       {stillLoading ? (
@@ -135,9 +153,9 @@ export default function AdmissionsPage() {
           </div>
 
           {tab === "waitlist" ? (
-            <WaitlistView campusId={activeCampusId} myUserId={me?.id ?? null} />
+            <WaitlistView campusId={activeCampusId} myUserId={me?.id ?? null} readOnly={readOnly} />
           ) : (
-            <RosterView campusId={activeCampusId} myUserId={me?.id ?? null} />
+            <RosterView campusId={activeCampusId} myUserId={me?.id ?? null} readOnly={readOnly} />
           )}
         </>
       )}

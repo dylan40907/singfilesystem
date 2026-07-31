@@ -131,8 +131,7 @@ export default function HrNavbar() {
     return "employees";
   }, [pathname]);
 
-  // ✅ For supervisors, send "home" to Attendance
-  const hrHomeHref = hasAdminAccess ? "/admin/hr/employees" : "/admin/hr/attendance";
+  const hrHomeHref = "/admin/hr/employees";
 
   const subtitle = useMemo(() => {
     if (!sessionEmail) return "Not signed in";
@@ -158,7 +157,13 @@ export default function HrNavbar() {
     ...(isAdmin ? [{ href: "/admin/hr/settings", label: "Settings", tab: "settings" }] : []),
     ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
   ] : canUseHr && isSupervisor ? [
+    // Supervisors get the real pages rather than subtabs bolted onto /hr.
+    // Everything here is read-only for them except administering monthly
+    // scorecards, which is enforced by RLS, not just by hiding buttons.
+    { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
     { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
+    { href: "/admin/hr/employee-meetings", label: "Meetings", tab: "employee-meetings" },
+    { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
   ] : [];
 
   return (
