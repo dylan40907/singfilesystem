@@ -23,6 +23,7 @@ export default function ObjectEditorModal({
   onCancel,
   onDiscard,
   onSave,
+  readOnly = false,
 }: {
   draft: ObjectDraft;
   /** Identity for autosaved work-in-progress; omit to disable persistence. */
@@ -32,6 +33,12 @@ export default function ObjectEditorModal({
   /** The Cancel button — a deliberate throw-away. Defaults to onCancel. */
   onDiscard?: () => void;
   onSave: (d: ObjectDraft) => void;
+  /**
+   * View without editing — used to check a locked Simplified course's content
+   * without having to unlock it first. Everything renders as normal, just
+   * uneditable, so the translation can be proof-read in place.
+   */
+  readOnly?: boolean;
 }) {
   // Pick up anything left behind by an accidental dismiss of this same editor.
   const restored = useMemo(() => loadDraft<StoredDraft>(draftKey), [draftKey]);
@@ -42,8 +49,9 @@ export default function ObjectEditorModal({
   const [error, setError] = useState<string | null>(null);
 
   // Autosave as the user types. Escape / backdrop keep the draft; only an
-  // explicit Cancel or a successful Confirm throws it away.
-  useDraftAutosave(draftKey, { title, content, settings });
+  // explicit Cancel or a successful Confirm throws it away. Viewing never
+  // autosaves — there's no edit to recover.
+  useDraftAutosave(readOnly ? undefined : draftKey, { title, content, settings });
   useEscapeKey(onCancel);
 
   function discardAndClose() {
@@ -96,7 +104,24 @@ export default function ObjectEditorModal({
     <div onMouseDown={(e) => { if (e.currentTarget === e.target) onCancel(); }}
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div className="card" style={{ width: "100%", maxWidth: 640, maxHeight: "88vh", overflowY: "auto" }}>
-        <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 4 }}>{typeLabel(draft.type)}</div>
+        <div className="row-between" style={{ marginBottom: 4, alignItems: "center", gap: 10 }}>
+          <div style={{ fontWeight: 900, fontSize: 18 }}>{typeLabel(draft.type)}</div>
+          {readOnly && (
+            <span style={{
+              fontSize: 11, fontWeight: 800, padding: "2px 9px", borderRadius: 999,
+              background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af",
+            }}>
+              👁 View only
+            </span>
+          )}
+        </div>
+
+        {/* A disabled fieldset makes every control inside inert in one go, so a
+            new field can't accidentally stay editable in view mode. */}
+        <fieldset
+          disabled={readOnly}
+          style={{ border: "none", padding: 0, margin: 0, minInlineSize: "auto" }}
+        >
 
         {draft.type !== "image" && (
           <>
@@ -108,7 +133,20 @@ export default function ObjectEditorModal({
         {draft.type === "text" && (
           <>
             <label style={lbl}>Content</label>
-            <RichTextEditor value={content.html ?? ""} onChange={(html) => patchContent({ html })} />
+            {/* contentEditable ignores a disabled fieldset, so view mode renders
+                the saved HTML instead of mounting the editor at all. */}
+            {readOnly ? (
+              <div
+                className="rte-readonly"
+                style={{
+                  border: "1.5px solid #e5e7eb", borderRadius: 10, padding: "12px 14px",
+                  fontSize: 16, lineHeight: 1.5, maxHeight: 360, overflowY: "auto",
+                }}
+                dangerouslySetInnerHTML={{ __html: (content.html as string) ?? "" }}
+              />
+            ) : (
+              <RichTextEditor value={content.html ?? ""} onChange={(html) => patchContent({ html })} />
+            )}
             <div style={{ marginTop: 14, display: "grid", gap: 8 }}>
               <Check checked={!!settings.requireScroll} onChange={(v) => patchSettings({ requireScroll: v })}
                 label="For long text, users must scroll to the bottom to mark as completed" />
@@ -164,12 +202,26 @@ export default function ObjectEditorModal({
           />
         )}
 
+        </fieldset>
+
         {error && <div style={{ color: "#991b1b", fontWeight: 600, fontSize: 13, marginTop: 12 }}>{error}</div>}
 
         <div className="row" style={{ justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-          <button className="btn" onClick={discardAndClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save} disabled={uploading}>{uploading ? "Uploading…" : "Confirm"}</button>
+          {readOnly ? (
+            <button className="btn btn-primary" onClick={onCancel}>Close</button>
+          ) : (
+            <>
+              <button className="btn" onClick={discardAndClose}>Cancel</button>
+              <button className="btn btn-primary" onClick={save} disabled={uploading}>{uploading ? "Uploading…" : "Confirm"}</button>
+            </>
+          )}
         </div>
+
+        <style>{`
+          .rte-readonly a { color: #2563eb; text-decoration: underline; }
+          .rte-readonly h2 { font-size: 1.4em; font-weight: 800; margin: 0.4em 0; }
+          .rte-readonly img { max-width: 100%; }
+        `}</style>
       </div>
     </div>
   );

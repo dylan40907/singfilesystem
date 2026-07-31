@@ -42,7 +42,7 @@ export default function CourseBuilderPage() {
   const [titleDraft, setTitleDraft] = useState("");
 
   // object editor state
-  const [editor, setEditor] = useState<{ draft: ObjectDraft; sectionId: string; objectId?: string; isNew?: boolean } | null>(null);
+  const [editor, setEditor] = useState<{ draft: ObjectDraft; sectionId: string; objectId?: string; isNew?: boolean; view?: boolean } | null>(null);
   // type picker popover (sectionId currently adding to)
   const [pickerSection, setPickerSection] = useState<string | null>(null);
   // section create/rename modal (no browser prompts)
@@ -188,6 +188,10 @@ export default function CourseBuilderPage() {
   function openEditObject(o: CourseObject) {
     setEditor({ sectionId: o.section_id, objectId: o.id, draft: { type: o.type, title: o.title, content: o.content, settings: o.settings } });
   }
+  /** Same modal, uneditable — for proof-reading a locked Simplified copy. */
+  function openViewObject(o: CourseObject) {
+    setEditor({ sectionId: o.section_id, objectId: o.id, view: true, draft: { type: o.type, title: o.title, content: o.content, settings: o.settings } });
+  }
   async function saveObject(d: ObjectDraft) {
     if (!editor) return;
     if (editor.objectId) {
@@ -330,14 +334,21 @@ export default function CourseBuilderPage() {
                         {o.title?.trim() || `Untitled ${objTypeLabel(o.type).toLowerCase()}`}
                       </span>
                     </div>
-                    {!readOnly && (
-                      <div className="row" style={{ gap: 4, flexShrink: 0 }}>
-                        <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>
-                        <button className="btn" onClick={() => moveObject(o, 1)} disabled={i === objs.length - 1} style={icoBtn}>↓</button>
-                        <button className="btn" onClick={() => openEditObject(o)} style={icoBtn}>✏️</button>
-                        <button className="btn" onClick={() => removeObject(o)} style={icoBtn}>🗑</button>
-                      </div>
-                    )}
+                    <div className="row" style={{ gap: 4, flexShrink: 0 }}>
+                      {readOnly ? (
+                        /* Locked mirrors are still worth reading — this opens
+                           the object so the translation can be checked without
+                           unlocking the course first. */
+                        <button className="btn" title="View content" onClick={() => openViewObject(o)} style={icoBtn}>👁</button>
+                      ) : (
+                        <>
+                          <button className="btn" onClick={() => moveObject(o, -1)} disabled={i === 0} style={icoBtn}>↑</button>
+                          <button className="btn" onClick={() => moveObject(o, 1)} disabled={i === objs.length - 1} style={icoBtn}>↓</button>
+                          <button className="btn" onClick={() => openEditObject(o)} style={icoBtn}>✏️</button>
+                          <button className="btn" onClick={() => removeObject(o)} style={icoBtn}>🗑</button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
 
@@ -376,6 +387,7 @@ export default function CourseBuilderPage() {
           onCancel={() => setEditor(null)}
           onDiscard={discardEditor}
           onSave={saveObject}
+          readOnly={!!editor.view}
         />
       )}
 

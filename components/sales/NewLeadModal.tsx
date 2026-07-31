@@ -304,7 +304,7 @@ export default function NewLeadModal({
             </div>
           )}
           <div>
-            <label style={lbl}>Days / schedule</label>
+            <label style={lbl}>Days/Schedule/After Care</label>
             <input className="input" placeholder="5 Days/Week (9am - 3pm)" value={childSchedule} onChange={(e) => setChildSchedule(e.target.value)} />
           </div>
         </div>

@@ -35,7 +35,7 @@ import {
   localTimeFor,
   nextActionState,
   setLeadStatus,
-  setNextAction,
+  
   sourceWantsReferrer,
   splitChildToNewLead,
   todayLocal,
@@ -70,16 +70,9 @@ export default function SalesLeadPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<SalesLeadFull>>({});
 
-  // Next action form
-  const [naDate, setNaDate] = useState("");
-  const [naType, setNaType] = useState<ActionType>("call");
-  const [naNote, setNaNote] = useState("");
-  const [naAssignee, setNaAssignee] = useState("");
-  const [naBusy, setNaBusy] = useState(false);
-
+  // Next action form
   // "Log what happened + what's next" — the two are submitted together so an
   // active lead can never be left without a pending follow-up.
-  const [logOpen, setLogOpen] = useState(false);
   const [logKind, setLogKind] = useState<ActivityKind>("call");
   const [logDate, setLogDate] = useState(todayLocal());
   const [logNote, setLogNote] = useState("");
@@ -98,10 +91,11 @@ export default function SalesLeadPage() {
       if (!l) { setNotFound(true); return; }
       setLead(l);
       setActivities(acts);
-      setNaDate(l.next_action_date ?? "");
-      setNaType(l.next_action_type ?? "call");
-      setNaNote(l.next_action_note ?? "");
-      setNaAssignee(l.next_action_assigned_to ?? "");
+      // The follow-up form is always visible, so seed it from the lead itself.
+      setLogKind((l.next_action_type as ActivityKind) ?? "call");
+      setLogDate(todayLocal());
+      setLogHandledBy(l.next_action_assigned_to ?? l.staff_owner_id ?? "");
+      setNextAssignee(l.next_action_assigned_to ?? l.staff_owner_id ?? "");
       // Only one campus in play? Then converting doesn't need to ask which.
       setEnrollCampusId(l.enrolled_campus_id ?? (l.campus_ids.length === 1 ? l.campus_ids[0] : ""));
       setHousehold(await fetchHousehold(l).catch(() => []));
@@ -172,25 +166,11 @@ export default function SalesLeadPage() {
     }
   }
 
-  async function saveNextAction() {
-    if (!lead) return;
-    if (!naDate) { setStatus("Pick a date for the next action."); return; }
-    if (!naNote.trim()) { setStatus("Add a note for the next action."); return; }
-    if (!naAssignee) { setStatus("Assign the next action to someone."); return; }
-    setNaBusy(true);
-    try {
-      await setNextAction(lead.id, { date: naDate, type: naType, note: naNote.trim(), assigned_to: naAssignee });
-      setStatus("✅ Next action set.");
-      await reload();
-    } catch (e) {
-      setStatus("Error: " + ((e as Error)?.message ?? "unknown"));
-    } finally {
-      setNaBusy(false);
-    }
-  }
-
-  /** Open the combined form, pre-filled from the action being completed. */
-  function openLogForm() {
+  /**
+   * Blank slate for the follow-up form. The form is always on screen now, so
+   * this runs when the lead loads and again after each save.
+   */
+  function primeLogForm() {
     if (!lead) return;
     setLogKind((lead.next_action_type as ActivityKind) ?? "call");
     setLogDate(todayLocal());
@@ -200,7 +180,6 @@ export default function SalesLeadPage() {
     setNextType("call");
     setNextNote("");
     setNextAssignee(lead.next_action_assigned_to ?? lead.staff_owner_id ?? "");
-    setLogOpen(true);
   }
 
   /**
@@ -218,9 +197,11 @@ export default function SalesLeadPage() {
         { kind: logKind, note: logNote, activity_date: logDate, handled_by: logHandledBy },
         { date: nextDate, type: nextType, note: nextNote, assigned_to: nextAssignee }
       );
-      setLogOpen(false);
       setStatus("✅ Logged, and the next follow-up is set.");
       await reload();
+      // The form stays on screen, so clear it ready for the next entry rather
+      // than leaving the last note sitting in the box.
+      primeLogForm();
     } catch (e) {
       setStatus((e as Error)?.message ?? "Could not save.");
     } finally {
@@ -494,6 +475,11 @@ export default function SalesLeadPage() {
         )}
       </div>
 
+      {/* Children sit directly under the parent's details — they're the other
+          half of who this family is, so they belong together before any
+          follow-up workflow. */}
+      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} onSplit={(id) => router.push(`/admin/sales/${id}`)} />
+
       {/* ── Next action ─────────────────────────────────────────────────── */}
       <div
         className="card"
@@ -527,16 +513,11 @@ export default function SalesLeadPage() {
               </div>
             )}
 
-            {lead.next_action_date && !logOpen && (
-              <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-                <button className="btn btn-primary" onClick={openLogForm}>✓ Mark done &amp; log it</button>
-                <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                  You’ll record what happened and set the next follow-up together.
-                </span>
-              </div>
-            )}
-
-            {logOpen ? (
+            {/* The two halves are always shown together. Logging what happened
+                and setting what's next are a single act — the old collapsed
+                form made you press a button to reveal work you had to do
+                anyway. */}
+            {(
               <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14, background: "#fff" }}>
                 <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10 }}>1 · What happened</div>
                 <div style={grid3}>
@@ -598,48 +579,14 @@ export default function SalesLeadPage() {
 
                 <div className="row" style={{ gap: 8, marginTop: 14, flexWrap: "wrap" }}>
                   <button className="btn btn-primary" onClick={() => void submitLogAndNext()} disabled={logBusy}>
-                    {logBusy ? "Saving…" : "Save both"}
+                    {logBusy ? "Saving…" : "Save"}
                   </button>
-                  <button className="btn" onClick={() => setLogOpen(false)} disabled={logBusy}>Cancel</button>
                   <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
+                    The assignee and the admins are reminded on the day, then every working day until it’s logged.
                     To close the lead instead, use Convert or Mark inactive above.
                   </span>
                 </div>
               </div>
-            ) : (
-              <>
-                <div style={grid3}>
-                  <div>
-                    <label style={lbl}>Date</label>
-                    <input className="input" type="date" value={naDate} onChange={(e) => setNaDate(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={lbl}>Action</label>
-                    <select className="select" value={naType} onChange={(e) => setNaType(e.target.value as ActionType)}>
-                      {(Object.keys(ACTION_TYPE_LABEL) as ActionType[]).map((k) => (
-                        <option key={k} value={k}>{ACTION_TYPE_LABEL[k]}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={lbl}>Assign to</label>
-                    <select className="select" value={naAssignee} onChange={(e) => setNaAssignee(e.target.value)}>
-                      <option value="">— Choose —</option>
-                      {staff.map((s) => <option key={s.id} value={s.id}>{s.full_name ?? s.id}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <label style={lbl}>What needs doing</label>
-                <input className="input" value={naNote} onChange={(e) => setNaNote(e.target.value)} placeholder="What needs doing?" />
-                <div className="row" style={{ gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-                  <button className="btn btn-primary" onClick={() => void saveNextAction()} disabled={naBusy}>
-                    {naBusy ? "Saving…" : lead.next_action_date ? "Update next action" : "Set next action"}
-                  </button>
-                  <span className="subtle" style={{ fontSize: 12, alignSelf: "center" }}>
-                    The assignee and the admins are reminded on the day, then every working day until it’s logged.
-                  </span>
-                </div>
-              </>
             )}
           </>
         )}
@@ -650,9 +597,6 @@ export default function SalesLeadPage() {
         <div style={{ borderTop: "1px solid #e5e7eb", marginTop: 20, paddingTop: 16 }}>
           <div className="row-between" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
             <div style={{ fontWeight: 900, fontSize: 15 }}>History</div>
-            {lead.status === "active" && !logOpen && (
-              <button className="btn btn-primary" onClick={openLogForm}>+ Log an action</button>
-            )}
           </div>
 
         <div style={{ marginTop: 6 }}>
@@ -693,8 +637,6 @@ export default function SalesLeadPage() {
         </div>
         </div>
       </div>
-
-      <ChildrenCard lead={lead} onChanged={reload} onError={setStatus} onSplit={(id) => router.push(`/admin/sales/${id}`)} />
 
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="btn" style={{ color: "#991b1b" }} onClick={() => void removeLead()}>Delete lead</button>
@@ -872,7 +814,7 @@ function ChildrenCard({
             {program === "Other" && (
               <Input label="Which program?" value={programOther} onChange={setProgramOther} />
             )}
-            <Input label="Days / schedule" value={schedule} onChange={setSchedule} placeholder="5 Days/Week" />
+            <Input label="Days/Schedule/After Care" value={schedule} onChange={setSchedule} placeholder="5 Days/Week" />
             <Input label="Desired start date" type="date" value={start} onChange={setStart} />
             <Input label="…or in their words" value={startNote} onChange={setStartNote} placeholder="ASAP" />
           </div>

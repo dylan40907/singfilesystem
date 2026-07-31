@@ -252,33 +252,18 @@ export default function EmployeesPage() {
 
       const rangeLabel = `${MONTH_NAMES[months[0].month - 1]} ${months[0].year} - ${MONTH_NAMES[months[months.length - 1].month - 1]} ${months[months.length - 1].year}`;
 
-      // Summary sheet first: per-employee monthly totals, so the whole team
-      // can be compared without clicking through every tab.
-      const summary = wb.addWorksheet("Summary");
-      summary.columns = [{ width: 34 }, ...months.map(() => ({ width: 9 })), { width: 12 }];
-      summary.getCell(1, 1).value = `Monthly Scorecards — ${rangeLabel}`;
-      summary.getCell(1, 1).font = { bold: true, size: 14 };
-      summary.getCell(2, 1).value = "Employee";
-      summary.getCell(2, 1).font = { bold: true };
-      months.forEach((m, i) => {
-        const c = summary.getCell(2, 2 + i);
-        c.value = m.label;
-        c.font = { bold: true };
-        c.alignment = { horizontal: "center" };
-      });
-      summary.getCell(2, 2 + months.length).value = "Average";
-      summary.getCell(2, 2 + months.length).font = { bold: true };
-
       const usedSheetNames = new Set<string>();
-      let summaryRow = 3;
       let sheetsWritten = 0;
 
+      // One sheet per employee, laid out exactly like the single-employee
+      // "Export Monthly Reviews by Year" — same columns, totals, colour bands
+      // and legend. The only change is that the months come from the chosen
+      // range rather than always being Jan–Dec.
       for (const emp of employees) {
         const mine = reviewsByEmployee.get(emp.id) ?? [];
         const name = [emp.legal_first_name, emp.legal_middle_name, emp.legal_last_name]
           .map((s) => (s ?? "").trim()).filter(Boolean).join(" ") || "(Unnamed)";
 
-        // Totals per month for the summary row.
         const totalsByMonth = new Map<string, number>();
         for (const m of months) {
           const rev = mine.find((r) => r.period_year === m.year && Number(r.period_month) === m.month);
@@ -293,27 +278,10 @@ export default function EmployeesPage() {
           if (any) totalsByMonth.set(`${m.year}-${m.month}`, sum);
         }
 
-        summary.getCell(summaryRow, 1).value = name;
-        months.forEach((m, i) => {
-          const t = totalsByMonth.get(`${m.year}-${m.month}`);
-          if (t === undefined) return;
-          const cell = summary.getCell(summaryRow, 2 + i);
-          cell.value = t;
-          cell.alignment = { horizontal: "center" };
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: totalsFillForMonthly(t) } };
-        });
         const vals = Array.from(totalsByMonth.values());
-        if (vals.length) {
-          const avgCell = summary.getCell(summaryRow, 2 + months.length);
-          avgCell.value = Number((vals.reduce((s, v) => s + v, 0) / vals.length).toFixed(1));
-          avgCell.font = { bold: true };
-          avgCell.alignment = { horizontal: "center" };
-        }
-        summaryRow += 1;
 
-        // Employees with nothing published in the window still appear on the
-        // summary (as a blank row) — that absence is the point — but they don't
-        // get an empty tab of their own.
+        // Nothing published in the window → no tab. An empty sheet would just
+        // be noise in a workbook that already has one tab per person.
         if (mine.length === 0) continue;
 
         // Excel sheet names: 31 chars, no []:*?/\ , and must be unique.
@@ -324,10 +292,10 @@ export default function EmployeesPage() {
         usedSheetNames.add(sheetName.toLowerCase());
 
         const ws = wb.addWorksheet(sheetName);
-        ws.columns = [{ width: 4 }, { width: 70 }, ...months.map(() => ({ width: 8 })), { width: 16 }];
+        ws.columns = [{ width: 4 }, { width: 78 }, ...months.map(() => ({ width: 6 })), { width: 16 }];
 
         ws.mergeCells(1, 2, 1, 2 + months.length);
-        ws.getCell(1, 2).value = `Monthly Scorecards for ${name} — ${rangeLabel}`;
+        ws.getCell(1, 2).value = `Monthly Reviews for ${name} In ${rangeLabel}`;
         ws.getCell(1, 2).font = { bold: true, size: 14 };
 
         ws.getCell(2, 2).value = "Questions";
@@ -409,7 +377,7 @@ export default function EmployeesPage() {
 
       const buf = await wb.xlsx.writeBuffer();
       const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-      downloadBlob(`Monthly Scorecards - All Active - ${rangeLabel}.xlsx`, blob);
+      downloadBlob(`Monthly Reviews - All Staff - ${rangeLabel}.xlsx`, blob);
       setBulkOpen(false);
     } catch (e) {
       await alert((e as Error)?.message ?? "Failed to export scorecards.");
@@ -906,7 +874,8 @@ export default function EmployeesPage() {
           <div style={{ background: "white", borderRadius: 16, padding: 16, width: "min(560px, 96vw)" }}>
             <div style={{ fontWeight: 900, fontSize: 16, marginBottom: 4 }}>Export All Scorecards</div>
             <div style={{ color: "#6b7280", fontSize: 13, marginBottom: 12 }}>
-              Published monthly scorecards for every active employee, one sheet each, plus a summary sheet.
+              Published monthly scorecards for every active employee — one sheet per person, in the
+              same layout as a single employee&apos;s export.
             </div>
 
             <div style={{ display: "grid", gap: 12 }}>

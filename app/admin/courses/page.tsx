@@ -27,6 +27,8 @@ const SEGMENT_COLORS = ["#e6178d", "#7c3aed", "#2563eb", "#059669", "#d97706", "
  * applies to the trip it was saved for.
  */
 const SCROLL_KEY = "admin-courses:scrollY";
+/** Which script tab you were on, so returning from a course lands you back. */
+const SCRIPT_KEY = "admin-courses:script";
 
 function StatusBadge({ status }: { status: CourseStatus }) {
   const map: Record<CourseStatus, { bg: string; fg: string; label: string }> = {
@@ -57,7 +59,24 @@ export default function AdminCoursesPage() {
    * It exists on the Courses tab only — Groups and Progress deliberately show
    * both scripts side by side, since you assign and track them together.
    */
-  const [script, setScript] = useState<ScriptKind>("trad");
+  const [script, setScript] = useState<ScriptKind>(() => {
+    // Opening a course is a forward navigation, so coming back remounts this
+    // page with fresh state — without this you'd always land on Traditional
+    // even if you left from the Simplified tab.
+    if (typeof window === "undefined") return "trad";
+    try {
+      return sessionStorage.getItem(SCRIPT_KEY) === "simp" ? "simp" : "trad";
+    } catch {
+      return "trad";
+    }
+  });
+
+  /** One place to flip tabs, so the choice is always remembered. */
+  function chooseScript(next: ScriptKind) {
+    setScript(next);
+    clearSelection();
+    try { sessionStorage.setItem(SCRIPT_KEY, next); } catch { /* private mode */ }
+  }
   const isSimp = script === "simp";
   const [resyncing, setResyncing] = useState(false);
   // multi-select + bulk
@@ -494,16 +513,10 @@ export default function AdminCoursesPage() {
 
         {/* Script switch — Courses tab only. */}
         <div className="row" style={{ gap: 6, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
-          <button
-            className={`btn${!isSimp ? " btn-primary" : ""}`}
-            onClick={() => { setScript("trad"); clearSelection(); }}
-          >
+          <button className={`btn${!isSimp ? " btn-primary" : ""}`} onClick={() => chooseScript("trad")}>
             繁 Traditional
           </button>
-          <button
-            className={`btn${isSimp ? " btn-primary" : ""}`}
-            onClick={() => { setScript("simp"); clearSelection(); }}
-          >
+          <button className={`btn${isSimp ? " btn-primary" : ""}`} onClick={() => chooseScript("simp")}>
             简 Simplified
           </button>
           <span className="subtle" style={{ fontSize: 12, marginLeft: 6 }}>
