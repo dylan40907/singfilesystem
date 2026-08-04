@@ -605,7 +605,12 @@ export async function exportAllCoursesPdf(script: ScriptKind, onProgress?: PdfPr
     read += 1;
     onProgress?.(`Reading ${c.title}`, read, courses.length);
   }
+  const cover = script === "simp" ? "课程手册" : "課程手冊";
   const allText = [
+    // The cover has to be in the subset too — a character that appears nowhere
+    // in the courses (册 / 冊 does not) would otherwise have no glyph and drop
+    // silently out of the title.
+    cover,
     ...segOrder.map((s) => s.name),
     ...courses.map((c) => {
       const f = fulls.get(c.id);
@@ -619,7 +624,7 @@ export async function exportAllCoursesPdf(script: ScriptKind, onProgress?: PdfPr
 
   // Cover
   sheet.gap(120);
-  sheet.text([{ text: script === "simp" ? "课程手册" : "課程手冊", bold: true }], { size: 30, gapAfter: 6 });
+  sheet.text([{ text: cover, bold: true }], { size: 30, gapAfter: 6 });
   sheet.text([{ text: script === "simp" ? "Course Handbook · Simplified" : "Course Handbook · Traditional" }],
     { size: 13, color: MUTED, gapAfter: 10 });
   sheet.text([{ text: new Date().toLocaleDateString() }], { size: 10, color: MUTED });
