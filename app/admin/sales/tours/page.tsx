@@ -19,6 +19,8 @@ type TourType = {
   time_zone: string; is_active: boolean;
 };
 type Availability = { id: string; tour_type_id: string; day_of_week: number; start_time: string; end_time: string };
+/** A closed date — holidays, a week away. Beats deleting and re-adding hours. */
+type Blackout = { id: string; tour_type_id: string; day: string; reason: string | null };
 type Tour = {
   id: string; tour_type_id: string | null; lead_id: string | null;
   starts_at: string; status: string;
@@ -39,6 +41,7 @@ export default function SalesToursPage() {
   const [tab, setTab] = useState<"upcoming" | "past" | "setup">("upcoming");
   const [types, setTypes] = useState<TourType[]>([]);
   const [avail, setAvail] = useState<Availability[]>([]);
+  const [blackouts, setBlackouts] = useState<Blackout[]>([]);
   const [tours, setTours] = useState<Tour[]>([]);
   const [staff, setStaff] = useState<{ id: string; full_name: string | null; role: string }[]>([]);
   const [notify, setNotify] = useState<string[]>([]);
@@ -48,15 +51,17 @@ export default function SalesToursPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, a, b, n, s] = await Promise.all([
+      const [t, a, b, n, s, bo] = await Promise.all([
         supabase.from("sales_tour_types").select("*").order("name"),
         supabase.from("sales_tour_availability").select("*"),
         supabase.from("sales_tours").select("*").order("starts_at", { ascending: true }),
         supabase.from("sales_tour_notify").select("user_id"),
         fetchAssignableStaff(),
+        supabase.from("sales_tour_blackouts").select("*").order("day", { ascending: true }),
       ]);
       setTypes((t.data ?? []) as TourType[]);
       setAvail((a.data ?? []) as Availability[]);
+      setBlackouts((bo.data ?? []) as Blackout[]);
       setTours((b.data ?? []) as Tour[]);
       setNotify(((n.data ?? []) as { user_id: string }[]).map((x) => x.user_id));
       setStaff(s);
@@ -153,6 +158,38 @@ export default function SalesToursPage() {
     else await reload();
   }
 
+  /**
+   * Close a date, or a run of dates. Stored one row per day so a single day can
+   * later be reopened without unpicking the whole week.
+   */
+  async function addBlackout(typeId: string, from: string, to: string, reason: string) {
+    const days: string[] = [];
+    const cur = new Date(`${from}T00:00:00`);
+    const last = new Date(`${(to || from)}T00:00:00`);
+    for (let guard = 0; guard < 400 && cur <= last; guard++) {
+      // Format from the local parts, not toISOString — that converts to UTC and
+      // would shift the date by a day depending on the offset.
+      days.push(
+        `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`
+      );
+      cur.setDate(cur.getDate() + 1);
+    }
+    // Skip days already closed, so re-submitting an overlapping range is safe.
+    const already = new Set(blackouts.filter((b) => b.tour_type_id === typeId).map((b) => b.day));
+    const rows = days.filter((d) => !already.has(d))
+      .map((d) => ({ tour_type_id: typeId, day: d, reason: reason.trim() || null }));
+    if (rows.length === 0) { setStatus("Those dates are already closed."); return; }
+    const { error } = await supabase.from("sales_tour_blackouts").insert(rows);
+    if (error) setStatus("Error: " + error.message);
+    else { setStatus(`✅ Closed ${rows.length} day(s).`); await reload(); }
+  }
+
+  async function removeBlackout(id: string) {
+    const { error } = await supabase.from("sales_tour_blackouts").delete().eq("id", id);
+    if (error) setStatus("Error: " + error.message);
+    else await reload();
+  }
+
   async function addWindow(typeId: string, day: number, start: string, end: string) {
     const { error } = await supabase
       .from("sales_tour_availability")
@@ -193,7 +230,7 @@ export default function SalesToursPage() {
           <div className="subtle">Loading…</div>
         ) : tab === "setup" ? (
           <SetupPanel
-            types={types} avail={avail} campuses={campuses}
+            types={types} avail={avail} blackouts={blackouts} campuses={campuses}
             staff={staff} notify={notify}
             onAddWindow={addWindow}
             onRemoveWindow={async (id) => {
@@ -201,6 +238,8 @@ export default function SalesToursPage() {
               if (error) setStatus("Error: " + error.message); else await reload();
             }}
             onToggleNotify={toggleNotify}
+            onAddBlackout={addBlackout}
+            onRemoveBlackout={removeBlackout}
           />
         ) : (
           <TourTable
@@ -282,16 +321,20 @@ function TourTable({
 }
 
 function SetupPanel({
-  types, avail, campuses, staff, notify, onAddWindow, onRemoveWindow, onToggleNotify,
+  types, avail, blackouts, campuses, staff, notify, onAddWindow, onRemoveWindow, onToggleNotify,
+  onAddBlackout, onRemoveBlackout,
 }: {
   types: TourType[];
   avail: Availability[];
+  blackouts: Blackout[];
   campuses: { id: string; name: string }[];
   staff: { id: string; full_name: string | null; role: string }[];
   notify: string[];
   onAddWindow: (typeId: string, day: number, start: string, end: string) => void;
   onRemoveWindow: (id: string) => void;
   onToggleNotify: (userId: string, on: boolean) => void;
+  onAddBlackout: (typeId: string, from: string, to: string, reason: string) => void;
+  onRemoveBlackout: (id: string) => void;
 }) {
   return (
     <div className="stack" style={{ gap: 22 }}>
@@ -300,9 +343,12 @@ function SetupPanel({
           key={t.id}
           type={t}
           rows={avail.filter((a) => a.tour_type_id === t.id)}
+          closed={blackouts.filter((b) => b.tour_type_id === t.id)}
           campusName={campuses.find((c) => c.id === t.campus_id)?.name ?? "No campus"}
           onAddWindow={onAddWindow}
           onRemoveWindow={onRemoveWindow}
+          onAddBlackout={onAddBlackout}
+          onRemoveBlackout={onRemoveBlackout}
         />
       ))}
 
@@ -336,22 +382,33 @@ function SetupPanel({
  * North Torrance's picker too.
  */
 function TypeAvailability({
-  type, rows, campusName, onAddWindow, onRemoveWindow,
+  type, rows, closed, campusName, onAddWindow, onRemoveWindow, onAddBlackout, onRemoveBlackout,
 }: {
   type: TourType;
   rows: Availability[];
+  closed: Blackout[];
   campusName: string;
   onAddWindow: (typeId: string, day: number, start: string, end: string) => void;
   onRemoveWindow: (id: string) => void;
+  onAddBlackout: (typeId: string, from: string, to: string, reason: string) => void;
+  onRemoveBlackout: (id: string) => void;
 }) {
   const [day, setDay] = useState(1);
   const [from, setFrom] = useState("09:30");
   const [to, setTo] = useState("12:00");
   const [err, setErr] = useState("");
+  const [boFrom, setBoFrom] = useState("");
+  const [boTo, setBoTo] = useState("");
+  const [boReason, setBoReason] = useState("");
 
   const byDay = (d: number) =>
     rows.filter((a) => a.day_of_week === d)
       .sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+
+  // Past closures are history — only what's still ahead is worth showing.
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const upcomingClosed = closed.filter((b) => b.day >= todayKey).sort((a, b) => a.day.localeCompare(b.day));
 
   function add() {
     setErr("");
@@ -426,8 +483,74 @@ function TypeAvailability({
         <input className="input" style={{ maxWidth: 120 }} type="time" value={to} onChange={(e) => setTo(e.target.value)} />
         <button className="btn" onClick={add}>+ Add hours</button>
       </div>
+
+      {/* ── Closed dates ────────────────────────────────────────────────────
+          Separate from the weekly hours on purpose: a holiday or a week away
+          shouldn't mean deleting your Monday hours and remembering to put them
+          back. These simply override the pattern above. */}
+      <div style={{ borderTop: "1px solid #f1f5f9", marginTop: 16, paddingTop: 14 }}>
+        <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 2 }}>Closed dates</div>
+        <div className="subtle" style={{ fontSize: 12, marginBottom: 10 }}>
+          Holidays or time away. No tours can be booked on these days, whatever the hours above say.
+        </div>
+
+        {upcomingClosed.length === 0 ? (
+          <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>Nothing closed coming up.</div>
+        ) : (
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {upcomingClosed.map((b) => (
+              <span key={b.id} style={{
+                display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600,
+                background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b",
+                borderRadius: 999, padding: "2px 4px 2px 10px",
+              }}>
+                {niceDay(b.day)}{b.reason ? ` · ${b.reason}` : ""}
+                <button
+                  className="btn"
+                  title="Reopen this day"
+                  onClick={() => onRemoveBlackout(b.id)}
+                  style={{ padding: "0 6px", fontSize: 12, lineHeight: 1.6, color: "#991b1b", background: "transparent", border: "none" }}
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input className="input" style={{ maxWidth: 160 }} type="date" value={boFrom} onChange={(e) => setBoFrom(e.target.value)} />
+          <span className="subtle">to</span>
+          <input className="input" style={{ maxWidth: 160 }} type="date" value={boTo} onChange={(e) => setBoTo(e.target.value)} />
+          <input
+            className="input" style={{ maxWidth: 190 }} placeholder="Reason (optional)"
+            value={boReason} onChange={(e) => setBoReason(e.target.value)}
+          />
+          <button
+            className="btn"
+            disabled={!boFrom}
+            title={boFrom ? "Close these dates" : "Pick a start date first"}
+            onClick={() => {
+              onAddBlackout(type.id, boFrom, boTo || boFrom, boReason);
+              setBoFrom(""); setBoTo(""); setBoReason("");
+            }}
+          >
+            🚫 Close dates
+          </button>
+          <span className="subtle" style={{ fontSize: 12 }}>
+            Leave the second date empty to close a single day.
+          </span>
+        </div>
+      </div>
     </div>
   );
+}
+
+/** "Mon 10 Aug 2026" — closed dates are scanned, not read. */
+function niceDay(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })
+    .format(new Date(y, m - 1, d));
 }
 
 /** A request awaiting a decision should be impossible to miss in the list. */
