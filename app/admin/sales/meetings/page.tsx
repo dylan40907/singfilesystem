@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useCampusFilter } from "@/lib/CampusContext";
 import { useDialog } from "@/components/ui/useDialog";
+import TourAvailabilityEditor, {
+  AvailabilityRow, BlackoutRow,
+} from "@/components/sales/TourAvailabilityEditor";
 
 /**
  * Sales → Meetings. Online Chinese Classes + Homework Club consultations.
@@ -17,6 +20,7 @@ import { useDialog } from "@/components/ui/useDialog";
 type TourType = {
   id: string; campus_id: string | null; slug: string; name: string;
   kind: string; meet_url: string | null; time_zone: string;
+  duration_minutes: number; min_notice_hours: number; max_days_ahead: number;
 };
 
 type Meeting = {
@@ -44,8 +48,10 @@ export default function SalesMeetingsPage() {
     !!profile?.is_active &&
     (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
 
-  const [tab, setTab] = useState<"upcoming" | "past">("upcoming");
+  const [tab, setTab] = useState<"upcoming" | "past" | "setup">("upcoming");
   const [types, setTypes] = useState<TourType[]>([]);
+  const [avail, setAvail] = useState<AvailabilityRow[]>([]);
+  const [blackouts, setBlackouts] = useState<BlackoutRow[]>([]);
   const [rows, setRows] = useState<Meeting[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,13 +61,17 @@ export default function SalesMeetingsPage() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [t, m] = await Promise.all([
+      const [t, m, a, bo] = await Promise.all([
         supabase.from("sales_tour_types").select("*").eq("kind", "hwc_consult").order("name"),
         supabase.from("sales_tours").select("*").order("starts_at", { ascending: true }),
+        supabase.from("sales_tour_availability").select("*"),
+        supabase.from("sales_tour_blackouts").select("*").order("day", { ascending: true }),
       ]);
       const tt = (t.data ?? []) as TourType[];
       const ids = new Set(tt.map((x) => x.id));
       setTypes(tt);
+      setAvail(((a.data ?? []) as AvailabilityRow[]).filter((r) => ids.has(r.tour_type_id)));
+      setBlackouts(((bo.data ?? []) as BlackoutRow[]).filter((r) => ids.has(r.tour_type_id)));
       setMeetDraft(Object.fromEntries(tt.map((x) => [x.id, x.meet_url ?? ""])));
       // Only consultations belong here — preschool tours live in the Tours tab.
       setRows(((m.data ?? []) as Meeting[]).filter((r) => r.tour_type_id && ids.has(r.tour_type_id)));
@@ -98,6 +108,44 @@ export default function SalesMeetingsPage() {
     const { error } = await supabase.from("sales_tour_types").update({ meet_url: url || null }).eq("id", typeId);
     if (error) setStatus("Error: " + error.message);
     else { setStatus("✅ Meeting link saved."); await reload(); }
+  }
+
+  async function addWindow(typeId: string, day: number, start: string, end: string) {
+    const { error } = await supabase.from("sales_tour_availability")
+      .insert({ tour_type_id: typeId, day_of_week: day, start_time: start, end_time: end });
+    if (error) setStatus("Error: " + error.message);
+    else await reload();
+  }
+
+  async function removeWindow(id: string) {
+    const { error } = await supabase.from("sales_tour_availability").delete().eq("id", id);
+    if (error) setStatus("Error: " + error.message);
+    else await reload();
+  }
+
+  /** One row per day, so a single day can be reopened without unpicking a week. */
+  async function addBlackout(typeId: string, from: string, to: string, reason: string) {
+    const days: string[] = [];
+    const cur = new Date(`${from}T00:00:00`);
+    const last = new Date(`${to || from}T00:00:00`);
+    for (let guard = 0; guard < 400 && cur <= last; guard++) {
+      // Local parts, not toISOString — that converts to UTC and shifts the day.
+      days.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`);
+      cur.setDate(cur.getDate() + 1);
+    }
+    const already = new Set(blackouts.filter((b) => b.tour_type_id === typeId).map((b) => b.day));
+    const insert = days.filter((d) => !already.has(d))
+      .map((d) => ({ tour_type_id: typeId, day: d, reason: reason.trim() || null }));
+    if (insert.length === 0) { setStatus("Those dates are already closed."); return; }
+    const { error } = await supabase.from("sales_tour_blackouts").insert(insert);
+    if (error) setStatus("Error: " + error.message);
+    else { setStatus(`✅ Closed ${insert.length} day(s).`); await reload(); }
+  }
+
+  async function removeBlackout(id: string) {
+    const { error } = await supabase.from("sales_tour_blackouts").delete().eq("id", id);
+    if (error) setStatus("Error: " + error.message);
+    else await reload();
   }
 
   async function cancelMeeting(m: Meeting) {
@@ -165,9 +213,28 @@ export default function SalesMeetingsPage() {
           <button className={`btn${tab === "past" ? " btn-primary" : ""}`} onClick={() => setTab("past")}>
             Past ({past.length})
           </button>
+          <button className={`btn${tab === "setup" ? " btn-primary" : ""}`} onClick={() => setTab("setup")}>
+            Availability
+          </button>
         </div>
 
-        {loading ? (
+        {tab === "setup" ? (
+          <div className="stack" style={{ gap: 22 }}>
+            {types.map((t) => (
+              <TourAvailabilityEditor
+                key={t.id}
+                type={t}
+                rows={avail.filter((a) => a.tour_type_id === t.id)}
+                closed={blackouts.filter((b) => b.tour_type_id === t.id)}
+                campusName={campusName(t.campus_id)}
+                onAddWindow={addWindow}
+                onRemoveWindow={removeWindow}
+                onAddBlackout={addBlackout}
+                onRemoveBlackout={removeBlackout}
+              />
+            ))}
+          </div>
+        ) : loading ? (
           <div className="subtle">Loading…</div>
         ) : list.length === 0 ? (
           <div className="subtle" style={{ padding: 20, textAlign: "center" }}>Nothing here yet.</div>
