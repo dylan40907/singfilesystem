@@ -25,6 +25,7 @@ import {
   logActionAndSetNext,
   deleteChild,
   deleteLead,
+  enrolLeadOnRoster,
   fetchActivities,
   fetchAssignableStaff,
   fetchHousehold,
@@ -70,7 +71,7 @@ export default function SalesLeadPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Partial<SalesLeadFull>>({});
 
-  // Next action form
+  // Next action form
   // "Log what happened + what's next" — the two are submitted together so an
   // active lead can never be left without a pending follow-up.
   const [logKind, setLogKind] = useState<ActivityKind>("call");
@@ -238,7 +239,18 @@ export default function SalesLeadPage() {
     }
     try {
       await setLeadStatus(lead.id, next, reason, next === "enrolled" ? enrollCampusId || null : null);
-      setStatus(next === "enrolled" ? "🎉 Converted." : next === "inactive" ? "Marked inactive." : "Re-opened.");
+      if (next === "enrolled" && enrollCampusId) {
+        // Carry the family straight onto the roster rather than making someone
+        // retype every child into Admissions.
+        const added = await enrolLeadOnRoster(lead.id, enrollCampusId).catch(() => -1);
+        setStatus(
+          added > 0 ? `🎉 Converted — ${added} child(ren) added to the roster.`
+          : added === 0 ? "🎉 Converted. No children on this lead to add to the roster."
+          : "🎉 Converted, but the roster entry failed — add them in Admissions."
+        );
+      } else {
+        setStatus(next === "inactive" ? "Marked inactive." : "Re-opened.");
+      }
       await reload();
     } catch (e) {
       setStatus("Error: " + ((e as Error)?.message ?? "unknown"));

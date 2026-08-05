@@ -25,6 +25,14 @@ import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 export type Campus = {
   id: string;
   name: string;
+  /**
+   * Programme groupings (Homework Club, Language School) that exist only for
+   * Admissions rosters and waitlists. They are not sites: nobody is employed
+   * there and no schedule is written for them, so every other part of the
+   * portal must leave them out. `campuses` below is already filtered; use
+   * `allCampuses` when you specifically want Admissions.
+   */
+  admissions_only?: boolean;
 };
 
 /** "all" = every campus + unassigned. "unassigned" = NULL campus_id only. UUID string = single campus. */
@@ -35,7 +43,10 @@ const STORAGE_KEY = "sing-portal:hr-selected-campus";
 type CampusContextValue = {
   loading: boolean;
   profile: TeacherProfile | null;
+  /** Real sites only — safe for employees, schedules, org chart, the top bar. */
   campuses: Campus[];
+  /** Sites *and* the Admissions-only groupings. Only Admissions should use this. */
+  allCampuses: Campus[];
   refreshCampuses: () => Promise<void>;
 
   /** The current filter (UUID, "all", or "unassigned"). For campus_admin always equals their campus_id. */
@@ -61,7 +72,7 @@ export function CampusProvider({ children }: { children: ReactNode }) {
   const refreshCampuses = useCallback(async () => {
     const { data } = await supabase
       .from("hr_campuses")
-      .select("id, name")
+      .select("id, name, admissions_only")
       .order("name", { ascending: true });
     setCampuses((data as Campus[]) ?? []);
   }, []);
@@ -105,11 +116,17 @@ export function CampusProvider({ children }: { children: ReactNode }) {
   const isTrueAdmin = profile?.role === "admin";
   const lockedCampusId = isCampusAdmin ? profile?.campus_id ?? null : null;
 
+  // `campuses` is the filtered list on purpose: every existing caller wants real
+  // sites, so hiding the Admissions-only ones here means none of them had to
+  // change — and a new caller gets the safe list by default.
+  const siteCampuses = useMemo(() => campuses.filter((c) => !c.admissions_only), [campuses]);
+
   const value = useMemo<CampusContextValue>(
     () => ({
       loading,
       profile,
-      campuses,
+      campuses: siteCampuses,
+      allCampuses: campuses,
       refreshCampuses,
       filter,
       setFilter,
@@ -117,7 +134,7 @@ export function CampusProvider({ children }: { children: ReactNode }) {
       isTrueAdmin,
       lockedCampusId,
     }),
-    [loading, profile, campuses, refreshCampuses, filter, setFilter, isCampusAdmin, isTrueAdmin, lockedCampusId]
+    [loading, profile, siteCampuses, campuses, refreshCampuses, filter, setFilter, isCampusAdmin, isTrueAdmin, lockedCampusId]
   );
 
   return <CampusContext.Provider value={value}>{children}</CampusContext.Provider>;

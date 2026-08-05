@@ -14,7 +14,9 @@ export default function AdmissionsPage() {
   // We read the campus *list* and role info from context, but Admissions keeps
   // its OWN campus selection — it deliberately does not touch the global top-bar
   // picker (which drives the other HR tabs).
-  const { loading, campuses, isCampusAdmin, lockedCampusId } = useCampusFilter();
+  // Admissions is the one place that also lists Homework Club and Language
+  // School — they have their own roster and waitlist but aren't real sites.
+  const { loading, allCampuses: campuses, isCampusAdmin, lockedCampusId } = useCampusFilter();
 
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const isSupervisor = me?.role === "supervisor";

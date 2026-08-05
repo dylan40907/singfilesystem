@@ -246,6 +246,79 @@ export async function deleteLead(id: string): Promise<void> {
  * Move a lead between the three tabs. The transition is also written to the
  * history so the timeline explains itself later.
  */
+/**
+ * Move a converted family onto the roster, one entry per child, carrying over
+ * everything we already know. Without this, converting a lead meant retyping
+ * the child's name, date of birth and start date into Admissions by hand.
+ *
+ * Returns how many children were added. Safe to call twice: a child already on
+ * that campus's roster (same name and date of birth) is skipped rather than
+ * duplicated.
+ */
+export async function enrolLeadOnRoster(leadId: string, campusId: string): Promise<number> {
+  const { data: lead } = await supabase
+    .from("sales_leads")
+    .select("id, parent_last_name, notes, children:sales_lead_children(*)")
+    .eq("id", leadId)
+    .maybeSingle();
+  if (!lead) return 0;
+
+  const kids = ((lead as { children?: SalesLeadChild[] }).children ?? [])
+    .slice()
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+  if (kids.length === 0) return 0;
+
+  const { data: existing } = await supabase
+    .from("hr_roster_entries")
+    .select("first_name, last_name, date_of_birth")
+    .eq("campus_id", campusId);
+  const seen = new Set(
+    ((existing ?? []) as { first_name: string | null; last_name: string | null; date_of_birth: string | null }[])
+      .map((r) => `${(r.first_name ?? "").trim().toLowerCase()}|${(r.last_name ?? "").trim().toLowerCase()}|${r.date_of_birth ?? ""}`)
+  );
+
+  // Programme names on the lead are free text; match them to the campus's own
+  // programme list where we can, and leave it unset where we can't.
+  const { data: programs } = await supabase
+    .from("hr_admissions_programs").select("id, name").eq("campus_id", campusId);
+  const programByName = new Map(
+    ((programs ?? []) as { id: string; name: string }[]).map((p) => [p.name.trim().toLowerCase(), p.id])
+  );
+
+  const rows: Record<string, unknown>[] = [];
+  for (const k of kids) {
+    const full = (k.name ?? "").trim();
+    if (!full) continue;
+    const bits = full.split(/\s+/);
+    // A child's surname usually matches the parent's; only fall back to
+    // splitting the name when they gave a single word.
+    const first = bits.length > 1 ? bits.slice(0, -1).join(" ") : full;
+    const last = bits.length > 1 ? bits[bits.length - 1] : (lead.parent_last_name ?? "").trim();
+    const key = `${first.toLowerCase()}|${last.toLowerCase()}|${k.dob ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    rows.push({
+      campus_id: campusId,
+      first_name: first,
+      last_name: last,
+      date_of_birth: k.dob ?? null,
+      program_id: programByName.get((k.program ?? "").trim().toLowerCase()) ?? null,
+      customer_preferred_start_date: k.desired_start_date ?? null,
+      planned_start_date: k.desired_start_date ?? null,
+      enrolled_date: todayLocal(),
+      status: "enrolled",
+      notes: [k.desired_start_note, k.schedule, k.chinese_level ? `Chinese: ${k.chinese_level}` : null]
+        .map((s) => (s ?? "").trim()).filter(Boolean).join(" · ") || null,
+    });
+  }
+
+  if (rows.length === 0) return 0;
+  const { error } = await supabase.from("hr_roster_entries").insert(rows);
+  if (error) throw error;
+  return rows.length;
+}
+
 export async function setLeadStatus(
   id: string,
   status: SalesStatus,
