@@ -63,11 +63,9 @@ export default function BookTourPage() {
   const [timeZone, setTimeZone] = useState("Pacific (Los Angeles)");
   const [language, setLanguage] = useState("English");
   const [heard, setHeard] = useState("");
-  const [heardDetail, setHeardDetail] = useState("");
   const [referredBy, setReferredBy] = useState("");
   const [childName, setChildName] = useState("");
   const [childDob, setChildDob] = useState("");
-  const [program, setProgram] = useState("");
   const [schedule, setSchedule] = useState("");
   const [chineseLevel, setChineseLevel] = useState("");
   const [startDate, setStartDate] = useState("");
@@ -141,6 +139,8 @@ export default function BookTourPage() {
 
   const monthLabel = new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(month);
   const times = day ? byDay.get(day) ?? [] : [];
+  /** Only a personal referral has someone to name. */
+  const needsReferrer = ["Sibling / Returning Family", "Friend or Family"].includes(heard);
 
   function chooseDay(key: string) {
     setDay(key);
@@ -149,8 +149,29 @@ export default function BookTourPage() {
 
   async function submit() {
     if (!picked) return;
-    if (!name.trim() || !email.includes("@")) { setError("Please add your name and a valid email."); return; }
-    if (!childName.trim()) { setError("Please add your child's name."); return; }
+
+    // Everything is required. Naming the first gap beats a generic "check the
+    // form" — the parent shouldn't have to hunt for what's missing.
+    const missing =
+      !name.trim() ? "your first and last name"
+      : !email.includes("@") ? "a valid email address"
+      : !phone.trim() ? "your phone number"
+      : !city.trim() ? "your city"
+      : !timeZone ? "your time zone"
+      : !language ? "your preferred language"
+      : !heard ? "how you heard about us"
+      : needsReferrer && !referredBy.trim() ? "who told you about us"
+      : !childName.trim() ? "your child's full name"
+      : !childDob ? "your child's date of birth"
+      : !schedule ? "the days / schedule / after care you're after"
+      : !chineseLevel.trim() ? "whether your child knows any Chinese"
+      // These two are alternatives by design ("…or in your own words"), so
+      // either one on its own is enough.
+      : !startDate && !startNote.trim() ? "a desired start date, or a note about when"
+      : !notes.trim() ? "anything that will help us prepare"
+      : null;
+    if (missing) { setError(`Please add ${missing}.`); return; }
+
     setBusy(true);
     setError("");
     try {
@@ -158,11 +179,13 @@ export default function BookTourPage() {
         mode: "book", slug, start: picked, website,
         parent_name: name.trim(), parent_email: email.trim(), parent_phone: phone.trim(),
         city: city.trim(), time_zone: timeZone, preferred_language: language,
-        source_other: [heard, heardDetail.trim()].filter(Boolean).join(" — ") || null,
+        source_other: heard || null,
         referred_by: referredBy.trim() || null,
         notes: notes.trim(),
         children: [{
-          name: childName.trim(), dob: childDob || null, program: program || null,
+          // These links are preschool tours, so the programme is a given —
+          // no point asking, and the lead should still record it.
+          name: childName.trim(), dob: childDob || null, program: "Preschool",
           schedule: schedule.trim() || null, chinese_level: chineseLevel.trim() || null,
           desired_start_date: startDate || null, desired_start_note: startNote.trim() || null,
         }],
@@ -344,31 +367,31 @@ export default function BookTourPage() {
             <>
               <h2 style={{ fontSize: 19, fontWeight: 800, margin: "0 0 4px", color: INK }}>Enter Details</h2>
               <div style={{ color: MUTED, fontSize: 13, marginBottom: 18 }}>
-                So we can prepare for your visit. * required.
+                So we can prepare for your visit. All fields are required.
               </div>
 
               <Legend>About you</Legend>
               <Field label="First and last name *"><input style={input} value={name} onChange={(e) => setName(e.target.value)} /></Field>
               <Two>
                 <Field label="Email *"><input style={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
-                <Field label="Phone"><input style={input} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
+                <Field label="Phone *"><input style={input} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
               </Two>
               <Two>
-                <Field label="City"><input style={input} value={city} onChange={(e) => setCity(e.target.value)} /></Field>
-                <Field label="Preferred language">
+                <Field label="City *"><input style={input} value={city} onChange={(e) => setCity(e.target.value)} /></Field>
+                <Field label="Preferred language *">
                   <select style={input} value={language} onChange={(e) => setLanguage(e.target.value)}>
                     {["English", "Mandarin", "Cantonese", "Spanish", "Other"].map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </Field>
               </Two>
               <Two>
-                <Field label="Your time zone">
+                <Field label="Your time zone *">
                   <select style={input} value={timeZone} onChange={(e) => setTimeZone(e.target.value)}>
                     {["Pacific (Los Angeles)", "Mountain (Denver)", "Central (Chicago)", "Eastern (New York)", "Other"]
                       .map((z) => <option key={z} value={z}>{z}</option>)}
                   </select>
                 </Field>
-                <Field label="How did you hear about us?">
+                <Field label="How did you hear about us? *">
                   <select style={input} value={heard} onChange={(e) => setHeard(e.target.value)}>
                     <option value="">— Choose —</option>
                     {["Google", "Instagram", "Facebook", "Yelp", "Drive by / Sign", "Sibling / Returning Family", "Friend or Family", "Other"]
@@ -376,41 +399,40 @@ export default function BookTourPage() {
                   </select>
                 </Field>
               </Two>
-              {/* Follow-ups only appear when they apply, so the form stays as
-                  short as each parent's own answers allow. */}
-              {["Google", "Instagram", "Facebook", "Yelp", "Other"].includes(heard) && (
-                <Field label="Where exactly?"><input style={input} value={heardDetail} onChange={(e) => setHeardDetail(e.target.value)} /></Field>
-              )}
-              {["Sibling / Returning Family", "Friend or Family"].includes(heard) && (
-                <Field label="Who told you about us?"><input style={input} value={referredBy} onChange={(e) => setReferredBy(e.target.value)} /></Field>
+              {/* Only asked when a person referred them — there's nobody to
+                  name otherwise. */}
+              {needsReferrer && (
+                <Field label="Who told you about us? *">
+                  <input style={input} value={referredBy} onChange={(e) => setReferredBy(e.target.value)} />
+                </Field>
               )}
 
               <Legend>About your child</Legend>
               <Two>
                 <Field label="Child's full name *"><input style={input} value={childName} onChange={(e) => setChildName(e.target.value)} /></Field>
-                <Field label="Date of birth"><input style={input} type="date" value={childDob} onChange={(e) => setChildDob(e.target.value)} /></Field>
+                <Field label="Date of birth *"><input style={input} type="date" value={childDob} onChange={(e) => setChildDob(e.target.value)} /></Field>
               </Two>
               <Two>
-                <Field label="Program">
-                  <select style={input} value={program} onChange={(e) => setProgram(e.target.value)}>
+                {/* Free text on the staff-side lead form, but a fixed set here:
+                    parents shouldn't be inventing schedule descriptions. Still
+                    stored as the same text field. */}
+                <Field label="Days / schedule / after care *">
+                  <select style={input} value={schedule} onChange={(e) => setSchedule(e.target.value)}>
                     <option value="">— Choose —</option>
-                    {["Preschool", "HWC", "Language Classes", "Camps"].map((p) => <option key={p} value={p}>{p}</option>)}
+                    {["AM", "PM", "Full Care", "None"].map((s) => <option key={s} value={s}>{s}</option>)}
                   </select>
                 </Field>
-                <Field label="Days / schedule / after care">
-                  <input style={input} value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="5 Days/Week (9am – 3pm)" />
+                <Field label="Does your child know any Chinese? *">
+                  <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
                 </Field>
               </Two>
-              <Field label="Does your child have any current knowledge of Chinese?">
-                <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
-              </Field>
               <Two>
-                <Field label="Desired start date"><input style={input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
+                <Field label="Desired start date *"><input style={input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
                 <Field label="…or in your own words">
                   <input style={input} value={startNote} onChange={(e) => setStartNote(e.target.value)} placeholder="Sometime next fall" />
                 </Field>
               </Two>
-              <Field label="Anything that will help us prepare?">
+              <Field label="Anything that will help us prepare? *">
                 <textarea style={{ ...input, minHeight: 76, resize: "vertical" }} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </Field>
 
