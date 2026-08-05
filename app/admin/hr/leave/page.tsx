@@ -1111,6 +1111,13 @@ export default function LeavePage() {
       });
       if (logErr) throw logErr;
 
+      // The adjustments list is loaded once by an effect that doesn't re-run on
+      // save, so Change History kept showing "No manual changes recorded yet"
+      // and the note you'd just typed looked lost — though it had saved fine.
+      // Editing and deleting a past change already refreshed this way; only
+      // creating one didn't.
+      await reloadEditHistory();
+
       setEditField(null);
     } catch (e: unknown) {
       await alert(`Could not save: ${errMessage(e)}`);
