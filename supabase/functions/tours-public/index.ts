@@ -104,14 +104,50 @@ async function alertStaff(
   );
 }
 
-async function sendMail(args: { to: string; subject: string; text: string }) {
+/** ICS timestamp: 20260806T170000Z */
+function icsStamp(d: Date): string {
+  return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+}
+
+/**
+ * A calendar invite the parent can actually add. Google Calendar, Apple
+ * Calendar and Outlook all understand .ics, so this needs no Google API.
+ */
+function buildIcs(a: {
+  uid: string; title: string; start: Date; end: Date; location: string; description: string;
+}): string {
+  const esc = (s: string) => s.replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Sing in Chinese//Booking//EN",
+    "CALSCALE:GREGORIAN", "METHOD:REQUEST", "BEGIN:VEVENT",
+    `UID:${a.uid}`,
+    `DTSTAMP:${icsStamp(new Date())}`,
+    `DTSTART:${icsStamp(a.start)}`,
+    `DTEND:${icsStamp(a.end)}`,
+    `SUMMARY:${esc(a.title)}`,
+    `LOCATION:${esc(a.location)}`,
+    `DESCRIPTION:${esc(a.description)}`,
+    "END:VEVENT", "END:VCALENDAR",
+  ].join("\r\n");
+}
+
+async function sendMail(args: { to: string; subject: string; text: string; ics?: string }) {
   const key = Deno.env.get("RESEND_API_KEY") ?? "";
   if (!key) return;
   const from = Deno.env.get("RESEND_FROM_EMAIL") ?? "Sing in Chinese <noreply@hr.singinchinese.com>";
+  const payload: Record<string, unknown> = {
+    from, to: [args.to], subject: args.subject, text: args.text,
+  };
+  if (args.ics) {
+    payload.attachments = [{
+      filename: "invite.ics",
+      content: btoa(unescape(encodeURIComponent(args.ics))),
+    }];
+  }
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: [args.to], subject: args.subject, text: args.text }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) console.error("Resend failed:", res.status, await res.text().catch(() => ""));
 }
@@ -121,6 +157,11 @@ type TourType = {
   description: string | null; location: string | null;
   duration_minutes: number; buffer_minutes: number; min_notice_hours: number;
   max_days_ahead: number; capacity_per_slot: number; time_zone: string; is_active: boolean;
+  /** 'preschool_tour' asks for a lead and staff approval; 'hwc_consult' neither. */
+  kind: "preschool_tour" | "hwc_consult";
+  meet_url: string | null;
+  creates_lead: boolean;
+  auto_confirm: boolean;
 };
 
 Deno.serve(async (req) => {
@@ -365,6 +406,9 @@ Deno.serve(async (req) => {
       tour: {
         name: tt.name, description: tt.description, location: tt.location,
         duration_minutes: tt.duration_minutes, time_zone: tt.time_zone,
+        // Drives which questions the booking page asks. The Meet URL itself is
+        // deliberately not sent — it goes out in the confirmation email only.
+        kind: tt.kind ?? "preschool_tour",
       },
       slots: await freeSlots(tt, from, to),
     });
@@ -394,13 +438,17 @@ Deno.serve(async (req) => {
     const startAt = new Date(start);
     const endAt = new Date(startAt.getTime() + tt.duration_minutes * 60000);
 
-    // Attach to an existing family when the email already exists, so a tour
-    // never creates a duplicate lead.
-    const { data: existing } = await db
-      .from("sales_leads").select("id").ilike("email", email).limit(1).maybeSingle();
+    // Consultations don't belong in the sales pipeline — these families are
+    // enquiring about classes, not a preschool place — so no lead is created
+    // and nothing reaches Mailchimp through this door.
+    const makesLead = tt.creates_lead !== false;
+
+    const { data: existing } = makesLead
+      ? await db.from("sales_leads").select("id").ilike("email", email).limit(1).maybeSingle()
+      : { data: null };
 
     let leadId = existing?.id as string | undefined;
-    if (!leadId) {
+    if (makesLead && !leadId) {
       const parts = name.split(/\s+/);
       const { data: lead, error: lErr } = await db.from("sales_leads").insert({
         campus_ids: tt.campus_id ? [tt.campus_id] : [],
@@ -425,7 +473,8 @@ Deno.serve(async (req) => {
 
     // Children are recorded whether the family is new or already known — a
     // returning parent booking for a second child must not lose that child.
-    const kids = Array.isArray(body?.children) && body.children.length
+    // Consultations have no lead, so there's nothing to attach them to.
+    const kids = !makesLead || !leadId ? [] : Array.isArray(body?.children) && body.children.length
       ? body.children
       : [{
           name: body?.child_name, dob: body?.child_dob, program: body?.program,
@@ -474,37 +523,75 @@ Deno.serve(async (req) => {
       source_id: body?.source_id ?? null,
       notes: String(body?.notes ?? "").trim() || null,
       manage_token: manage,
-      // A request, not a booking: the slot is held but staff must approve it.
-      status: "requested",
+      // Preschool tours are a *request* staff must approve. Consultations are
+      // confirmed on the spot — there's a standing Meet room, so there's
+      // nothing to approve.
+      status: tt.auto_confirm ? "confirmed" : "requested",
+      confirmed_at: tt.auto_confirm ? new Date().toISOString() : null,
+      // The consultation's own questions live here rather than as columns —
+      // they belong to that form, not to the schema.
+      answers: body?.answers && typeof body.answers === "object" ? body.answers : {},
     }).select("id").single();
     if (tErr) return json(500, { error: tErr.message });
 
     const when = fmtWhen(startAt, tt.time_zone);
 
-    await db.from("sales_activities").insert({
-      lead_id: leadId, kind: "tour", activity_date: dayIn(tt.time_zone, startAt),
-      note: `Tour requested online for ${when}.`,
-    });
+    if (leadId) {
+      await db.from("sales_activities").insert({
+        lead_id: leadId, kind: "tour", activity_date: dayIn(tt.time_zone, startAt),
+        note: `Tour requested online for ${when}.`,
+      });
+    }
 
-    await sendMail({
-      to: email,
-      subject: `We received your tour request — ${tt.name}`,
-      text:
-        `Hi ${name},\n\nThank you for your tour request. We have received it.\n\n` +
-        `${tt.name}\n${when}\n` + (tt.location ? `${tt.location}\n` : "") +
-        `\nA confirmation email will be sent to you within 24 - 48 hours.\n\n` +
-        `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
-        `— Sing in Chinese`,
-    });
+    if (tt.auto_confirm) {
+      // Consultation: confirmed immediately, with the meeting room and a
+      // calendar invite the parent can add in one tap.
+      const meet = (tt.meet_url ?? "").trim();
+      const where = meet || tt.location || "Online";
+      await sendMail({
+        to: email,
+        subject: `Your consultation is booked — ${tt.name}`,
+        text:
+          `Hi ${name},\n\nYour consultation is booked.\n\n${tt.name}\n${when}\n\n` +
+          (meet
+            ? `Join with Google Meet:\n${meet}\n\n`
+            : `We'll email you the meeting link before your appointment.\n\n`) +
+          `A calendar invite is attached.\n\n` +
+          `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
+          `Any questions, call us on ${PHONE}.\n— Sing in Chinese`,
+        ics: buildIcs({
+          uid: `${tour.id}@singinchinese.com`,
+          title: tt.name,
+          start: startAt, end: endAt,
+          location: where,
+          description: meet ? `Join with Google Meet: ${meet}` : tt.description ?? "",
+        }),
+      });
+      await alertStaff(
+        db, tt.campus_id,
+        `Consultation booked — ${tt.name}`,
+        `${name} booked ${when}.` + (meet ? ` Meet: ${meet}` : ""),
+        tour.id
+      );
+    } else {
+      await sendMail({
+        to: email,
+        subject: `We received your tour request — ${tt.name}`,
+        text:
+          `Hi ${name},\n\nThank you for your tour request. We have received it.\n\n` +
+          `${tt.name}\n${when}\n` + (tt.location ? `${tt.location}\n` : "") +
+          `\nA confirmation email will be sent to you within 24 - 48 hours.\n\n` +
+          `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
+          `— Sing in Chinese`,
+      });
+      await alertStaff(
+        db, tt.campus_id,
+        `Tour request — ${tt.name}`,
+        `${name} requested ${when}. Confirm or ask them to reschedule.`,
+        tour.id
+      );
+    }
 
-    await alertStaff(
-      db, tt.campus_id,
-      `Tour request — ${tt.name}`,
-      `${name} requested ${when}. Confirm or ask them to reschedule.`,
-      tour.id
-    );
-
-    await notifyStaff(db, `New tour booked`, `${name} booked ${tt.name} for ${when}.`, leadId!, tour.id, PORTAL);
     return json(200, { ok: true, when, manage_token: manage });
   }
 

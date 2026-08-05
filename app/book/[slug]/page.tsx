@@ -24,7 +24,12 @@ const INK = "#111827";
 const MUTED = "#6b7280";
 const LINE = "#e5e7eb";
 
-type TourInfo = { name: string; description: string | null; location: string | null; duration_minutes: number; time_zone: string };
+type TourInfo = {
+  name: string; description: string | null; location: string | null;
+  duration_minutes: number; time_zone: string;
+  /** Preschool tours and HWC consultations ask different questions. */
+  kind?: "preschool_tour" | "hwc_consult";
+};
 
 async function callFn(body: Record<string, unknown>) {
   const res = await fetch(FN, {
@@ -71,6 +76,10 @@ export default function BookTourPage() {
   const [startDate, setStartDate] = useState("");
   const [startNote, setStartNote] = useState("");
   const [notes, setNotes] = useState("");
+  // Consultation-only questions.
+  const [goals, setGoals] = useState("");
+  const [whichProgram, setWhichProgram] = useState("");
+  const [takingLessons, setTakingLessons] = useState("");
   const [website, setWebsite] = useState(""); // honeypot
   const [busy, setBusy] = useState(false);
 
@@ -141,6 +150,8 @@ export default function BookTourPage() {
   const times = day ? byDay.get(day) ?? [] : [];
   /** Only a personal referral has someone to name. */
   const needsReferrer = ["Sibling / Returning Family", "Friend or Family"].includes(heard);
+  /** Chinese Classes + Homework Club consultations ask a different set. */
+  const isConsult = tour?.kind === "hwc_consult";
 
   function chooseDay(key: string) {
     setDay(key);
@@ -163,13 +174,20 @@ export default function BookTourPage() {
       : needsReferrer && !referredBy.trim() ? "who told you about us"
       : !childName.trim() ? "your child's full name"
       : !childDob ? "your child's date of birth"
-      : !schedule ? "the days / schedule / after care you're after"
       : !chineseLevel.trim() ? "whether your child knows any Chinese"
-      // These two are alternatives by design ("…or in your own words"), so
-      // either one on its own is enough.
-      : !startDate && !startNote.trim() ? "a desired start date, or a note about when"
-      : !notes.trim() ? "anything that will help us prepare"
-      : null;
+      // The two forms diverge from here.
+      : isConsult
+        ? (!goals.trim() ? "your learning goals for your child"
+          : !whichProgram ? "which program you're interested in"
+          : !takingLessons.trim() ? "whether your child is taking Chinese lessons"
+          : !notes.trim() ? "anything that will help prepare for our meeting"
+          : null)
+        : (!schedule ? "the days / schedule / after care you're after"
+          // These two are alternatives by design ("…or in your own words"), so
+          // either one on its own is enough.
+          : !startDate && !startNote.trim() ? "a desired start date, or a note about when"
+          : !notes.trim() ? "anything that will help us prepare"
+          : null);
     if (missing) { setError(`Please add ${missing}.`); return; }
 
     setBusy(true);
@@ -182,7 +200,18 @@ export default function BookTourPage() {
         source_other: heard || null,
         referred_by: referredBy.trim() || null,
         notes: notes.trim(),
-        children: [{
+        // A consultation records its own answers and creates no lead, so the
+        // child block is only meaningful for a preschool tour.
+        child_name: childName.trim(),
+        child_dob: childDob || null,
+        answers: isConsult ? {
+          chinese_knowledge: chineseLevel.trim(),
+          learning_goals: goals.trim(),
+          program_interest: whichProgram,
+          currently_taking_lessons: takingLessons.trim(),
+          how_heard: heard,
+        } : {},
+        children: isConsult ? [] : [{
           // These links are preschool tours, so the programme is a given —
           // no point asking, and the lead should still record it.
           name: childName.trim(), dob: childDob || null, program: "Preschool",
@@ -207,13 +236,14 @@ export default function BookTourPage() {
         <div style={{ padding: "56px 32px", textAlign: "center" }}>
           <div style={{ fontSize: 46, lineHeight: 1 }}>🎉</div>
           <h1 style={{ fontSize: 25, fontWeight: 800, margin: "16px 0 8px", color: INK }}>
-            Request received
+            {isConsult ? "You’re booked" : "Request received"}
           </h1>
           <div style={{ fontSize: 17, fontWeight: 700, color: INK }}>{done.when}</div>
           {tour?.location && <div style={{ color: MUTED, marginTop: 4 }}>{tour.location}</div>}
           <p style={{ color: MUTED, maxWidth: 420, margin: "20px auto 0", lineHeight: 1.6 }}>
-            Thank you — we have your request. A confirmation email will be sent to you within
-            24&nbsp;–&nbsp;48 hours. We&apos;ve also emailed you a copy.
+            {isConsult
+              ? "We’ve emailed you the meeting link and a calendar invite. See you then."
+              : "Thank you — we have your request. A confirmation email will be sent to you within 24 – 48 hours. We’ve also emailed you a copy."}
           </p>
         </div>
       </Shell>
@@ -412,27 +442,55 @@ export default function BookTourPage() {
                 <Field label="Child's full name *"><input style={input} value={childName} onChange={(e) => setChildName(e.target.value)} /></Field>
                 <Field label="Date of birth *"><input style={input} type="date" value={childDob} onChange={(e) => setChildDob(e.target.value)} /></Field>
               </Two>
-              <Two>
-                {/* Free text on the staff-side lead form, but a fixed set here:
-                    parents shouldn't be inventing schedule descriptions. Still
-                    stored as the same text field. */}
-                <Field label="Days / schedule / after care *">
-                  <select style={input} value={schedule} onChange={(e) => setSchedule(e.target.value)}>
-                    <option value="">— Choose —</option>
-                    {["AM", "PM", "Full Care", "None"].map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </Field>
-                <Field label="Does your child know any Chinese? *">
-                  <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
-                </Field>
-              </Two>
-              <Two>
-                <Field label="Desired start date *"><input style={input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
-                <Field label="…or in your own words">
-                  <input style={input} value={startNote} onChange={(e) => setStartNote(e.target.value)} placeholder="Sometime next fall" />
-                </Field>
-              </Two>
-              <Field label="Anything that will help us prepare? *">
+              {isConsult ? (
+                <>
+                  <Field label="Does your child have any current knowledge of Chinese? *">
+                    <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
+                  </Field>
+                  <Field label="What are the learning goals for your child? *">
+                    <input style={input} value={goals} onChange={(e) => setGoals(e.target.value)} placeholder="Speaking, Reading, Writing…" />
+                  </Field>
+                  <Two>
+                    <Field label="Which program are you interested in? *">
+                      <select style={input} value={whichProgram} onChange={(e) => setWhichProgram(e.target.value)}>
+                        <option value="">— Choose —</option>
+                        {[
+                          "Chinese Classes", "Homework Club 2 Days a Week", "Homework Club 3 Days a Week",
+                          "Homework Club 4 Days a Week", "Homework Club 5 Days a Week", "Not sure yet",
+                        ].map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Currently taking Chinese lessons? If so, where? *">
+                      <input style={input} value={takingLessons} onChange={(e) => setTakingLessons(e.target.value)} placeholder="No / at home / school name" />
+                    </Field>
+                  </Two>
+                </>
+              ) : (
+                <Two>
+                  {/* Free text on the staff-side lead form, but a fixed set here:
+                      parents shouldn't be inventing schedule descriptions. Still
+                      stored as the same text field. */}
+                  <Field label="Days / schedule / after care *">
+                    <select style={input} value={schedule} onChange={(e) => setSchedule(e.target.value)}>
+                      <option value="">— Choose —</option>
+                      {["AM", "PM", "Full Care", "None"].map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </Field>
+                  <Field label="Does your child know any Chinese? *">
+                    <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
+                  </Field>
+                </Two>
+              )}
+              {/* A start date only makes sense when there's a place to start. */}
+              {!isConsult && (
+                <Two>
+                  <Field label="Desired start date *"><input style={input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
+                  <Field label="…or in your own words">
+                    <input style={input} value={startNote} onChange={(e) => setStartNote(e.target.value)} placeholder="Sometime next fall" />
+                  </Field>
+                </Two>
+              )}
+              <Field label={isConsult ? "Anything that will help prepare for our meeting? *" : "Anything that will help us prepare? *"}>
                 <textarea style={{ ...input, minHeight: 76, resize: "vertical" }} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </Field>
 
@@ -452,10 +510,12 @@ export default function BookTourPage() {
                   cursor: busy ? "default" : "pointer",
                 }}
               >
-                {busy ? "Sending…" : "Request this tour"}
+                {busy ? "Sending…" : isConsult ? "Book this consultation" : "Request this tour"}
               </button>
               <div style={{ color: MUTED, fontSize: 12, textAlign: "center", marginTop: 10 }}>
-                We&apos;ll confirm your request by email within 24 – 48 hours.
+                {isConsult
+                  ? "You’ll get the meeting link and a calendar invite by email straight away."
+                  : "We’ll confirm your request by email within 24 – 48 hours."}
               </div>
             </>
           )}

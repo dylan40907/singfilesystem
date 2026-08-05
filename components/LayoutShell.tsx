@@ -64,6 +64,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
           links={[
             { href: "/admin/sales", label: "Leads", tab: "leads" },
             { href: "/admin/sales/tours", label: "Tours", tab: "tours" },
+            { href: "/admin/sales/meetings", label: "Meetings", tab: "meetings" },
             { href: "/admin/sales/reports", label: "Reports", tab: "reports" },
             { href: "/admin/sales/settings", label: "Settings", tab: "settings" },
           ]}
