@@ -72,11 +72,13 @@ export default function SalesToursPage() {
 
   const now = Date.now();
   const upcoming = useMemo(
-    () => tours.filter((t) => t.status === "scheduled" && new Date(t.starts_at).getTime() >= now),
+    () => tours.filter((t) => ["requested", "scheduled", "confirmed"].includes(t.status) && new Date(t.starts_at).getTime() >= now)
+      // Requests needing a decision float to the top of the list.
+      .sort((a, b) => Number(b.status === "requested") - Number(a.status === "requested") || a.starts_at.localeCompare(b.starts_at)),
     [tours, now]
   );
   const past = useMemo(
-    () => tours.filter((t) => t.status !== "scheduled" || new Date(t.starts_at).getTime() < now)
+    () => tours.filter((t) => !["requested", "scheduled", "confirmed"].includes(t.status) || new Date(t.starts_at).getTime() < now)
       .sort((a, b) => b.starts_at.localeCompare(a.starts_at)),
     [tours, now]
   );
@@ -103,6 +105,44 @@ export default function SalesToursPage() {
     const { error } = await supabase.from("sales_tours").update(patch).eq("id", t.id);
     if (error) setStatus("Error: " + error.message);
     else { setStatus("✅ Updated."); await reload(); }
+  }
+
+  /**
+   * Approve or deny a request. This goes through the edge function rather than
+   * a direct update because it also emails the family and re-checks that this
+   * tour is at a campus you're allowed to act on.
+   */
+  async function decide(t: Tour, action: "confirm" | "request_reschedule") {
+    if (action === "request_reschedule") {
+      const ok = await confirm(
+        `Ask ${t.parent_name} to reschedule?\n\nTheir slot is released and they're emailed a link to pick again, ` +
+        `along with our phone number.`,
+        { title: "Ask to reschedule", confirmLabel: "Ask to reschedule", danger: true }
+      );
+      if (!ok) return;
+    }
+    setStatus(action === "confirm" ? "Confirming…" : "Sending…");
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/tours-public`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+        },
+        body: JSON.stringify({
+          mode: action,
+          tour_id: t.id,
+          slug: types.find((x) => x.id === t.tour_type_id)?.slug ?? "",
+        }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(out?.error ?? `Failed (${res.status})`);
+      setStatus(action === "confirm" ? "✅ Confirmed — the family has been emailed." : "✅ Reschedule request sent.");
+      await reload();
+    } catch (e) {
+      setStatus("Error: " + ((e as Error)?.message ?? "unknown"));
+    }
   }
 
   async function toggleNotify(userId: string, on: boolean) {
@@ -167,6 +207,7 @@ export default function SalesToursPage() {
             rows={tab === "upcoming" ? upcoming : past}
             typeName={typeName} tzOf={tzOf} fmt={fmt}
             onStatus={setTourStatus}
+            onDecide={decide}
             showActions={tab === "upcoming"}
           />
         )}
@@ -176,13 +217,14 @@ export default function SalesToursPage() {
 }
 
 function TourTable({
-  rows, typeName, tzOf, fmt, onStatus, showActions,
+  rows, typeName, tzOf, fmt, onStatus, onDecide, showActions,
 }: {
   rows: Tour[];
   typeName: (id: string | null) => string;
   tzOf: (id: string | null) => string;
   fmt: (iso: string, tz: string) => string;
   onStatus: (t: Tour, next: string) => void;
+  onDecide: (t: Tour, action: "confirm" | "request_reschedule") => void;
   showActions: boolean;
 }) {
   if (rows.length === 0) return <div className="subtle" style={{ padding: 20, textAlign: "center" }}>Nothing here yet.</div>;
@@ -210,14 +252,25 @@ function TourTable({
               <td style={td}>{t.program || <span className="subtle">—</span>}</td>
               <td style={td}>{typeName(t.tour_type_id)}</td>
               <td style={td}>
-                {t.status}
+                <StatusPill status={t.status} />
                 {t.cancelled_by && <div className="subtle" style={{ fontSize: 11 }}>by {t.cancelled_by}</div>}
               </td>
               {showActions && (
                 <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button className="btn" style={mini} onClick={() => onStatus(t, "completed")}>Attended</button>
-                  <button className="btn" style={mini} onClick={() => onStatus(t, "no_show")}>No-show</button>
-                  <button className="btn" style={{ ...mini, color: "#991b1b" }} onClick={() => onStatus(t, "cancelled")}>Cancel</button>
+                  {t.status === "requested" ? (
+                    /* Nothing has been promised to the family yet — the only
+                       two moves are to approve the time or ask for another. */
+                    <>
+                      <button className="btn btn-primary" style={mini} onClick={() => onDecide(t, "confirm")}>✓ Confirm</button>
+                      <button className="btn" style={{ ...mini, color: "#9a3412" }} onClick={() => onDecide(t, "request_reschedule")}>Ask to reschedule</button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn" style={mini} onClick={() => onStatus(t, "completed")}>Attended</button>
+                      <button className="btn" style={mini} onClick={() => onStatus(t, "no_show")}>No-show</button>
+                      <button className="btn" style={{ ...mini, color: "#991b1b" }} onClick={() => onStatus(t, "cancelled")}>Cancel</button>
+                    </>
+                  )}
                 </td>
               )}
             </tr>
@@ -374,6 +427,25 @@ function TypeAvailability({
         <button className="btn" onClick={add}>+ Add hours</button>
       </div>
     </div>
+  );
+}
+
+/** A request awaiting a decision should be impossible to miss in the list. */
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, { bg: string; fg: string; label: string }> = {
+    requested: { bg: "#fff7ed", fg: "#9a3412", label: "⏳ Needs confirming" },
+    confirmed: { bg: "#dcfce7", fg: "#166534", label: "Confirmed" },
+    scheduled: { bg: "#dcfce7", fg: "#166534", label: "Scheduled" },
+    reschedule_requested: { bg: "#fef2f2", fg: "#991b1b", label: "Asked to reschedule" },
+    cancelled: { bg: "#f3f4f6", fg: "#6b7280", label: "Cancelled" },
+    completed: { bg: "#eff6ff", fg: "#1e40af", label: "Attended" },
+    no_show: { bg: "#f3f4f6", fg: "#6b7280", label: "No-show" },
+  };
+  const s = map[status] ?? { bg: "#f3f4f6", fg: "#374151", label: status };
+  return (
+    <span style={{ background: s.bg, color: s.fg, fontWeight: 800, fontSize: 11, padding: "3px 9px", borderRadius: 999, whiteSpace: "nowrap" }}>
+      {s.label}
+    </span>
   );
 }
 

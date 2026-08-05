@@ -44,11 +44,24 @@ export default function BookTourPage() {
   const [picked, setPicked] = useState<string | null>(null);
   const [done, setDone] = useState<{ when: string } | null>(null);
 
+  // The whole New Lead field set, so a tour request arrives as a complete lead
+  // and nobody has to chase the family for basics afterwards.
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [city, setCity] = useState("");
+  const [timeZone, setTimeZone] = useState("Pacific (Los Angeles)");
+  const [language, setLanguage] = useState("English");
+  const [heard, setHeard] = useState("");
+  const [heardDetail, setHeardDetail] = useState("");
+  const [referredBy, setReferredBy] = useState("");
   const [childName, setChildName] = useState("");
+  const [childDob, setChildDob] = useState("");
   const [program, setProgram] = useState("");
+  const [schedule, setSchedule] = useState("");
+  const [chineseLevel, setChineseLevel] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [startNote, setStartNote] = useState("");
   const [notes, setNotes] = useState("");
   const [website, setWebsite] = useState(""); // honeypot
   const [busy, setBusy] = useState(false);
@@ -109,9 +122,17 @@ export default function BookTourPage() {
     setError("");
     try {
       const data = await callFn({
-        mode: "book", slug, start: picked,
+        mode: "book", slug, start: picked, website,
         parent_name: name.trim(), parent_email: email.trim(), parent_phone: phone.trim(),
-        child_name: childName.trim(), program: program || null, notes: notes.trim(), website,
+        city: city.trim(), time_zone: timeZone, preferred_language: language,
+        source_other: [heard, heardDetail.trim()].filter(Boolean).join(" — ") || null,
+        referred_by: referredBy.trim() || null,
+        notes: notes.trim(),
+        children: [{
+          name: childName.trim(), dob: childDob || null, program: program || null,
+          schedule: schedule.trim() || null, chinese_level: chineseLevel.trim() || null,
+          desired_start_date: startDate || null, desired_start_note: startNote.trim() || null,
+        }],
       });
       setDone({ when: data.when });
     } catch (e) {
@@ -198,15 +219,60 @@ export default function BookTourPage() {
             }).format(new Date(picked))}
           </div>
 
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#6b7280", margin: "6px 0 2px" }}>ABOUT YOU</div>
           <Field label="Your name *"><input style={input} value={name} onChange={(e) => setName(e.target.value)} /></Field>
           <Field label="Email *"><input style={input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
-          <Field label="Phone"><input style={input} value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
-          <Field label="Child's name"><input style={input} value={childName} onChange={(e) => setChildName(e.target.value)} /></Field>
+          <Field label="Phone *"><input style={input} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
+          <Field label="City"><input style={input} value={city} onChange={(e) => setCity(e.target.value)} /></Field>
+          <Field label="Your time zone">
+            <select style={input} value={timeZone} onChange={(e) => setTimeZone(e.target.value)}>
+              {["Pacific (Los Angeles)", "Mountain (Denver)", "Central (Chicago)", "Eastern (New York)", "Other"]
+                .map((z) => <option key={z} value={z}>{z}</option>)}
+            </select>
+          </Field>
+          <Field label="Preferred language">
+            <select style={input} value={language} onChange={(e) => setLanguage(e.target.value)}>
+              {["English", "Mandarin", "Cantonese", "Spanish", "Other"].map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </Field>
+          <Field label="How did you hear about us?">
+            <select style={input} value={heard} onChange={(e) => setHeard(e.target.value)}>
+              <option value="">— Choose —</option>
+              {["Google", "Instagram", "Facebook", "Yelp", "Drive by / Sign", "Sibling / Returning Family", "Friend or Family", "Other"]
+                .map((h) => <option key={h} value={h}>{h}</option>)}
+            </select>
+          </Field>
+          {/* The follow-ups only appear when they're relevant, so the form
+              stays as short as each parent's answers allow. */}
+          {["Google", "Instagram", "Facebook", "Yelp", "Other"].includes(heard) && (
+            <Field label="Where exactly?">
+              <input style={input} value={heardDetail} onChange={(e) => setHeardDetail(e.target.value)} />
+            </Field>
+          )}
+          {["Sibling / Returning Family", "Friend or Family"].includes(heard) && (
+            <Field label="Who told you about us?">
+              <input style={input} value={referredBy} onChange={(e) => setReferredBy(e.target.value)} />
+            </Field>
+          )}
+
+          <div style={{ fontWeight: 800, fontSize: 13, color: "#6b7280", margin: "16px 0 2px" }}>ABOUT YOUR CHILD</div>
+          <Field label="Child's full name *"><input style={input} value={childName} onChange={(e) => setChildName(e.target.value)} /></Field>
+          <Field label="Child's date of birth"><input style={input} type="date" value={childDob} onChange={(e) => setChildDob(e.target.value)} /></Field>
           <Field label="Which program are you interested in?">
             <select style={input} value={program} onChange={(e) => setProgram(e.target.value)}>
               <option value="">— Choose —</option>
               {["Preschool", "HWC", "Language Classes", "Camps"].map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
+          </Field>
+          <Field label="Days / schedule / after care">
+            <input style={input} value={schedule} onChange={(e) => setSchedule(e.target.value)} placeholder="5 Days/Week (9am – 3pm)" />
+          </Field>
+          <Field label="Does your child have any current knowledge of Chinese?">
+            <input style={input} value={chineseLevel} onChange={(e) => setChineseLevel(e.target.value)} />
+          </Field>
+          <Field label="Desired start date"><input style={input} type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></Field>
+          <Field label="…or in your own words">
+            <input style={input} value={startNote} onChange={(e) => setStartNote(e.target.value)} placeholder="Sometime next fall" />
           </Field>
           <Field label="Anything that will help us prepare?">
             <textarea style={{ ...input, minHeight: 70 }} value={notes} onChange={(e) => setNotes(e.target.value)} />

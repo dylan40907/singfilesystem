@@ -82,6 +82,28 @@ function token(): string {
   return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+const PHONE = "(310) 957-2258";
+
+/**
+ * Tell the right staff about a tour. Admins hear about every campus; campus
+ * admins and supervisors only about their own. Anyone with no campus on their
+ * HR record hears nothing — that rule lives in tour_alert_recipients().
+ */
+async function alertStaff(
+  db: any, campusId: string | null, title: string, bodyText: string, tourId: string
+) {
+  const { data: ids } = await db.rpc("tour_alert_recipients", { target_campus: campusId });
+  const rows = (ids ?? []) as { id?: string }[] | string[];
+  const userIds = (rows as any[]).map((r) => (typeof r === "string" ? r : r.id)).filter(Boolean);
+  if (userIds.length === 0) return;
+  await db.from("hr_notifications").insert(
+    userIds.map((uid: string) => ({
+      user_id: uid, type: "tour", title, body: bodyText,
+      data: { tour_id: tourId, url: "/admin/sales/tours" },
+    }))
+  );
+}
+
 async function sendMail(args: { to: string; subject: string; text: string }) {
   const key = Deno.env.get("RESEND_API_KEY") ?? "";
   if (!key) return;
@@ -107,6 +129,7 @@ Deno.serve(async (req) => {
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
   const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const PORTAL = Deno.env.get("PORTAL_URL") ?? "https://www.singlearning.com";
   if (!SUPABASE_URL || !SERVICE_KEY) return json(500, { error: "Server not configured" });
 
@@ -120,11 +143,66 @@ Deno.serve(async (req) => {
     if (!secret || (req.headers.get("x-cron-secret") ?? "").trim() !== secret) {
       return json(401, { error: "Unauthorized" });
     }
+    const now = new Date();
+
+    // ── Nag staff about requests nobody has approved or denied ──────────────
+    // Every 24 hours, for as long as it sits unactioned. Requests are never
+    // auto-released, so this is the only thing that keeps them from being
+    // forgotten while a slot stays held.
+    const dayAgo = new Date(now.getTime() - 24 * 3600 * 1000).toISOString();
+    const { data: stale } = await db
+      .from("sales_tours")
+      .select("id, campus_id, parent_name, starts_at, created_at, action_reminded_at, tour_type:sales_tour_types(name, time_zone)")
+      .eq("status", "requested")
+      .lte("created_at", dayAgo)
+      .or(`action_reminded_at.is.null,action_reminded_at.lte.${dayAgo}`);
+
+    let nagged = 0;
+    for (const t of stale ?? []) {
+      const tt = (t as Record<string, unknown>).tour_type as { name: string; time_zone: string } | null;
+      const when = fmtWhen(new Date(t.starts_at), tt?.time_zone ?? "America/Los_Angeles");
+      await alertStaff(
+        db, t.campus_id,
+        `Still waiting: ${tt?.name ?? "tour"} request`,
+        `${t.parent_name || "A parent"} asked for ${when} and nobody has confirmed or rescheduled it yet.`,
+        t.id
+      );
+      await db.from("sales_tours").update({ action_reminded_at: now.toISOString() }).eq("id", t.id);
+      nagged++;
+    }
+
+    // ── Thank-you after the visit ───────────────────────────────────────────
+    // Anything confirmed whose end time has passed, within the last two days so
+    // a backlog doesn't mail people about tours from weeks ago.
+    const { data: finished } = await db
+      .from("sales_tours")
+      .select("id, parent_name, parent_email, ends_at, tour_type:sales_tour_types(name)")
+      .eq("status", "confirmed")
+      .is("followup_sent_at", null)
+      .lte("ends_at", now.toISOString())
+      .gte("ends_at", new Date(now.getTime() - 48 * 3600 * 1000).toISOString());
+
+    let thanked = 0;
+    for (const t of finished ?? []) {
+      if (t.parent_email) {
+        await sendMail({
+          to: t.parent_email,
+          subject: "Thank you for visiting Sing in Chinese",
+          text:
+            `Hi ${t.parent_name || "there"},\n\nThank you for visiting us. ` +
+            `Please let us know if you have any questions. We look forward to hearing from you.\n\n` +
+            `You can reach us any time on ${PHONE}.\n\n— Sing in Chinese`,
+        });
+        thanked++;
+      }
+      await db.from("sales_tours").update({ followup_sent_at: now.toISOString() }).eq("id", t.id);
+    }
+
     const soon = new Date(Date.now() + 36 * 3600 * 1000).toISOString();
     const { data: due } = await db
       .from("sales_tours")
       .select("*, tour_type:sales_tour_types(name, location, time_zone)")
-      .eq("status", "scheduled")
+      .eq("status", "confirmed")
       .is("reminder_sent_at", null)
       .gte("starts_at", new Date().toISOString())
       .lte("starts_at", soon);
@@ -147,7 +225,88 @@ Deno.serve(async (req) => {
       }
       await db.from("sales_tours").update({ reminder_sent_at: new Date().toISOString() }).eq("id", t.id);
     }
-    return json(200, { reminded: sent });
+    return json(200, { reminded: sent, nagged, thanked });
+  }
+
+  /**
+   * Staff approving or denying a request. Called from the Tours tab with the
+   * caller's JWT — the database decides whether they may touch this campus, so
+   * this can't be driven by anyone who simply knows a tour id.
+   */
+  if (mode === "confirm" || mode === "request_reschedule") {
+    const auth = req.headers.get("Authorization") ?? "";
+    if (!auth) return json(401, { error: "Sign in first." });
+    const caller = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: auth } } });
+    const { data: me } = await caller.auth.getUser();
+    if (!me?.user) return json(401, { error: "Sign in first." });
+
+    const { data: tour } = await db
+      .from("sales_tours")
+      .select("*, tour_type:sales_tour_types(name, location, time_zone)")
+      .eq("id", String(body?.tour_id ?? "")).maybeSingle();
+    if (!tour) return json(404, { error: "Tour not found." });
+
+    // Same campus rule as the alerts: you can only act on tours you'd be told about.
+    const { data: allowed } = await db.rpc("tour_alert_recipients", { target_campus: tour.campus_id });
+    const ids = ((allowed ?? []) as any[]).map((r) => (typeof r === "string" ? r : r.id));
+    if (!ids.includes(me.user.id)) return json(403, { error: "That tour isn't at your campus." });
+
+    const tt = (tour as Record<string, unknown>).tour_type as { name: string; location: string | null; time_zone: string } | null;
+    const tz = tt?.time_zone ?? "America/Los_Angeles";
+    const when = fmtWhen(new Date(tour.starts_at), tz);
+
+    if (mode === "confirm") {
+      await db.from("sales_tours").update({
+        status: "confirmed", confirmed_at: new Date().toISOString(), confirmed_by: me.user.id,
+      }).eq("id", tour.id);
+
+      if (tour.parent_email) {
+        await sendMail({
+          to: tour.parent_email,
+          subject: `Your tour is confirmed — ${tt?.name ?? "Sing in Chinese"}`,
+          text:
+            `Hi ${tour.parent_name || "there"},\n\nYour tour is confirmed.\n\n` +
+            `${tt?.name ?? "Tour"}\n${when}\n` + (tt?.location ? `${tt.location}\n` : "") +
+            `\nNeed to change or cancel? ${PORTAL}/book/manage?t=${tour.manage_token}\n\n` +
+            `We look forward to meeting you.\n— Sing in Chinese`,
+        });
+      }
+      if (tour.lead_id) {
+        await db.from("sales_activities").insert({
+          lead_id: tour.lead_id, kind: "tour", activity_date: dayIn(tz, new Date()),
+          note: `Tour confirmed for ${when}.`, handled_by: me.user.id,
+        });
+      }
+      return json(200, { ok: true, status: "confirmed" });
+    }
+
+    // Reschedule: the slot is released so the family can pick again.
+    await db.from("sales_tours").update({
+      status: "reschedule_requested", cancelled_at: new Date().toISOString(),
+      cancel_reason: String(body?.reason ?? "").trim() || null,
+      // cancelled_by is a coarse text flag ('parent' | 'staff'); the actual
+      // person goes in confirmed_by, which is a real user reference.
+      cancelled_by: "staff", confirmed_by: me.user.id,
+    }).eq("id", tour.id);
+
+    if (tour.parent_email) {
+      await sendMail({
+        to: tour.parent_email,
+        subject: `About your tour request — ${tt?.name ?? "Sing in Chinese"}`,
+        text:
+          `Hi ${tour.parent_name || "there"},\n\n` +
+          `Thank you for your tour request for ${when}. Unfortunately we aren't able to host you at that time.\n\n` +
+          `Please reschedule at ${PORTAL}/book/${body?.slug ?? ""} or call us at ${PHONE} — ` +
+          `we will be happy to help you schedule a tour.\n\n— Sing in Chinese`,
+      });
+    }
+    if (tour.lead_id) {
+      await db.from("sales_activities").insert({
+        lead_id: tour.lead_id, kind: "tour", activity_date: dayIn(tz, new Date()),
+        note: `Asked family to reschedule (was ${when}).`, handled_by: me.user.id,
+      });
+    }
+    return json(200, { ok: true, status: "reschedule_requested" });
   }
 
   // ── Load the tour type (everything else needs it, except token lookups) ───
@@ -161,7 +320,10 @@ Deno.serve(async (req) => {
     const [{ data: windows }, { data: blackouts }, { data: taken }] = await Promise.all([
       db.from("sales_tour_availability").select("*").eq("tour_type_id", tt.id),
       db.from("sales_tour_blackouts").select("day").eq("tour_type_id", tt.id),
-      db.from("sales_tours").select("starts_at").eq("tour_type_id", tt.id).eq("status", "scheduled")
+      // A slot is held the moment it's requested, not just once confirmed —
+      // otherwise two families could ask for the same time while it waits.
+      db.from("sales_tours").select("starts_at").eq("tour_type_id", tt.id)
+        .in("status", ["requested", "scheduled", "confirmed"])
         .gte("starts_at", zonedToUtc(fromDay, "00:00", tt.time_zone).toISOString())
         .lte("starts_at", zonedToUtc(addDays(toDay, 1), "00:00", tt.time_zone).toISOString()),
     ]);
@@ -247,7 +409,11 @@ Deno.serve(async (req) => {
         parent_last_name: parts.length > 1 ? parts[parts.length - 1] : "",
         email,
         phone: String(body?.parent_phone ?? "").trim() || null,
+        city: String(body?.city ?? "").trim() || null,
+        time_zone: String(body?.time_zone ?? "").trim() || null,
+        preferred_language: String(body?.preferred_language ?? "").trim() || null,
         source_id: body?.source_id ?? null,
+        source_other: String(body?.source_other ?? "").trim() || null,
         referred_by: String(body?.referred_by ?? "").trim() || null,
         first_contact_type: "scheduled_tour",
         inquiry_date: dayIn(tt.time_zone, new Date()),
@@ -255,16 +421,45 @@ Deno.serve(async (req) => {
       }).select("id").single();
       if (lErr) return json(500, { error: lErr.message });
       leadId = lead.id;
+    }
 
-      if (String(body?.child_name ?? "").trim() || body?.program) {
-        await db.from("sales_lead_children").insert({
-          lead_id: leadId,
-          name: String(body?.child_name ?? "").trim(),
-          dob: body?.child_dob || null,
-          program: body?.program || null,
-          order_index: 0,
-        });
-      }
+    // Children are recorded whether the family is new or already known — a
+    // returning parent booking for a second child must not lose that child.
+    const kids = Array.isArray(body?.children) && body.children.length
+      ? body.children
+      : [{
+          name: body?.child_name, dob: body?.child_dob, program: body?.program,
+          schedule: body?.schedule, desired_start_date: body?.desired_start_date,
+          desired_start_note: body?.desired_start_note,
+        }];
+    // Skip children already on this lead. A parent who retries after an error —
+    // or who books a second tour for the same child — must not end up with
+    // duplicates, and the lead insert above isn't in the same transaction as
+    // the tour insert below, so a retry is a real possibility.
+    const { data: already } = await db
+      .from("sales_lead_children").select("name").eq("lead_id", leadId);
+    const seen = new Set(
+      ((already ?? []) as { name: string | null }[])
+        .map((c) => (c.name ?? "").trim().toLowerCase()).filter(Boolean)
+    );
+
+    let idx = seen.size;
+    for (const k of kids as any[]) {
+      const kidName = String(k?.name ?? "").trim();
+      if (!kidName && !k?.program) continue;
+      if (kidName && seen.has(kidName.toLowerCase())) continue;
+      if (kidName) seen.add(kidName.toLowerCase());
+      await db.from("sales_lead_children").insert({
+        lead_id: leadId,
+        name: String(k?.name ?? "").trim(),
+        dob: k?.dob || null,
+        program: k?.program || null,
+        schedule: String(k?.schedule ?? "").trim() || null,
+        chinese_level: String(k?.chinese_level ?? "").trim() || null,
+        desired_start_date: k?.desired_start_date || null,
+        desired_start_note: String(k?.desired_start_note ?? "").trim() || null,
+        order_index: idx++,
+      });
     }
 
     const manage = token();
@@ -279,6 +474,8 @@ Deno.serve(async (req) => {
       source_id: body?.source_id ?? null,
       notes: String(body?.notes ?? "").trim() || null,
       manage_token: manage,
+      // A request, not a booking: the slot is held but staff must approve it.
+      status: "requested",
     }).select("id").single();
     if (tErr) return json(500, { error: tErr.message });
 
@@ -286,18 +483,26 @@ Deno.serve(async (req) => {
 
     await db.from("sales_activities").insert({
       lead_id: leadId, kind: "tour", activity_date: dayIn(tt.time_zone, startAt),
-      note: `Tour booked online for ${when}.`,
+      note: `Tour requested online for ${when}.`,
     });
 
     await sendMail({
       to: email,
-      subject: `You're booked: ${tt.name}`,
+      subject: `We received your tour request — ${tt.name}`,
       text:
-        `Hi ${name},\n\nYour visit is confirmed.\n\n${tt.name}\n${when}\n` +
-        (tt.location ? `${tt.location}\n` : "") +
-        `\nNeed to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
-        `We look forward to meeting you.\n— Sing in Chinese`,
+        `Hi ${name},\n\nThank you for your tour request. We have received it.\n\n` +
+        `${tt.name}\n${when}\n` + (tt.location ? `${tt.location}\n` : "") +
+        `\nA confirmation email will be sent to you within 24 - 48 hours.\n\n` +
+        `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
+        `— Sing in Chinese`,
     });
+
+    await alertStaff(
+      db, tt.campus_id,
+      `Tour request — ${tt.name}`,
+      `${name} requested ${when}. Confirm or ask them to reschedule.`,
+      tour.id
+    );
 
     await notifyStaff(db, `New tour booked`, `${name} booked ${tt.name} for ${when}.`, leadId!, tour.id, PORTAL);
     return json(200, { ok: true, when, manage_token: manage });
@@ -325,7 +530,9 @@ Deno.serve(async (req) => {
   }
 
   if (mode === "cancel") {
-    if (tour.status !== "scheduled") return json(400, { error: "That booking isn't active." });
+    if (!["requested", "scheduled", "confirmed"].includes(tour.status)) {
+      return json(400, { error: "That booking isn’t active." });
+    }
     await db.from("sales_tours").update({
       status: "cancelled", cancelled_at: new Date().toISOString(),
       cancelled_by: "parent", cancel_reason: String(body?.reason ?? "").trim() || null,
@@ -347,7 +554,9 @@ Deno.serve(async (req) => {
   }
 
   if (mode === "reschedule") {
-    if (tour.status !== "scheduled") return json(400, { error: "That booking isn't active." });
+    if (!["requested", "scheduled", "confirmed"].includes(tour.status)) {
+      return json(400, { error: "That booking isn’t active." });
+    }
     const start = String(body?.start ?? "");
     if (!start) return json(400, { error: "Pick a new time." });
 
