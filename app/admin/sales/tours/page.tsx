@@ -240,55 +240,18 @@ function SetupPanel({
   onRemoveWindow: (id: string) => void;
   onToggleNotify: (userId: string, on: boolean) => void;
 }) {
-  const [day, setDay] = useState(3);
-  const [from, setFrom] = useState("09:30");
-  const [to, setTo] = useState("11:30");
-
   return (
     <div className="stack" style={{ gap: 22 }}>
-      {types.map((t) => {
-        const rows = avail.filter((a) => a.tour_type_id === t.id)
-          .sort((a, b) => a.day_of_week - b.day_of_week || a.start_time.localeCompare(b.start_time));
-        const campus = campuses.find((c) => c.id === t.campus_id)?.name ?? "No campus";
-        return (
-          <div key={t.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14 }}>
-            <div className="row-between" style={{ flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
-              <div style={{ fontWeight: 800 }}>{t.name}</div>
-              <code style={{ fontSize: 12, color: "#6b7280" }}>/book/{t.slug}</code>
-            </div>
-            <div className="subtle" style={{ fontSize: 12, marginBottom: 12 }}>
-              {campus} · {t.duration_minutes} min · {t.min_notice_hours}h notice · up to {t.max_days_ahead} days ahead
-            </div>
-
-            {rows.length === 0 ? (
-              <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>
-                No hours set yet — the booking page will show nothing until you add some.
-              </div>
-            ) : (
-              <div className="stack" style={{ gap: 6, marginBottom: 10 }}>
-                {rows.map((a) => (
-                  <div key={a.id} className="row-between" style={{ gap: 8 }}>
-                    <span style={{ fontSize: 14 }}>
-                      <strong>{DAYS[a.day_of_week]}</strong> {String(a.start_time).slice(0, 5)}–{String(a.end_time).slice(0, 5)}
-                    </span>
-                    <button className="btn" style={{ ...mini, color: "#991b1b" }} onClick={() => onRemoveWindow(a.id)}>Remove</button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <select className="select" style={{ maxWidth: 150 }} value={day} onChange={(e) => setDay(Number(e.target.value))}>
-                {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
-              </select>
-              <input className="input" style={{ maxWidth: 120 }} type="time" value={from} onChange={(e) => setFrom(e.target.value)} />
-              <span className="subtle">to</span>
-              <input className="input" style={{ maxWidth: 120 }} type="time" value={to} onChange={(e) => setTo(e.target.value)} />
-              <button className="btn" onClick={() => onAddWindow(t.id, day, from, to)}>+ Add hours</button>
-            </div>
-          </div>
-        );
-      })}
+      {types.map((t) => (
+        <TypeAvailability
+          key={t.id}
+          type={t}
+          rows={avail.filter((a) => a.tour_type_id === t.id)}
+          campusName={campuses.find((c) => c.id === t.campus_id)?.name ?? "No campus"}
+          onAddWindow={onAddWindow}
+          onRemoveWindow={onRemoveWindow}
+        />
+      ))}
 
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14 }}>
         <div style={{ fontWeight: 800, marginBottom: 4 }}>Who gets told about bookings</div>
@@ -308,6 +271,107 @@ function SetupPanel({
             </label>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Bookable hours for one campus, shown as the whole week so a day with nothing
+ * on it is visibly empty rather than just absent from a list. Each card keeps
+ * its own draft — they used to share one, so picking a day for Torrance moved
+ * North Torrance's picker too.
+ */
+function TypeAvailability({
+  type, rows, campusName, onAddWindow, onRemoveWindow,
+}: {
+  type: TourType;
+  rows: Availability[];
+  campusName: string;
+  onAddWindow: (typeId: string, day: number, start: string, end: string) => void;
+  onRemoveWindow: (id: string) => void;
+}) {
+  const [day, setDay] = useState(1);
+  const [from, setFrom] = useState("09:30");
+  const [to, setTo] = useState("12:00");
+  const [err, setErr] = useState("");
+
+  const byDay = (d: number) =>
+    rows.filter((a) => a.day_of_week === d)
+      .sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
+
+  function add() {
+    setErr("");
+    if (to <= from) { setErr("The end time has to be after the start time."); return; }
+    // Overlapping windows would offer the same slot twice on the booking page.
+    const clash = byDay(day).some((a) => from < String(a.end_time).slice(0, 5) && to > String(a.start_time).slice(0, 5));
+    if (clash) { setErr(`That overlaps hours already set for ${DAYS[day]}.`); return; }
+    onAddWindow(type.id, day, from, to);
+  }
+
+  return (
+    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 14 }}>
+      <div className="row-between" style={{ flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <div style={{ fontWeight: 800 }}>{type.name}</div>
+        <code style={{ fontSize: 12, color: "#6b7280" }}>/book/{type.slug}</code>
+      </div>
+      <div className="subtle" style={{ fontSize: 12, marginBottom: 12 }}>
+        {campusName} · {type.duration_minutes} min · {type.min_notice_hours}h notice · up to {type.max_days_ahead} days ahead
+      </div>
+
+      {rows.length === 0 && (
+        <div style={{
+          fontSize: 13, marginBottom: 10, padding: "8px 12px", borderRadius: 8,
+          background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412", fontWeight: 600,
+        }}>
+          No hours set — the booking page shows no times at all for this campus until you add some.
+        </div>
+      )}
+
+      <div className="stack" style={{ gap: 4, marginBottom: 12 }}>
+        {DAYS.map((label, d) => {
+          const windows = byDay(d);
+          return (
+            <div key={label} className="row" style={{ gap: 10, alignItems: "flex-start", padding: "5px 0", borderTop: d ? "1px solid #f1f5f9" : undefined }}>
+              <div style={{ width: 92, fontWeight: 700, fontSize: 13, color: windows.length ? "#111827" : "#9ca3af" }}>{label}</div>
+              {windows.length === 0 ? (
+                <span className="subtle" style={{ fontSize: 13 }}>Closed</span>
+              ) : (
+                <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+                  {windows.map((a) => (
+                    <span key={a.id} style={{
+                      display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600,
+                      background: "#fdf2f8", border: "1px solid #fbcfe8", color: "#9d174d",
+                      borderRadius: 999, padding: "2px 4px 2px 10px",
+                    }}>
+                      {String(a.start_time).slice(0, 5)}–{String(a.end_time).slice(0, 5)}
+                      <button
+                        className="btn"
+                        title="Remove these hours"
+                        onClick={() => onRemoveWindow(a.id)}
+                        style={{ padding: "0 6px", fontSize: 12, lineHeight: 1.6, color: "#991b1b", background: "transparent", border: "none" }}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {err && <div style={{ color: "#b91c1c", fontWeight: 600, fontSize: 13, marginBottom: 8 }}>{err}</div>}
+
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select className="select" style={{ maxWidth: 150 }} value={day} onChange={(e) => setDay(Number(e.target.value))}>
+          {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+        </select>
+        <input className="input" style={{ maxWidth: 120 }} type="time" value={from} onChange={(e) => setFrom(e.target.value)} />
+        <span className="subtle">to</span>
+        <input className="input" style={{ maxWidth: 120 }} type="time" value={to} onChange={(e) => setTo(e.target.value)} />
+        <button className="btn" onClick={add}>+ Add hours</button>
       </div>
     </div>
   );
