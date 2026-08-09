@@ -46,6 +46,10 @@ export const EMAIL_TEMPLATES: EmailTemplateSpec[] = [
   { key: "tour_cancelled", group: "Tours", tokens: [PARENT, TOUR, WHEN, BOOK] },
   { key: "tour_rescheduled", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, MEET, MANAGE] },
   { key: "consult_booked", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
+  { key: "consult_reminder", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
+  { key: "consult_rescheduled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
+  { key: "consult_cancelled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, BOOK] },
+  { key: "consult_followup", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE] },
   {
     key: "staff_booking",
     group: "Staff",

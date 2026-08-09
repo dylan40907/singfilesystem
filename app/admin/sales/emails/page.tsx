@@ -42,7 +42,15 @@ export default function SalesEmailsPage() {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState("");
   const [status, setStatus] = useState("");
+  // Deliberately blank. Prefilling from the signed-in account sent tests to
+  // whatever internal address that happens to be, which is rarely what you want
+  // when you're checking how a message looks to a parent.
   const [testTo, setTestTo] = useState("");
+  // Which template's contents are currently in the editor. The editor seeds its
+  // contentEditable once on mount, so it must not mount until this matches
+  // activeKey — otherwise it starts empty, and a blur would then save that
+  // emptiness over the real body.
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
 
   const spec = specFor(activeKey);
   const active = rows.find((r) => r.key === activeKey) ?? null;
@@ -54,13 +62,6 @@ export default function SalesEmailsPage() {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      setTestTo(data.user?.email ?? "");
-    })();
-  }, []);
-
   // Load the selected template into the editor. Guarded on key + row identity so
   // a save (which refetches) doesn't stomp on what's on screen.
   useEffect(() => {
@@ -70,8 +71,14 @@ export default function SalesEmailsPage() {
     setEditorHtml(toEditorHtml(row.body_html, specFor(activeKey)));
     setAttachments(Array.isArray(row.attachments) ? row.attachments : []);
     setDirty(false);
+    setLoadedKey(activeKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeKey, rows.length]);
+
+  // Switching templates unmounts the editor until the new body is in state.
+  useEffect(() => {
+    setLoadedKey((k) => (k === activeKey ? k : null));
+  }, [activeKey]);
 
   const storedHtml = useMemo(() => fromEditorHtml(editorHtml), [editorHtml]);
   const missing = useMemo(
@@ -81,6 +88,16 @@ export default function SalesEmailsPage() {
 
   async function save() {
     if (!active) return;
+    // An empty body is never intentional, and it's how two templates got wiped
+    // before the editor waited for its contents.
+    if (!storedHtml.replace(/<[^>]*>|&nbsp;|\s/g, "")) {
+      await alert("This email has no body. Write something before saving.", { title: "Nothing to save" });
+      return;
+    }
+    if (!subject.trim()) {
+      await alert("This email needs a subject line.", { title: "Nothing to save" });
+      return;
+    }
     if (missing.length) {
       await alert(
         `This email still needs: ${missing.map((m) => m.label).join(", ")}. ` +
@@ -233,14 +250,23 @@ export default function SalesEmailsPage() {
 
               <div>
                 <label style={lbl}>Body</label>
-                <RichTextEditor
-                  value={editorHtml}
-                  onChange={(html) => { setEditorHtml(html); setDirty(true); }}
-                  upload={async (f) => ({ url: (await uploadEmailAsset(f)).url })}
-                  tokens={spec?.tokens}
-                  minHeight={240}
-                  maxHeight={520}
-                />
+                {loadedKey === activeKey ? (
+                  <RichTextEditor
+                    // Remount per template so the editor re-seeds from the body
+                    // it's being handed rather than keeping the previous one.
+                    key={activeKey}
+                    value={editorHtml}
+                    onChange={(html) => { setEditorHtml(html); setDirty(true); }}
+                    upload={async (f) => ({ url: (await uploadEmailAsset(f)).url })}
+                    tokens={spec?.tokens}
+                    minHeight={240}
+                    maxHeight={520}
+                  />
+                ) : (
+                  <div className="subtle" style={{ padding: 20, border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
+                    Loading…
+                  </div>
+                )}
               </div>
 
               {missing.length > 0 && (

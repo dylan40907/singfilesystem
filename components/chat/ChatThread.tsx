@@ -14,7 +14,6 @@ import {
   mentionLabel, mentionsToPlainText, parseMentions, storedToDraft,
 } from "@/lib/mentions";
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
-import ChatAlbumsModal from "@/components/chat/ChatAlbumsModal";
 import { useDialog } from "@/components/ui/useDialog";
 
 type PreviewTarget = { url: string; kind: PreviewKind; name: string; type: string | null };
@@ -270,7 +269,6 @@ export default function ChatThread({
   // The message being replied to (null = composing normally).
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [participantsOpen, setParticipantsOpen] = useState(false);
-  const [albumsOpen, setAlbumsOpen] = useState(false);
   const [viewerRole, setViewerRole] = useState<string | null>(null);
   // @-mention autocomplete
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
@@ -574,16 +572,6 @@ export default function ChatThread({
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "white" }}>
       {dialogModal}
       {preview && <PreviewLightbox target={preview} onClose={() => setPreview(null)} />}
-      {albumsOpen && (
-        <ChatAlbumsModal
-          conversationId={conversation.id}
-          conversationName={conversation.displayName}
-          // Albums follow the same rule as managing a group: anyone above
-          // teacher, in any chat — direct messages included.
-          canManage={!!viewerRole && viewerRole !== "teacher"}
-          onClose={() => setAlbumsOpen(false)}
-        />
-      )}
       {participantsOpen && (
         <ChatParticipantsModal
           conversationId={conversation.id}
@@ -634,17 +622,6 @@ export default function ChatThread({
               : "Direct message"}
           </div>
         </div>
-        <button
-          onClick={() => setAlbumsOpen(true)}
-          title="Photo & video albums"
-          style={{
-            flexShrink: 0, padding: "6px 12px", borderRadius: 8,
-            border: "1.5px solid #e5e7eb", background: "white",
-            color: "#374151", fontWeight: 700, fontSize: 13, cursor: "pointer",
-          }}
-        >
-          🖼 Albums
-        </button>
         {conversation.is_group ? (
           <button
             onClick={() => setParticipantsOpen(true)}

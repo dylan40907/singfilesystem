@@ -115,25 +115,45 @@ function icsStamp(d: Date): string {
 }
 
 /**
- * A calendar invite the parent can actually add. Google Calendar, Apple
- * Calendar and Outlook all understand .ics, so this needs no Google API.
+ * A calendar invite the parent (or the campus) can actually add. Google
+ * Calendar, Apple Calendar and Outlook all understand .ics, so this needs no
+ * Google API.
+ *
+ * The UID is per booking and stays the same for its whole life, so a later
+ * invite with a higher SEQUENCE updates the existing event rather than adding a
+ * second one — and METHOD:CANCEL removes it. Anything that changes a booking
+ * must therefore bump `sequence`.
  */
 function buildIcs(a: {
   uid: string; title: string; start: Date; end: Date; location: string; description: string;
+  sequence?: number;
+  method?: "REQUEST" | "CANCEL";
 }): string {
   const esc = (s: string) => s.replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+  const method = a.method ?? "REQUEST";
   return [
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Sing in Chinese//Booking//EN",
-    "CALSCALE:GREGORIAN", "METHOD:REQUEST", "BEGIN:VEVENT",
+    "CALSCALE:GREGORIAN", `METHOD:${method}`, "BEGIN:VEVENT",
     `UID:${a.uid}`,
+    `SEQUENCE:${a.sequence ?? 0}`,
     `DTSTAMP:${icsStamp(new Date())}`,
     `DTSTART:${icsStamp(a.start)}`,
     `DTEND:${icsStamp(a.end)}`,
     `SUMMARY:${esc(a.title)}`,
     `LOCATION:${esc(a.location)}`,
     `DESCRIPTION:${esc(a.description)}`,
+    `STATUS:${method === "CANCEL" ? "CANCELLED" : "CONFIRMED"}`,
     "END:VEVENT", "END:VCALENDAR",
   ].join("\r\n");
+}
+
+/**
+ * Tours and consultations send the same set of emails but word them
+ * differently — a consultation is an online meeting, not a visit. One template
+ * key per booking kind, picked here so callers don't each restate the rule.
+ */
+function tplKey(base: string, isConsult: boolean): string {
+  return `${isConsult ? "consult" : "tour"}_${base}`;
 }
 
 type MailAttachment = { filename: string; content: string };
@@ -405,7 +425,7 @@ Deno.serve(async (req) => {
     // a backlog doesn't mail people about tours from weeks ago.
     const { data: finished } = await db
       .from("sales_tours")
-      .select("id, parent_name, parent_email, starts_at, ends_at, tour_type:sales_tour_types(name, time_zone)")
+      .select("id, parent_name, parent_email, starts_at, ends_at, tour_type:sales_tour_types(name, time_zone, kind)")
       .eq("status", "confirmed")
       .is("followup_sent_at", null)
       .lte("ends_at", now.toISOString())
@@ -413,9 +433,9 @@ Deno.serve(async (req) => {
 
     let thanked = 0;
     for (const t of finished ?? []) {
-      const ft = (t as Record<string, unknown>).tour_type as { name: string; time_zone: string } | null;
+      const ft = (t as Record<string, unknown>).tour_type as { name: string; time_zone: string; kind: string } | null;
       const sent = await sendTemplate(db, {
-        key: "tour_followup",
+        key: tplKey("followup", ft?.kind === "hwc_consult"),
         to: t.parent_email,
         vars: baseVars({
           parentName: t.parent_name, tourName: ft?.name ?? null,
@@ -429,7 +449,7 @@ Deno.serve(async (req) => {
     const soon = new Date(Date.now() + 36 * 3600 * 1000).toISOString();
     const { data: due } = await db
       .from("sales_tours")
-      .select("*, tour_type:sales_tour_types(name, location, time_zone, meet_url)")
+      .select("*, tour_type:sales_tour_types(name, location, time_zone, meet_url, kind)")
       .eq("status", "confirmed")
       .is("reminder_sent_at", null)
       .gte("starts_at", new Date().toISOString())
@@ -438,10 +458,10 @@ Deno.serve(async (req) => {
     let sent = 0;
     for (const t of due ?? []) {
       const tt = (t as Record<string, unknown>).tour_type as
-        { name: string; location: string | null; time_zone: string; meet_url: string | null } | null;
+        { name: string; location: string | null; time_zone: string; meet_url: string | null; kind: string } | null;
       const tz = tt?.time_zone ?? "America/Los_Angeles";
       const ok = await sendTemplate(db, {
-        key: "tour_reminder",
+        key: tplKey("reminder", tt?.kind === "hwc_consult"),
         to: t.parent_email,
         vars: baseVars({
           parentName: t.parent_name, tourName: tt?.name ?? null,
@@ -543,6 +563,20 @@ Deno.serve(async (req) => {
       }).eq("id", tour.id);
 
       const meet = (tt?.meet_url ?? "").trim();
+
+      // Updates the held event the campus already has (same UID, higher
+      // SEQUENCE) rather than adding a second one.
+      const invite = buildIcs({
+        uid: `${tour.id}@singinchinese.com`,
+        title: `${tt?.name ?? "Tour"} — ${tour.parent_name ?? ""}`.trim(),
+        start: new Date(tour.starts_at), end: new Date(tour.ends_at),
+        location: meet || tt?.location || "Sing in Chinese",
+        description: meet ? `Join with Google Meet: ${meet}` : tt?.description ?? "",
+        sequence: 1,
+      });
+
+      // The family gets one too — a confirmed tour belongs in their calendar,
+      // which is what they were used to with Calendly.
       await sendTemplate(db, {
         key: "tour_confirmed",
         to: tour.parent_email,
@@ -550,16 +584,9 @@ Deno.serve(async (req) => {
           parentName: tour.parent_name, tourName: tt?.name ?? null, when,
           location: tt?.location, meet, manageToken: tour.manage_token, slug: tt?.slug,
         }),
+        ics: invite,
       });
 
-      // Now that it's real, the campus gets its calendar invite.
-      const invite = buildIcs({
-        uid: `${tour.id}@singinchinese.com`,
-        title: `${tt?.name ?? "Tour"} — ${tour.parent_name ?? ""}`.trim(),
-        start: new Date(tour.starts_at), end: new Date(tour.ends_at),
-        location: meet || tt?.location || "Sing in Chinese",
-        description: meet ? `Join with Google Meet: ${meet}` : tt?.description ?? "",
-      });
       await mailCampus({
         key: "staff_booking", campusId: tour.campus_id, tour, tourName: tt?.name ?? null,
         when, location: tt?.location, meet, ics: invite,
@@ -591,6 +618,23 @@ Deno.serve(async (req) => {
         location: tt?.location, slug: tt?.slug ?? String(body?.slug ?? ""),
       }),
     });
+
+    // The campus was sent a held event when the request came in; take it back
+    // off their calendar now the slot has been released.
+    await mailCampus({
+      key: "staff_changed", campusId: tour.campus_id, tour,
+      tourName: tt?.name ?? null, when, location: tt?.location, meet: tt?.meet_url,
+      headline: "This request was declined and the family has been asked to pick another time.",
+      ics: buildIcs({
+        uid: `${tour.id}@singinchinese.com`,
+        title: `${tt?.name ?? "Tour"} — ${tour.parent_name ?? ""}`.trim(),
+        start: new Date(tour.starts_at), end: new Date(tour.ends_at),
+        location: (tt?.meet_url ?? "").trim() || tt?.location || "Sing in Chinese",
+        description: "Request declined.",
+        sequence: 9, method: "CANCEL",
+      }),
+    });
+
     if (tour.lead_id) {
       await db.from("sales_activities").insert({
         lead_id: tour.lead_id, kind: "tour", activity_date: dayIn(tz, new Date()),
@@ -807,16 +851,19 @@ Deno.serve(async (req) => {
       manage_token: manage,
     };
 
+    // Same event id for the parent and the campus, from request through to
+    // confirmation, so later invites update it rather than duplicating it.
+    const invite = buildIcs({
+      uid: `${tour.id}@singinchinese.com`,
+      title: tt.auto_confirm ? tt.name : `${tt.name} — ${name}`,
+      start: startAt, end: endAt,
+      location: meet || tt.location || (tt.auto_confirm ? "Online" : "Sing in Chinese"),
+      description: meet ? `Join with Google Meet: ${meet}` : tt.description ?? "",
+    });
+
     if (tt.auto_confirm) {
       // Consultation: confirmed immediately, with the meeting room and a
       // calendar invite both sides can add in one tap.
-      const invite = buildIcs({
-        uid: `${tour.id}@singinchinese.com`,
-        title: tt.name,
-        start: startAt, end: endAt,
-        location: meet || tt.location || "Online",
-        description: meet ? `Join with Google Meet: ${meet}` : tt.description ?? "",
-      });
       await sendTemplate(db, { key: "consult_booked", to: email, vars, ics: invite });
       await alertStaff(
         db, tt.campus_id,
@@ -836,12 +883,14 @@ Deno.serve(async (req) => {
         `${name} requested ${when}. Confirm or ask them to reschedule.`,
         tour.id
       );
-      // No calendar invite yet — the request still has to be approved, and a
-      // campus shouldn't end up with events for tours it later declines.
+      // The campus gets the invite straight away so the slot is visibly held.
+      // It carries the same UID as the confirmation, so approving updates that
+      // event and declining sends a cancellation for it.
       await mailCampus({
         key: "staff_changed", campusId: tt.campus_id, tour: forStaff,
         tourName: tt.name, when, location: tt.location, meet,
         headline: "A tour has been requested and is waiting for you to confirm or reschedule it.",
+        ics: invite,
       });
     }
 
@@ -884,21 +933,32 @@ Deno.serve(async (req) => {
         note: `Parent cancelled their tour (was ${fmtWhen(new Date(tour.starts_at), tt.time_zone)}).`,
       });
     }
+    const isConsult = tt.kind === "hwc_consult";
     const cancelledWhen = fmtWhen(new Date(tour.starts_at), tt.time_zone);
     await sendTemplate(db, {
-      key: "tour_cancelled",
+      key: tplKey("cancelled", isConsult),
       to: tour.parent_email,
       vars: baseVars({
         parentName: tour.parent_name, tourName: tt.name, when: cancelledWhen,
         location: tt.location, meet: tt.meet_url, slug: tt.slug,
       }),
     });
-    await notifyStaff(db, "Tour cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} tour.`, tour.lead_id, tour.id, PORTAL);
-    await alertStaff(db, tour.campus_id, "Booking cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} booking.`, tour.id);
+    const noun = isConsult ? "meeting" : "tour";
+    await notifyStaff(db, `${isConsult ? "Meeting" : "Tour"} cancelled`, `${tour.parent_name} cancelled their ${cancelledWhen} ${noun}.`, tour.lead_id, tour.id, PORTAL);
+    await alertStaff(db, tour.campus_id, "Booking cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} ${noun}.`, tour.id);
     await mailCampus({
       key: "staff_changed", campusId: tour.campus_id, tour,
       tourName: tt.name, when: cancelledWhen, location: tt.location, meet: tt.meet_url,
       headline: `${tour.parent_name || "A family"} cancelled this booking. The slot is free again.`,
+      // Takes the event off the campus calendar rather than leaving a ghost.
+      ics: buildIcs({
+        uid: `${tour.id}@singinchinese.com`,
+        title: `${tt.name} — ${tour.parent_name ?? ""}`.trim(),
+        start: new Date(tour.starts_at), end: new Date(tour.ends_at),
+        location: (tt.meet_url ?? "").trim() || tt.location || "Sing in Chinese",
+        description: "Cancelled by the family.",
+        sequence: 9, method: "CANCEL",
+      }),
     });
     return json(200, { ok: true });
   }
@@ -931,30 +991,37 @@ Deno.serve(async (req) => {
         note: `Parent moved their tour from ${oldWhen} to ${when}.`,
       });
     }
+    const movedConsult = tt.kind === "hwc_consult";
+    const movedEnd = new Date(startAt.getTime() + tt.duration_minutes * 60000);
+    const movedIcs = buildIcs({
+      uid: `${tour.id}@singinchinese.com`,
+      title: `${tt.name} — ${tour.parent_name ?? ""}`.trim(),
+      start: startAt, end: movedEnd,
+      location: (tt.meet_url ?? "").trim() || tt.location || "Sing in Chinese",
+      description: (tt.meet_url ?? "").trim() ? `Join with Google Meet: ${tt.meet_url}` : tt.description ?? "",
+      // Higher than the original invite so calendars move the event instead of
+      // adding a second one.
+      sequence: 2,
+    });
+
     await sendTemplate(db, {
-      key: "tour_rescheduled",
+      key: tplKey("rescheduled", movedConsult),
       to: tour.parent_email,
       vars: baseVars({
         parentName: tour.parent_name, tourName: tt.name, when,
         location: tt.location, meet: tt.meet_url, manageToken: tok, slug: tt.slug,
       }),
+      // A meeting the parent joins by link deserves the corrected invite.
+      ics: movedConsult ? movedIcs : undefined,
     });
-    await notifyStaff(db, "Tour rescheduled", `${tour.parent_name} moved their tour from ${oldWhen} to ${when}.`, tour.lead_id, tour.id, PORTAL);
-    await alertStaff(db, tour.campus_id, "Booking moved", `${tour.parent_name} moved their booking from ${oldWhen} to ${when}.`, tour.id);
+    const movedNoun = movedConsult ? "meeting" : "tour";
+    await notifyStaff(db, `${movedConsult ? "Meeting" : "Tour"} rescheduled`, `${tour.parent_name} moved their ${movedNoun} from ${oldWhen} to ${when}.`, tour.lead_id, tour.id, PORTAL);
+    await alertStaff(db, tour.campus_id, "Booking moved", `${tour.parent_name} moved their ${movedNoun} from ${oldWhen} to ${when}.`, tour.id);
     await mailCampus({
       key: "staff_changed", campusId: tour.campus_id, tour,
       tourName: tt.name, when, location: tt.location, meet: tt.meet_url,
       headline: `${tour.parent_name || "A family"} moved this booking — it was ${oldWhen}.`,
-      // Only confirmed bookings sit in a calendar, so only they get a fresh invite.
-      ics: tour.status === "confirmed"
-        ? buildIcs({
-            uid: `${tour.id}@singinchinese.com`,
-            title: `${tt.name} — ${tour.parent_name ?? ""}`.trim(),
-            start: startAt, end: new Date(startAt.getTime() + tt.duration_minutes * 60000),
-            location: (tt.meet_url ?? "").trim() || tt.location || "Sing in Chinese",
-            description: (tt.meet_url ?? "").trim() ? `Join with Google Meet: ${tt.meet_url}` : tt.description ?? "",
-          })
-        : undefined,
+      ics: movedIcs,
     });
     return json(200, { ok: true, when });
   }

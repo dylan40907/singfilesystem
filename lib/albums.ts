@@ -1,19 +1,18 @@
 import { supabase } from "./supabaseClient";
 
 /**
- * Chat albums — a shared photo/video roll inside a conversation.
+ * Albums — a shared photo/video library for the whole school.
  *
- * Everyone in the chat can add to an album. Creating, renaming, deleting and
- * downloading the whole thing is for supervisors and up, which the database
- * enforces through chat_can_manage_members(); `canManage` below asks the same
- * question so the UI can hide what it would refuse anyway.
+ * Everyone with an active account sees every album and can add to it. Creating,
+ * renaming, deleting and downloading is for supervisors and up, which the
+ * database enforces through can_manage_albums(); `canManageAlbums` asks the same
+ * question so the UI only offers what will actually work.
  */
 
-const BUCKET = "chat-attachments";
+const BUCKET = "albums";
 
 export type Album = {
   id: string;
-  conversation_id: string;
   name: string;
   created_by: string | null;
   created_at: string;
@@ -33,26 +32,23 @@ export type AlbumItem = {
 
 export type AlbumWithCount = Album & { item_count: number; cover_path: string | null };
 
-/** Can the signed-in user create, rename, delete or download albums here? */
-export async function canManageAlbums(conversationId: string): Promise<boolean> {
-  const { data } = await supabase.rpc("chat_can_manage_members", { p_conversation: conversationId });
+export async function canManageAlbums(): Promise<boolean> {
+  const { data } = await supabase.rpc("can_manage_albums");
   return data === true;
 }
 
-export async function fetchAlbums(conversationId: string): Promise<AlbumWithCount[]> {
+export async function fetchAlbums(): Promise<AlbumWithCount[]> {
   const { data, error } = await supabase
-    .from("chat_albums")
-    .select("*, chat_album_items(id, path, created_at)")
-    .eq("conversation_id", conversationId)
+    .from("albums")
+    .select("*, album_items(id, path, created_at)")
     .order("created_at", { ascending: false });
   if (error) throw error;
 
-  return ((data ?? []) as (Album & { chat_album_items: { id: string; path: string; created_at: string }[] })[])
+  return ((data ?? []) as (Album & { album_items: { id: string; path: string; created_at: string }[] })[])
     .map((a) => {
-      const items = [...(a.chat_album_items ?? [])].sort((x, y) => y.created_at.localeCompare(x.created_at));
+      const items = [...(a.album_items ?? [])].sort((x, y) => y.created_at.localeCompare(x.created_at));
       return {
-        id: a.id, conversation_id: a.conversation_id, name: a.name,
-        created_by: a.created_by, created_at: a.created_at,
+        id: a.id, name: a.name, created_by: a.created_by, created_at: a.created_at,
         item_count: items.length,
         cover_path: items[0]?.path ?? null,
       };
@@ -61,7 +57,7 @@ export async function fetchAlbums(conversationId: string): Promise<AlbumWithCoun
 
 export async function fetchAlbumItems(albumId: string): Promise<AlbumItem[]> {
   const { data, error } = await supabase
-    .from("chat_album_items")
+    .from("album_items")
     .select("*")
     .eq("album_id", albumId)
     .order("created_at", { ascending: false });
@@ -69,11 +65,11 @@ export async function fetchAlbumItems(albumId: string): Promise<AlbumItem[]> {
   return (data as AlbumItem[]) ?? [];
 }
 
-export async function createAlbum(conversationId: string, name: string): Promise<Album> {
+export async function createAlbum(name: string): Promise<Album> {
   const { data: me } = await supabase.auth.getUser();
   const { data, error } = await supabase
-    .from("chat_albums")
-    .insert({ conversation_id: conversationId, name: name.trim(), created_by: me.user?.id ?? null })
+    .from("albums")
+    .insert({ name: name.trim(), created_by: me.user?.id ?? null })
     .select()
     .single();
   if (error) throw error;
@@ -81,7 +77,7 @@ export async function createAlbum(conversationId: string, name: string): Promise
 }
 
 export async function renameAlbum(albumId: string, name: string): Promise<void> {
-  const { error } = await supabase.from("chat_albums").update({ name: name.trim() }).eq("id", albumId);
+  const { error } = await supabase.from("albums").update({ name: name.trim() }).eq("id", albumId);
   if (error) throw error;
 }
 
@@ -92,13 +88,13 @@ export async function renameAlbum(albumId: string, name: string): Promise<void> 
  */
 export async function deleteAlbum(albumId: string): Promise<void> {
   const items = await fetchAlbumItems(albumId);
-  const { error } = await supabase.from("chat_albums").delete().eq("id", albumId);
+  const { error } = await supabase.from("albums").delete().eq("id", albumId);
   if (error) throw error;
   if (items.length) await supabase.storage.from(BUCKET).remove(items.map((i) => i.path));
 }
 
 export async function deleteAlbumItem(item: AlbumItem): Promise<void> {
-  const { error } = await supabase.from("chat_album_items").delete().eq("id", item.id);
+  const { error } = await supabase.from("album_items").delete().eq("id", item.id);
   if (error) throw error;
   await supabase.storage.from(BUCKET).remove([item.path]);
 }
@@ -114,18 +110,12 @@ export function albumKindOf(mime: string, filename: string): "image" | "video" |
   return null;
 }
 
-export async function uploadToAlbum(
-  conversationId: string,
-  albumId: string,
-  file: File
-): Promise<AlbumItem> {
+export async function uploadToAlbum(albumId: string, file: File): Promise<AlbumItem> {
   const kind = albumKindOf(file.type, file.name);
   if (!kind) throw new Error(`${file.name} isn't a photo or a video.`);
 
   const safe = (file.name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-100);
-  // First folder must stay the conversation id — that's what the bucket's
-  // policies read to decide who may touch the file.
-  const path = `${conversationId}/albums/${albumId}/${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
+  const path = `${albumId}/${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
 
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
@@ -134,7 +124,7 @@ export async function uploadToAlbum(
 
   const { data: me } = await supabase.auth.getUser();
   const { data, error } = await supabase
-    .from("chat_album_items")
+    .from("album_items")
     .insert({
       album_id: albumId, path, name: file.name || safe,
       mime: file.type || null, size: file.size ?? null, kind,

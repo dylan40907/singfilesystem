@@ -3312,6 +3312,20 @@ const [eventTypeEdits, setEventTypeEdits] = useState<Record<string, string>>({})
   const [activeTab, setActiveTab] =
   useState<"general" | "milestones" | "attendance" | "meetings" | "reviews" | "documents" | "assignees">("general");
   const [pinRevealed, setPinRevealed] = useState(false);
+  const [exportingProfile, setExportingProfile] = useState(false);
+
+  async function exportProfile() {
+    setExportingProfile(true);
+    setError(null);
+    try {
+      const { exportEmployeeProfilePdf } = await import("@/lib/employeePdf");
+      await exportEmployeeProfilePdf(employeeId);
+    } catch (e: any) {
+      setError("Export failed: " + (e?.message ?? "unknown error"));
+    } finally {
+      setExportingProfile(false);
+    }
+  }
 
   // ── Linked portal account (role badge + account actions + assignees) ────────
   type LinkedProfile = { id: string; role: string | null; is_active: boolean; can_manage_learning: boolean | null };
@@ -5208,6 +5222,16 @@ async function resetTimeOffHoursToDefault() {
         </div>
 
         <div className="row" style={{ gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {/* Everything on this page in one file. Available in view-only mode
+              too — exporting reads nothing the viewer can't already see. */}
+          <button
+            className="btn"
+            onClick={() => void exportProfile()}
+            disabled={exportingProfile || !employee}
+            title="Download this employee's full profile as a PDF"
+          >
+            {exportingProfile ? "Exporting…" : "⤓ Export profile"}
+          </button>
           {!readOnlyRecord && (
             <>
               <EmployeeAccountActions

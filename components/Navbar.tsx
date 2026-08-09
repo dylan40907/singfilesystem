@@ -172,6 +172,7 @@ export default function Navbar() {
     if (pathname.startsWith("/admin/hr") || pathname.startsWith("/hr")) return "hr";
     if (pathname.startsWith("/admin/learning")) return "learning";
     if (pathname === "/chat" || pathname.startsWith("/chat/")) return "chat";
+    if (pathname === "/albums" || pathname.startsWith("/albums/")) return "albums";
     return "home";
   }, [pathname]);
 
@@ -199,6 +200,7 @@ export default function Navbar() {
               <NavLink href="/" label="Home" active={activeTab === "home"} />
               {showHr && !(isAdmin || isCampusAdmin) && <NavLink href="/hr" label="HR" active={activeTab === "hr"} />}
               {showApp && <NavLink href="/admin/learning" label="App" active={activeTab === "learning"} />}
+              {showChat && <NavLink href="/albums" label="Albums" active={activeTab === "albums"} />}
             </div>
           </div>
 
@@ -246,6 +248,7 @@ export default function Navbar() {
             <Link href="/" className={`nav-mobile-link${activeTab === "home" ? " active" : ""}`}>Home</Link>
             {showHr && !(isAdmin || isCampusAdmin) && <Link href="/hr" className={`nav-mobile-link${activeTab === "hr" ? " active" : ""}`}>HR</Link>}
             {showApp && <Link href="/admin/learning" className={`nav-mobile-link${activeTab === "learning" ? " active" : ""}`}>App</Link>}
+            {showChat && <Link href="/albums" className={`nav-mobile-link${activeTab === "albums" ? " active" : ""}`}>Albums</Link>}
             {showChat && (
               <Link
                 href="/chat"
