@@ -66,6 +66,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
             { href: "/admin/sales/tours", label: "Tours", tab: "tours" },
             { href: "/admin/sales/meetings", label: "Meetings", tab: "meetings" },
             { href: "/admin/sales/reports", label: "Reports", tab: "reports" },
+            { href: "/admin/sales/emails", label: "Emails", tab: "emails" },
             { href: "/admin/sales/settings", label: "Settings", tab: "settings" },
           ]}
         />
@@ -84,6 +85,19 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
           <div className="container">{children}</div>
         </div>
       </>
+    );
+  }
+
+  // Staff HR page keeps the main navbar but needs the campus list — its Plans
+  // tab renders the same grid the HR Portal does.
+  if (pathname === "/hr" || pathname.startsWith("/hr/")) {
+    return (
+      <CampusProvider>
+        <Navbar />
+        <div className="page">
+          <div className="container">{children}</div>
+        </div>
+      </CampusProvider>
     );
   }
 

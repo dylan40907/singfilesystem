@@ -455,7 +455,7 @@ export default function BookTourPage() {
                       <select style={input} value={whichProgram} onChange={(e) => setWhichProgram(e.target.value)}>
                         <option value="">— Choose —</option>
                         {[
-                          "Chinese Classes", "Homework Club 2 Days a Week", "Homework Club 3 Days a Week",
+                          "Chinese Classes", "Homework Club 3 Days a Week",
                           "Homework Club 4 Days a Week", "Homework Club 5 Days a Week", "Not sure yet",
                         ].map((p) => <option key={p} value={p}>{p}</option>)}
                       </select>

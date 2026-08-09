@@ -490,7 +490,7 @@ export default function RosterView({
                           >
                             {roomSortActive ? (sort.dir === "asc" ? "☰↑" : "☰↓") : "☰"}
                           </button>
-                          {!secondHalf && (
+                          {!secondHalf && !readOnly && (
                             <button
                               title={split ? "Undo split for this month" : "Split this month at a day you choose"}
                               onClick={() => (split ? void unsplit(m1, splitDay!) : setSplitFor(m1))}
@@ -562,8 +562,8 @@ export default function RosterView({
                       // Months after a planned "Withdraw" note: projected out (empty, faint red).
                       if (s?.withdrawFrom && m > s.withdrawFrom) {
                         return (
-                          <td key={m} onClick={() => setCell({ row: r, monthIso: m })}
-                            style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: "#fdeaea", textAlign: "center", color: "#f08a8a", fontSize: 10, fontWeight: 700 }}>
+                          <td key={m} onClick={readOnly ? undefined : () => setCell({ row: r, monthIso: m })}
+                            style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: readOnly ? "default" : "pointer", background: "#fdeaea", textAlign: "center", color: "#f08a8a", fontSize: 10, fontWeight: 700 }}>
                             withdrawn
                           </td>
                         );
@@ -577,8 +577,8 @@ export default function RosterView({
                       return (
                         <td
                           key={m}
-                          onClick={() => setCell({ row: r, monthIso: m })}
-                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: "pointer", background: cellBackground(roomColor, faded, hasPromote), verticalAlign: "top", padding: "6px 7px" }}
+                          onClick={readOnly ? undefined : () => setCell({ row: r, monthIso: m })}
+                          style={{ ...td, minWidth: MONTH_W, width: MONTH_W, cursor: readOnly ? "default" : "pointer", background: cellBackground(roomColor, faded, hasPromote), verticalAlign: "top", padding: "6px 7px" }}
                         >
                           <div className="row" style={{ gap: 5, alignItems: "center", flexWrap: "nowrap" }}>
                             <RoomDot color={roomColor} />

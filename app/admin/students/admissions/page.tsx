@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { canEditStudents } from "@/lib/hrAccess";
-import { useCampusFilter } from "@/lib/CampusContext";
+import { useCampusFilter, PROGRAM_LABEL, PROGRAM_ORDER } from "@/lib/CampusContext";
+import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import WaitlistView from "@/components/hr/admissions/WaitlistView";
 import RosterView from "@/components/hr/admissions/RosterView";
 
@@ -33,6 +34,10 @@ export default function AdmissionsPage() {
   const readOnly = !canEditStudents(me);
 
   const [tab, setTab] = useState<Tab>("roster");
+  // Two-step roster picker: campus, then programme. A popup rather than a page
+  // of its own — switching roster shouldn't feel like leaving Admissions.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerParent, setPickerParent] = useState<string | null>(null);
 
   // Local, tab-scoped campus selection (independent of the top-bar picker).
   const [selectedCampusId, setSelectedCampusId] = useState<string | null>(null);
@@ -43,6 +48,8 @@ export default function AdmissionsPage() {
   useEffect(() => {
     (async () => setMe(await fetchMyProfile()))();
   }, []);
+
+  useEscapeKey(() => setPickerOpen(false), pickerOpen);
 
   // Campus admins are always locked to their own campus — auto-select it.
   useEffect(() => {
@@ -62,21 +69,36 @@ export default function AdmissionsPage() {
     })();
   }, [needsCampusLookup, me]);
 
-  const activeCampusId = isCampusAdmin
-    ? lockedCampusId
-    // A teacher with a campus on their record goes straight there; one without
-    // falls through to the picker rather than seeing an empty page.
-    : isSupervisor || isTeacherView
-      ? supCampusId ?? selectedCampusId
-      : selectedCampusId;
+  // ── Campus → programme ────────────────────────────────────────────────────
+  // Rosters hang off a programme, not a campus: Torrance PV · Preschool and
+  // Torrance PV · Homework Club are separate lists. `homeCampusId` is the real
+  // campus someone belongs to; `activeCampusId` is the roster they're viewing.
+  const parents = useMemo(() => campuses.filter((c) => !c.parent_campus_id), [campuses]);
+  const programsOf = useCallback(
+    (parentId: string | null) =>
+      campuses
+        .filter((c) => c.parent_campus_id === parentId)
+        .sort((a, b) => PROGRAM_ORDER.indexOf(a.program ?? "") - PROGRAM_ORDER.indexOf(b.program ?? "")),
+    [campuses]
+  );
+
+  // Campus admins, supervisors and teachers are pinned to one site but may look
+  // at any of its programmes.
+  const homeCampusId = isCampusAdmin ? lockedCampusId : (isSupervisor || isTeacherView) ? supCampusId : null;
+  const activeCampusId = selectedCampusId;
   const activeCampus = campuses.find((c) => c.id === activeCampusId) ?? null;
-  // Admins with more than one campus get an in-tab "Change campus" control.
-  // Campus admins and supervisors are pinned to their own site; everyone else
-  // who gets as far as the picker may move between campuses.
-  // A teacher pinned to their own campus can't wander to the other one.
-  const canSwitch = !isCampusAdmin && !isSupervisor && !(isTeacherView && supCampusId) && campuses.length > 1;
-  // Wait for the campus lookup before deciding what to show.
+  const activeParent = campuses.find((c) => c.id === activeCampus?.parent_campus_id) ?? null;
+
+  // Everyone can change *programme*; only unpinned staff can change campus.
+  const canSwitch = !homeCampusId || programsOf(homeCampusId).length > 1;
   const stillLoading = loading || !me || (needsCampusLookup && !supLoaded);
+
+  // Land on the first programme of your own campus rather than an empty page.
+  useEffect(() => {
+    if (selectedCampusId || !homeCampusId) return;
+    const first = programsOf(homeCampusId)[0];
+    if (first) setSelectedCampusId(first.id);
+  }, [selectedCampusId, homeCampusId, programsOf]);
 
   if (me && !canUse) {
     return (
@@ -111,8 +133,10 @@ export default function AdmissionsPage() {
 
       {stillLoading ? (
         <div className="subtle" style={{ padding: 20 }}>Loading…</div>
-      ) : isSupervisor && !activeCampusId ? (
-        // Supervisor without a campus on their HR record can't view anything yet.
+      ) : needsCampusLookup && !supCampusId ? (
+        // Supervisors and teachers are scoped by the campus on their HR record.
+        // Without one there's nothing they're allowed to see — and we must not
+        // fall through to the picker, which would offer every campus.
         <div className="card">
           <div style={{ fontWeight: 800 }}>No campus assigned</div>
           <div className="subtle" style={{ marginTop: 6 }}>
@@ -120,21 +144,12 @@ export default function AdmissionsPage() {
           </div>
         </div>
       ) : !activeCampusId ? (
-        // Admin hasn't picked a campus yet (campus admins / supervisors never reach this).
         <div className="card">
-          <div style={{ fontWeight: 800 }}>Choose a campus</div>
+          <div style={{ fontWeight: 800 }}>Choose a roster</div>
           <div className="subtle" style={{ marginTop: 6, marginBottom: 14 }}>
-            Waitlists and rosters are per-campus. Pick the campus you want to work in.
+            Pick a campus, then a programme.
           </div>
-          {campuses.length === 0 ? (
-            <div className="subtle">No campuses yet. Add one from the campus selector in the top bar.</div>
-          ) : (
-            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              {campuses.map((c) => (
-                <button key={c.id} className="btn" onClick={() => setSelectedCampusId(c.id)}>{c.name}</button>
-              ))}
-            </div>
-          )}
+          <button className="btn btn-primary" onClick={() => setPickerOpen(true)}>Choose</button>
         </div>
       ) : (
         <>
@@ -149,16 +164,17 @@ export default function AdmissionsPage() {
                   color: "#e6178d", fontWeight: 800, fontSize: 14,
                 }}
               >
-                🏫 {activeCampus?.name ?? "Campus"}
+                🏫 {activeParent?.name ?? activeCampus?.name ?? "Campus"}
+                {activeCampus?.program ? ` · ${PROGRAM_LABEL[activeCampus.program]}` : ""}
               </span>
               {canSwitch && (
                 <button
                   className="btn"
-                  onClick={() => setSelectedCampusId(null)}
-                  title="Choose a different campus"
+                  onClick={() => { setPickerOpen(true); setPickerParent(activeParent?.id ?? null); }}
+                  title="Choose a different roster"
                   style={{ fontSize: 13 }}
                 >
-                  ⇆ Change campus
+                  ⇆ Change
                 </button>
               )}
             </div>
@@ -187,6 +203,64 @@ export default function AdmissionsPage() {
             />
           )}
         </>
+      )}
+
+      {pickerOpen && (
+        <div
+          onMouseDown={(e) => { if (e.currentTarget === e.target) setPickerOpen(false); }}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 300,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+          }}
+        >
+          <div className="card" style={{ width: "min(420px, 96vw)" }}>
+            <div className="row-between" style={{ marginBottom: 10, alignItems: "center" }}>
+              <div style={{ fontWeight: 900, fontSize: 16 }}>
+                {pickerParent ? campuses.find((c) => c.id === pickerParent)?.name : "Choose a campus"}
+              </div>
+              <button className="btn" onClick={() => setPickerOpen(false)}>Close</button>
+            </div>
+
+            {!pickerParent ? (
+              <div className="stack" style={{ gap: 8 }}>
+                {parents
+                  // Someone pinned to a campus only ever sees that one.
+                  .filter((p) => !homeCampusId || p.id === homeCampusId)
+                  .map((p) => (
+                    <button key={p.id} className="btn" style={{ justifyContent: "flex-start" }}
+                      onClick={() => setPickerParent(p.id)}>
+                      🏫 {p.name}
+                    </button>
+                  ))}
+              </div>
+            ) : (
+              <div className="stack" style={{ gap: 8 }}>
+                {programsOf(pickerParent).map((c) => (
+                  <button
+                    key={c.id}
+                    className={`btn${c.id === activeCampusId ? " btn-primary" : ""}`}
+                    style={{ justifyContent: "flex-start" }}
+                    onClick={() => {
+                      setSelectedCampusId(c.id);
+                      setPickerOpen(false);
+                      setPickerParent(null);
+                    }}
+                  >
+                    {PROGRAM_LABEL[c.program ?? ""] || c.name}
+                  </button>
+                ))}
+                {programsOf(pickerParent).length === 0 && (
+                  <div className="subtle" style={{ fontSize: 13 }}>No programmes set up for this campus.</div>
+                )}
+                {!homeCampusId && (
+                  <button className="btn" style={{ marginTop: 4 }} onClick={() => setPickerParent(null)}>
+                    ← All campuses
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </main>
   );

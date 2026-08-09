@@ -33,7 +33,20 @@ export type Campus = {
    * `allCampuses` when you specifically want Admissions.
    */
   admissions_only?: boolean;
+  /** Set on roster containers — the real campus this program belongs to. */
+  parent_campus_id?: string | null;
+  /** 'preschool' | 'hwc' | 'language_school' on containers, null on campuses. */
+  program?: string | null;
 };
+
+export const PROGRAM_LABEL: Record<string, string> = {
+  preschool: "Preschool",
+  hwc: "Homework Club",
+  language_school: "Language School",
+};
+
+/** The order programs are offered in, so every campus reads the same way. */
+export const PROGRAM_ORDER = ["preschool", "hwc", "language_school"];
 
 /** "all" = every campus + unassigned. "unassigned" = NULL campus_id only. UUID string = single campus. */
 export type CampusFilter = "all" | "unassigned" | string;
@@ -72,7 +85,7 @@ export function CampusProvider({ children }: { children: ReactNode }) {
   const refreshCampuses = useCallback(async () => {
     const { data } = await supabase
       .from("hr_campuses")
-      .select("id, name, admissions_only")
+      .select("id, name, admissions_only, parent_campus_id, program")
       .order("name", { ascending: true });
     setCampuses((data as Campus[]) ?? []);
   }, []);
@@ -119,7 +132,11 @@ export function CampusProvider({ children }: { children: ReactNode }) {
   // `campuses` is the filtered list on purpose: every existing caller wants real
   // sites, so hiding the Admissions-only ones here means none of them had to
   // change — and a new caller gets the safe list by default.
-  const siteCampuses = useMemo(() => campuses.filter((c) => !c.admissions_only), [campuses]);
+  // Real sites only: no roster containers, no admissions-only groupings.
+  const siteCampuses = useMemo(
+    () => campuses.filter((c) => !c.admissions_only && !c.parent_campus_id),
+    [campuses]
+  );
 
   const value = useMemo<CampusContextValue>(
     () => ({

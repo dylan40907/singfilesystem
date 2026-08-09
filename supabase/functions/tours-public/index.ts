@@ -14,6 +14,11 @@
 //   cancel     { token, reason? }
 //   reschedule { token, start }
 //   reminders  {}  (cron, x-cron-secret)         → day-before emails
+//   confirm / request_reschedule { tour_id }     → staff, needs their JWT
+//   test_send  { key, to }                       → admins, previews a template
+//
+// Wording for every email lives in sales_email_templates, edited from
+// Sales → Emails. Nothing here hardcodes a message body any more.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -131,25 +136,151 @@ function buildIcs(a: {
   ].join("\r\n");
 }
 
-async function sendMail(args: { to: string; subject: string; text: string; ics?: string }) {
+type MailAttachment = { filename: string; content: string };
+
+async function sendMail(args: {
+  to: string; subject: string; text: string; html?: string;
+  ics?: string; attachments?: MailAttachment[];
+}) {
   const key = Deno.env.get("RESEND_API_KEY") ?? "";
   if (!key) return;
   const from = Deno.env.get("RESEND_FROM_EMAIL") ?? "Sing in Chinese <noreply@hr.singinchinese.com>";
   const payload: Record<string, unknown> = {
     from, to: [args.to], subject: args.subject, text: args.text,
   };
+  if (args.html) payload.html = args.html;
+  const files: MailAttachment[] = [...(args.attachments ?? [])];
   if (args.ics) {
-    payload.attachments = [{
-      filename: "invite.ics",
-      content: btoa(unescape(encodeURIComponent(args.ics))),
-    }];
+    files.push({ filename: "invite.ics", content: btoa(unescape(encodeURIComponent(args.ics))) });
   }
+  if (files.length) payload.attachments = files;
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) console.error("Resend failed:", res.status, await res.text().catch(() => ""));
+}
+
+// ── Editable templates ──────────────────────────────────────────────────────
+// Wording lives in sales_email_templates so admins can change it from Sales →
+// Emails without a deploy. This side is deliberately mechanical: it fills in
+// whatever {{tokens}} it has values for and blanks anything it doesn't know,
+// so adding a token to the editor's catalogue means adding it here too.
+
+type Tpl = {
+  key: string; subject: string; body_html: string;
+  attachments: { path: string; filename: string; mime: string }[];
+  is_active: boolean;
+};
+
+/** A value that reads differently in HTML than in the plain-text fallback. */
+type Val = string | { html: string; text: string };
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function fill(tpl: string, vars: Record<string, Val>, mode: "html" | "text"): string {
+  return tpl.replace(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi, (_m, raw: string) => {
+    const v = vars[raw.toLowerCase()];
+    if (v === undefined) return "";
+    if (typeof v === "string") return mode === "html" ? esc(v) : v;
+    return mode === "html" ? v.html : v.text;
+  });
+}
+
+/** Tokens that came back empty leave holes; close them up rather than ship blank lines. */
+function tidyHtml(html: string): string {
+  return html
+    .replace(/(<br\s*\/?>\s*){2,}/gi, "<br>")
+    .replace(/<br\s*\/?>\s*(<\/p>)/gi, "$1")
+    .replace(/(<p[^>]*>)\s*(<br\s*\/?>)?\s*(<\/p>)/gi, "");
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<\/(li|tr)>/gi, "\n")
+    // Paragraphs read as paragraphs in the plain-text fallback too.
+    .replace(/<\/(p|div|h[1-6])>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function link(url: string, label: string): Val {
+  if (!url) return { html: "", text: "" };
+  return { html: `<a href="${url}">${esc(label)}</a>`, text: url };
+}
+
+const tplCache = new Map<string, Tpl | null>();
+
+async function loadTpl(db: any, key: string): Promise<Tpl | null> {
+  if (tplCache.has(key)) return tplCache.get(key) ?? null;
+  const { data } = await db.from("sales_email_templates").select("*").eq("key", key).maybeSingle();
+  const tpl = (data as Tpl) ?? null;
+  tplCache.set(key, tpl);
+  return tpl;
+}
+
+/**
+ * Send one of the editable emails. Returns false when there's nothing to send —
+ * no recipient, no template row, or the template has been switched off.
+ */
+async function sendTemplate(
+  db: any,
+  args: { key: string; to: string | null | undefined; vars: Record<string, Val>; ics?: string }
+): Promise<boolean> {
+  if (!args.to) return false;
+  const tpl = await loadTpl(db, args.key);
+  if (!tpl || !tpl.is_active) {
+    if (!tpl) console.error("Missing email template:", args.key);
+    return false;
+  }
+
+  const html = tidyHtml(fill(tpl.body_html, args.vars, "html"));
+  const text = htmlToText(fill(tpl.body_html, args.vars, "text"));
+
+  // Attachments live in a Storage bucket; Resend wants them base64-encoded.
+  const files: MailAttachment[] = [];
+  for (const a of tpl.attachments ?? []) {
+    const { data, error } = await db.storage.from("sales-email-assets").download(a.path);
+    if (error || !data) { console.error("Attachment missing:", a.path, error?.message); continue; }
+    const bytes = new Uint8Array(await data.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    files.push({ filename: a.filename, content: btoa(bin) });
+  }
+
+  await sendMail({
+    to: args.to,
+    subject: fill(tpl.subject, args.vars, "text"),
+    text, html, ics: args.ics, attachments: files,
+  });
+  return true;
+}
+
+/** The address bookings for this campus are copied to, if one is set. */
+async function campusEmail(db: any, campusId: string | null): Promise<{ email: string | null; name: string }> {
+  if (!campusId) return { email: null, name: "Sing in Chinese" };
+  const { data } = await db.from("hr_campuses")
+    .select("name, contact_email, parent_campus_id").eq("id", campusId).maybeSingle();
+  if (!data) return { email: null, name: "Sing in Chinese" };
+  // Bookings point at a real campus, but be forgiving if one ever points at a
+  // programme container: fall back to the parent's address.
+  if (!data.contact_email && data.parent_campus_id) {
+    const { data: parent } = await db.from("hr_campuses")
+      .select("name, contact_email").eq("id", data.parent_campus_id).maybeSingle();
+    if (parent) return { email: parent.contact_email ?? null, name: parent.name ?? data.name };
+  }
+  return { email: data.contact_email ?? null, name: data.name ?? "Sing in Chinese" };
 }
 
 type TourType = {
@@ -177,6 +308,63 @@ Deno.serve(async (req) => {
   const db = createClient(SUPABASE_URL, SERVICE_KEY);
   const body = await req.json().catch(() => ({}));
   const mode = String(body?.mode ?? "slots");
+
+  /** The tokens every family-facing email may use. */
+  function baseVars(a: {
+    parentName?: string | null; tourName?: string | null; when: string;
+    location?: string | null; meet?: string | null;
+    manageToken?: string | null; slug?: string | null;
+  }): Record<string, Val> {
+    const none = { html: "", text: "" };
+    return {
+      parent_name: a.parentName || "there",
+      tour_name: a.tourName || "Sing in Chinese",
+      when: a.when,
+      location: a.location || "",
+      phone: PHONE,
+      meet_link: link((a.meet ?? "").trim(), "Join with Google Meet"),
+      manage_link: a.manageToken
+        ? link(`${PORTAL}/book/manage?t=${a.manageToken}`, "Change or cancel your booking")
+        : none,
+      book_link: a.slug ? link(`${PORTAL}/book/${a.slug}`, "Book a time") : none,
+    };
+  }
+
+  /**
+   * Copy a booking to the campus it belongs to. Staff already get the portal
+   * bell and an app push; this is the calendar-and-inbox copy the campus asked
+   * for, and it only goes out when an address has been set in Sales → Settings.
+   */
+  async function mailCampus(a: {
+    key: "staff_booking" | "staff_changed";
+    campusId: string | null;
+    tour: Record<string, unknown>;
+    tourName: string | null; when: string; location?: string | null; meet?: string | null;
+    headline?: string;
+    ics?: string;
+  }): Promise<void> {
+    const { email, name } = await campusEmail(db, a.campusId);
+    if (!email) return;
+    await sendTemplate(db, {
+      key: a.key,
+      to: email,
+      ics: a.ics,
+      vars: {
+        ...baseVars({
+          parentName: (a.tour.parent_name as string) ?? null,
+          tourName: a.tourName, when: a.when, location: a.location, meet: a.meet,
+          manageToken: (a.tour.manage_token as string) ?? null,
+        }),
+        campus_name: name,
+        parent_email: (a.tour.parent_email as string) || "",
+        parent_phone: (a.tour.parent_phone as string) || "",
+        child_name: (a.tour.child_name as string) || "",
+        notes: (a.tour.notes as string) || "",
+        what_changed: a.headline || "",
+        portal_link: link(`${PORTAL}/admin/sales/tours`, "Open in the portal"),
+      },
+    });
+  }
 
   // ── Day-before reminders (cron) ───────────────────────────────────────────
   if (mode === "reminders") {
@@ -217,7 +405,7 @@ Deno.serve(async (req) => {
     // a backlog doesn't mail people about tours from weeks ago.
     const { data: finished } = await db
       .from("sales_tours")
-      .select("id, parent_name, parent_email, ends_at, tour_type:sales_tour_types(name)")
+      .select("id, parent_name, parent_email, starts_at, ends_at, tour_type:sales_tour_types(name, time_zone)")
       .eq("status", "confirmed")
       .is("followup_sent_at", null)
       .lte("ends_at", now.toISOString())
@@ -225,24 +413,23 @@ Deno.serve(async (req) => {
 
     let thanked = 0;
     for (const t of finished ?? []) {
-      if (t.parent_email) {
-        await sendMail({
-          to: t.parent_email,
-          subject: "Thank you for visiting Sing in Chinese",
-          text:
-            `Hi ${t.parent_name || "there"},\n\nThank you for visiting us. ` +
-            `Please let us know if you have any questions. We look forward to hearing from you.\n\n` +
-            `You can reach us any time on ${PHONE}.\n\n— Sing in Chinese`,
-        });
-        thanked++;
-      }
+      const ft = (t as Record<string, unknown>).tour_type as { name: string; time_zone: string } | null;
+      const sent = await sendTemplate(db, {
+        key: "tour_followup",
+        to: t.parent_email,
+        vars: baseVars({
+          parentName: t.parent_name, tourName: ft?.name ?? null,
+          when: fmtWhen(new Date(t.starts_at), ft?.time_zone ?? "America/Los_Angeles"),
+        }),
+      });
+      if (sent) thanked++;
       await db.from("sales_tours").update({ followup_sent_at: now.toISOString() }).eq("id", t.id);
     }
 
     const soon = new Date(Date.now() + 36 * 3600 * 1000).toISOString();
     const { data: due } = await db
       .from("sales_tours")
-      .select("*, tour_type:sales_tour_types(name, location, time_zone)")
+      .select("*, tour_type:sales_tour_types(name, location, time_zone, meet_url)")
       .eq("status", "confirmed")
       .is("reminder_sent_at", null)
       .gte("starts_at", new Date().toISOString())
@@ -250,23 +437,74 @@ Deno.serve(async (req) => {
 
     let sent = 0;
     for (const t of due ?? []) {
-      const tt = (t as Record<string, unknown>).tour_type as { name: string; location: string | null; time_zone: string } | null;
+      const tt = (t as Record<string, unknown>).tour_type as
+        { name: string; location: string | null; time_zone: string; meet_url: string | null } | null;
       const tz = tt?.time_zone ?? "America/Los_Angeles";
-      if (t.parent_email) {
-        await sendMail({
-          to: t.parent_email,
-          subject: `Reminder: your tour is ${fmtWhen(new Date(t.starts_at), tz)}`,
-          text:
-            `Hi ${t.parent_name || "there"},\n\nA quick reminder about your visit:\n\n` +
-            `${tt?.name ?? "Tour"}\n${fmtWhen(new Date(t.starts_at), tz)}\n` +
-            (tt?.location ? `${tt.location}\n` : "") +
-            `\nNeed to change or cancel? ${PORTAL}/book/manage?t=${t.manage_token}\n\n— Sing in Chinese`,
-        });
-        sent++;
-      }
+      const ok = await sendTemplate(db, {
+        key: "tour_reminder",
+        to: t.parent_email,
+        vars: baseVars({
+          parentName: t.parent_name, tourName: tt?.name ?? null,
+          when: fmtWhen(new Date(t.starts_at), tz),
+          location: tt?.location, meet: tt?.meet_url,
+          manageToken: t.manage_token,
+        }),
+      });
+      if (ok) sent++;
       await db.from("sales_tours").update({ reminder_sent_at: new Date().toISOString() }).eq("id", t.id);
     }
     return json(200, { reminded: sent, nagged, thanked });
+  }
+
+  /**
+   * Preview one of the editable emails with sample values. Admin-only, and it
+   * writes nothing — it exists so wording can be checked in a real inbox before
+   * a family ever sees it.
+   */
+  if (mode === "test_send") {
+    const auth = req.headers.get("Authorization") ?? "";
+    if (!auth) return json(401, { error: "Sign in first." });
+    const caller = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: auth } } });
+    const { data: me } = await caller.auth.getUser();
+    if (!me?.user) return json(401, { error: "Sign in first." });
+    const { data: prof } = await db.from("user_profiles")
+      .select("role, is_active").eq("id", me.user.id).maybeSingle();
+    if (!prof?.is_active || prof.role !== "admin") return json(403, { error: "Admins only." });
+
+    const to = String(body?.to ?? "").trim();
+    const key = String(body?.key ?? "").trim();
+    if (!to.includes("@") || !key) return json(400, { error: "Need a template and an address." });
+
+    const sample = new Date(Date.now() + 3 * 24 * 3600 * 1000);
+    const end = new Date(sample.getTime() + 45 * 60000);
+    const sent = await sendTemplate(db, {
+      key,
+      to,
+      vars: {
+        ...baseVars({
+          parentName: "Sample Parent", tourName: "Sample booking",
+          when: fmtWhen(sample, "America/Los_Angeles"),
+          location: "1720 W Carson St, Torrance",
+          meet: "https://meet.google.com/sample-test-room",
+          manageToken: "sample-token", slug: "sample",
+        }),
+        campus_name: "Torrance PV",
+        parent_email: "parent@example.com",
+        parent_phone: "(310) 555-0134",
+        child_name: "Sample Child",
+        notes: "This is a test send — no booking exists.",
+        what_changed: "This is a test send.",
+        portal_link: link(`${PORTAL}/admin/sales/tours`, "Open in the portal"),
+      },
+      ics: buildIcs({
+        uid: `test-${Date.now()}@singinchinese.com`,
+        title: "Sample booking", start: sample, end,
+        location: "https://meet.google.com/sample-test-room",
+        description: "Test send from Sales → Emails.",
+      }),
+    });
+    if (!sent) return json(400, { error: "That email is switched off or has no template row." });
+    return json(200, { ok: true });
   }
 
   /**
@@ -283,7 +521,7 @@ Deno.serve(async (req) => {
 
     const { data: tour } = await db
       .from("sales_tours")
-      .select("*, tour_type:sales_tour_types(name, location, time_zone)")
+      .select("*, tour_type:sales_tour_types(name, slug, location, time_zone, meet_url, duration_minutes, description)")
       .eq("id", String(body?.tour_id ?? "")).maybeSingle();
     if (!tour) return json(404, { error: "Tour not found." });
 
@@ -292,7 +530,10 @@ Deno.serve(async (req) => {
     const ids = ((allowed ?? []) as any[]).map((r) => (typeof r === "string" ? r : r.id));
     if (!ids.includes(me.user.id)) return json(403, { error: "That tour isn't at your campus." });
 
-    const tt = (tour as Record<string, unknown>).tour_type as { name: string; location: string | null; time_zone: string } | null;
+    const tt = (tour as Record<string, unknown>).tour_type as {
+      name: string; slug: string; location: string | null; time_zone: string;
+      meet_url: string | null; description: string | null;
+    } | null;
     const tz = tt?.time_zone ?? "America/Los_Angeles";
     const when = fmtWhen(new Date(tour.starts_at), tz);
 
@@ -301,17 +542,29 @@ Deno.serve(async (req) => {
         status: "confirmed", confirmed_at: new Date().toISOString(), confirmed_by: me.user.id,
       }).eq("id", tour.id);
 
-      if (tour.parent_email) {
-        await sendMail({
-          to: tour.parent_email,
-          subject: `Your tour is confirmed — ${tt?.name ?? "Sing in Chinese"}`,
-          text:
-            `Hi ${tour.parent_name || "there"},\n\nYour tour is confirmed.\n\n` +
-            `${tt?.name ?? "Tour"}\n${when}\n` + (tt?.location ? `${tt.location}\n` : "") +
-            `\nNeed to change or cancel? ${PORTAL}/book/manage?t=${tour.manage_token}\n\n` +
-            `We look forward to meeting you.\n— Sing in Chinese`,
-        });
-      }
+      const meet = (tt?.meet_url ?? "").trim();
+      await sendTemplate(db, {
+        key: "tour_confirmed",
+        to: tour.parent_email,
+        vars: baseVars({
+          parentName: tour.parent_name, tourName: tt?.name ?? null, when,
+          location: tt?.location, meet, manageToken: tour.manage_token, slug: tt?.slug,
+        }),
+      });
+
+      // Now that it's real, the campus gets its calendar invite.
+      const invite = buildIcs({
+        uid: `${tour.id}@singinchinese.com`,
+        title: `${tt?.name ?? "Tour"} — ${tour.parent_name ?? ""}`.trim(),
+        start: new Date(tour.starts_at), end: new Date(tour.ends_at),
+        location: meet || tt?.location || "Sing in Chinese",
+        description: meet ? `Join with Google Meet: ${meet}` : tt?.description ?? "",
+      });
+      await mailCampus({
+        key: "staff_booking", campusId: tour.campus_id, tour, tourName: tt?.name ?? null,
+        when, location: tt?.location, meet, ics: invite,
+      });
+
       if (tour.lead_id) {
         await db.from("sales_activities").insert({
           lead_id: tour.lead_id, kind: "tour", activity_date: dayIn(tz, new Date()),
@@ -330,17 +583,14 @@ Deno.serve(async (req) => {
       cancelled_by: "staff", confirmed_by: me.user.id,
     }).eq("id", tour.id);
 
-    if (tour.parent_email) {
-      await sendMail({
-        to: tour.parent_email,
-        subject: `About your tour request — ${tt?.name ?? "Sing in Chinese"}`,
-        text:
-          `Hi ${tour.parent_name || "there"},\n\n` +
-          `Thank you for your tour request for ${when}. Unfortunately we aren't able to host you at that time.\n\n` +
-          `Please reschedule at ${PORTAL}/book/${body?.slug ?? ""} or call us at ${PHONE} — ` +
-          `we will be happy to help you schedule a tour.\n\n— Sing in Chinese`,
-      });
-    }
+    await sendTemplate(db, {
+      key: "tour_reschedule_asked",
+      to: tour.parent_email,
+      vars: baseVars({
+        parentName: tour.parent_name, tourName: tt?.name ?? null, when,
+        location: tt?.location, slug: tt?.slug ?? String(body?.slug ?? ""),
+      }),
+    });
     if (tour.lead_id) {
       await db.from("sales_activities").insert({
         lead_id: tour.lead_id, kind: "tour", activity_date: dayIn(tz, new Date()),
@@ -543,53 +793,56 @@ Deno.serve(async (req) => {
       });
     }
 
+    const meet = (tt.meet_url ?? "").trim();
+    const vars = baseVars({
+      parentName: name, tourName: tt.name, when,
+      location: tt.location, meet, manageToken: manage, slug: tt.slug,
+    });
+    // The row we hand to the campus copy — the insert only returned an id.
+    const forStaff = {
+      parent_name: name, parent_email: email,
+      parent_phone: String(body?.parent_phone ?? "").trim(),
+      child_name: String(body?.child_name ?? "").trim(),
+      notes: String(body?.notes ?? "").trim(),
+      manage_token: manage,
+    };
+
     if (tt.auto_confirm) {
       // Consultation: confirmed immediately, with the meeting room and a
-      // calendar invite the parent can add in one tap.
-      const meet = (tt.meet_url ?? "").trim();
-      const where = meet || tt.location || "Online";
-      await sendMail({
-        to: email,
-        subject: `Your consultation is booked — ${tt.name}`,
-        text:
-          `Hi ${name},\n\nYour consultation is booked.\n\n${tt.name}\n${when}\n\n` +
-          (meet
-            ? `Join with Google Meet:\n${meet}\n\n`
-            : `We'll email you the meeting link before your appointment.\n\n`) +
-          `A calendar invite is attached.\n\n` +
-          `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
-          `Any questions, call us on ${PHONE}.\n— Sing in Chinese`,
-        ics: buildIcs({
-          uid: `${tour.id}@singinchinese.com`,
-          title: tt.name,
-          start: startAt, end: endAt,
-          location: where,
-          description: meet ? `Join with Google Meet: ${meet}` : tt.description ?? "",
-        }),
+      // calendar invite both sides can add in one tap.
+      const invite = buildIcs({
+        uid: `${tour.id}@singinchinese.com`,
+        title: tt.name,
+        start: startAt, end: endAt,
+        location: meet || tt.location || "Online",
+        description: meet ? `Join with Google Meet: ${meet}` : tt.description ?? "",
       });
+      await sendTemplate(db, { key: "consult_booked", to: email, vars, ics: invite });
       await alertStaff(
         db, tt.campus_id,
         `Consultation booked — ${tt.name}`,
         `${name} booked ${when}.` + (meet ? ` Meet: ${meet}` : ""),
         tour.id
       );
-    } else {
-      await sendMail({
-        to: email,
-        subject: `We received your tour request — ${tt.name}`,
-        text:
-          `Hi ${name},\n\nThank you for your tour request. We have received it.\n\n` +
-          `${tt.name}\n${when}\n` + (tt.location ? `${tt.location}\n` : "") +
-          `\nA confirmation email will be sent to you within 24 - 48 hours.\n\n` +
-          `Need to change or cancel? ${PORTAL}/book/manage?t=${manage}\n\n` +
-          `— Sing in Chinese`,
+      await mailCampus({
+        key: "staff_booking", campusId: tt.campus_id, tour: forStaff,
+        tourName: tt.name, when, location: tt.location, meet, ics: invite,
       });
+    } else {
+      await sendTemplate(db, { key: "tour_requested", to: email, vars });
       await alertStaff(
         db, tt.campus_id,
         `Tour request — ${tt.name}`,
         `${name} requested ${when}. Confirm or ask them to reschedule.`,
         tour.id
       );
+      // No calendar invite yet — the request still has to be approved, and a
+      // campus shouldn't end up with events for tours it later declines.
+      await mailCampus({
+        key: "staff_changed", campusId: tt.campus_id, tour: forStaff,
+        tourName: tt.name, when, location: tt.location, meet,
+        headline: "A tour has been requested and is waiting for you to confirm or reschedule it.",
+      });
     }
 
     return json(200, { ok: true, when, manage_token: manage });
@@ -631,12 +884,22 @@ Deno.serve(async (req) => {
         note: `Parent cancelled their tour (was ${fmtWhen(new Date(tour.starts_at), tt.time_zone)}).`,
       });
     }
-    await sendMail({
+    const cancelledWhen = fmtWhen(new Date(tour.starts_at), tt.time_zone);
+    await sendTemplate(db, {
+      key: "tour_cancelled",
       to: tour.parent_email,
-      subject: "Your tour has been cancelled",
-      text: `Hi ${tour.parent_name},\n\nYour tour on ${fmtWhen(new Date(tour.starts_at), tt.time_zone)} has been cancelled.\n\nYou're welcome to book again any time: ${PORTAL}/book/${tt.slug}\n\n— Sing in Chinese`,
+      vars: baseVars({
+        parentName: tour.parent_name, tourName: tt.name, when: cancelledWhen,
+        location: tt.location, meet: tt.meet_url, slug: tt.slug,
+      }),
     });
-    await notifyStaff(db, "Tour cancelled", `${tour.parent_name} cancelled their ${fmtWhen(new Date(tour.starts_at), tt.time_zone)} tour.`, tour.lead_id, tour.id, PORTAL);
+    await notifyStaff(db, "Tour cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} tour.`, tour.lead_id, tour.id, PORTAL);
+    await alertStaff(db, tour.campus_id, "Booking cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} booking.`, tour.id);
+    await mailCampus({
+      key: "staff_changed", campusId: tour.campus_id, tour,
+      tourName: tt.name, when: cancelledWhen, location: tt.location, meet: tt.meet_url,
+      headline: `${tour.parent_name || "A family"} cancelled this booking. The slot is free again.`,
+    });
     return json(200, { ok: true });
   }
 
@@ -668,14 +931,31 @@ Deno.serve(async (req) => {
         note: `Parent moved their tour from ${oldWhen} to ${when}.`,
       });
     }
-    await sendMail({
+    await sendTemplate(db, {
+      key: "tour_rescheduled",
       to: tour.parent_email,
-      subject: `Your tour has moved to ${when}`,
-      text: `Hi ${tour.parent_name},\n\nYour visit is now:\n\n${tt.name}\n${when}\n` +
-        (tt.location ? `${tt.location}\n` : "") +
-        `\nNeed to change again? ${PORTAL}/book/manage?t=${tok}\n\n— Sing in Chinese`,
+      vars: baseVars({
+        parentName: tour.parent_name, tourName: tt.name, when,
+        location: tt.location, meet: tt.meet_url, manageToken: tok, slug: tt.slug,
+      }),
     });
     await notifyStaff(db, "Tour rescheduled", `${tour.parent_name} moved their tour from ${oldWhen} to ${when}.`, tour.lead_id, tour.id, PORTAL);
+    await alertStaff(db, tour.campus_id, "Booking moved", `${tour.parent_name} moved their booking from ${oldWhen} to ${when}.`, tour.id);
+    await mailCampus({
+      key: "staff_changed", campusId: tour.campus_id, tour,
+      tourName: tt.name, when, location: tt.location, meet: tt.meet_url,
+      headline: `${tour.parent_name || "A family"} moved this booking — it was ${oldWhen}.`,
+      // Only confirmed bookings sit in a calendar, so only they get a fresh invite.
+      ics: tour.status === "confirmed"
+        ? buildIcs({
+            uid: `${tour.id}@singinchinese.com`,
+            title: `${tt.name} — ${tour.parent_name ?? ""}`.trim(),
+            start: startAt, end: new Date(startAt.getTime() + tt.duration_minutes * 60000),
+            location: (tt.meet_url ?? "").trim() || tt.location || "Sing in Chinese",
+            description: (tt.meet_url ?? "").trim() ? `Join with Google Meet: ${tt.meet_url}` : tt.description ?? "",
+          })
+        : undefined,
+    });
     return json(200, { ok: true, when });
   }
 

@@ -28,24 +28,41 @@ const REMINDER_ZONES = [
 ];
 
 export default function SalesSettingsPage() {
-  const { profile } = useCampusFilter();
-  const { confirm, modal: dialogModal } = useDialog();
+  const { profile, campuses } = useCampusFilter();
+  const { modal: dialogModal } = useDialog();
   const isTrueAdmin = profile?.role === "admin";
 
   const [settings, setSettings] = useState<Settings | null>(null);
   const [sources, setSources] = useState<SalesSource[]>([]);
   const [newSource, setNewSource] = useState("");
   const [status, setStatus] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Campus addresses live on hr_campuses rather than sales_settings — they
+  // belong to the campus, and the booking function reads them from there.
+  const [campusEmails, setCampusEmails] = useState<Record<string, string>>({});
 
   const reload = useCallback(async () => {
-    const [{ data }, ss] = await Promise.all([
+    const [{ data }, ss, { data: ce }] = await Promise.all([
       supabase.from("sales_settings").select("*").eq("id", true).maybeSingle(),
       fetchSources(),
+      supabase.from("hr_campuses").select("id, contact_email").eq("admissions_only", false),
     ]);
     if (data) setSettings(data as Settings);
     setSources(ss);
+    const map: Record<string, string> = {};
+    for (const c of (ce ?? []) as { id: string; contact_email: string | null }[]) {
+      map[c.id] = c.contact_email ?? "";
+    }
+    setCampusEmails(map);
   }, []);
+
+  async function saveCampusEmail(campusId: string, raw: string) {
+    const value = raw.trim();
+    if (value && !value.includes("@")) { setStatus("That doesn't look like an email address."); return; }
+    setCampusEmails((m) => ({ ...m, [campusId]: value }));
+    const { error } = await supabase
+      .from("hr_campuses").update({ contact_email: value || null }).eq("id", campusId);
+    setStatus(error ? "Save error: " + error.message : "✅ Saved.");
+  }
 
   useEffect(() => { void reload(); }, [reload]);
 
@@ -55,24 +72,6 @@ export default function SalesSettingsPage() {
     setSettings(next);
     const { error } = await supabase.from("sales_settings").update(patch).eq("id", true);
     setStatus(error ? "Save error: " + error.message : "✅ Saved.");
-  }
-
-  async function callMailchimp(mode: "test" | "sync") {
-    setBusy(true);
-    setStatus(mode === "test" ? "Testing…" : "Syncing…");
-    try {
-      const { data, error } = await supabase.functions.invoke("sales-mailchimp-sync", { body: { mode } });
-      if (error) throw error;
-      const d = data as Record<string, unknown>;
-      if (d?.error) setStatus(`Mailchimp: ${String(d.error)}`);
-      else if (mode === "test") setStatus(`✅ Connected (${String(d.server_prefix ?? "")}).`);
-      else setStatus(`✅ Synced ${String(d.synced ?? 0)}, failed ${String(d.failed ?? 0)}.`);
-      await reload();
-    } catch (e) {
-      setStatus("Mailchimp error: " + ((e as Error)?.message ?? "unknown"));
-    } finally {
-      setBusy(false);
-    }
   }
 
   async function addSource() {
@@ -155,6 +154,33 @@ export default function SalesSettingsPage() {
         )}
       </div>
 
+      {/* ── Campus email addresses ──────────────────────────────────────── */}
+      <div className="card">
+        <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 4 }}>Campus email addresses</div>
+        <div className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
+          When a tour or consultation is booked, a copy of the confirmation — with the calendar invite and
+          meeting link — goes to the address for that campus. Leave one blank and nobody is emailed for it;
+          the portal and app notifications still go out either way.
+        </div>
+
+        <div className="stack" style={{ gap: 10 }}>
+          {campuses.map((c) => (
+            <div key={c.id} className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 800, fontSize: 14, minWidth: 140 }}>{c.name}</span>
+              <input
+                className="input"
+                type="email"
+                style={{ maxWidth: 320 }}
+                placeholder="torrancepv@singinchinese.com"
+                defaultValue={campusEmails[c.id] ?? ""}
+                onBlur={(e) => void saveCampusEmail(c.id, e.target.value)}
+              />
+            </div>
+          ))}
+          {campuses.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>No campuses yet.</div>}
+        </div>
+      </div>
+
       {/* ── Sources ─────────────────────────────────────────────────────── */}
       <div className="card">
         <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 4 }}>“How did you hear about us?”</div>
@@ -190,116 +216,6 @@ export default function SalesSettingsPage() {
           />
           <button className="btn" onClick={() => void addSource()}>Add</button>
         </div>
-      </div>
-
-      {/* ── Mailchimp ───────────────────────────────────────────────────── */}
-      <div className="card">
-        <div style={{ fontWeight: 900, fontSize: 15, marginBottom: 4 }}>Mailchimp</div>
-        <div className="subtle" style={{ fontSize: 13, marginBottom: 12 }}>
-          Pushes leads into an audience as contacts. The API key is stored as a function secret, not here —
-          set it with <code>supabase secrets set MAILCHIMP_API_KEY=…</code> before turning this on.
-        </div>
-
-        {settings && (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
-              <div>
-                <label style={lbl}>Server prefix</label>
-                <input
-                  className="input"
-                  placeholder="us14"
-                  defaultValue={settings.mailchimp_server_prefix ?? ""}
-                  onBlur={(e) => void saveSettings({ mailchimp_server_prefix: e.target.value.trim() || null })}
-                />
-              </div>
-              <div>
-                <label style={lbl}>Audience (list) ID</label>
-                <input
-                  className="input"
-                  placeholder="a1b2c3d4e5"
-                  defaultValue={settings.mailchimp_audience_id ?? ""}
-                  onBlur={(e) => void saveSettings({ mailchimp_audience_id: e.target.value.trim() || null })}
-                />
-              </div>
-              <div>
-                <label style={lbl}>How new contacts are added</label>
-                <select
-                  className="select"
-                  value={settings.mailchimp_status_if_new}
-                  onChange={(e) => void saveSettings({ mailchimp_status_if_new: e.target.value as Settings["mailchimp_status_if_new"] })}
-                >
-                  <option value="transactional">On the list, but not receiving campaigns</option>
-                  <option value="pending">Ask them to confirm (double opt-in)</option>
-                  <option value="subscribed">Subscribed straight away</option>
-                </select>
-                <div className="subtle" style={{ fontSize: 12, marginTop: 4 }}>
-                  Only affects people who aren’t on the list yet — existing subscribers are never changed.
-                </div>
-              </div>
-              <div>
-                <label style={lbl}>Tag applied to synced contacts</label>
-                <input
-                  className="input"
-                  defaultValue={settings.mailchimp_tag}
-                  onBlur={(e) => void saveSettings({ mailchimp_tag: e.target.value.trim() || "CRM Lead" })}
-                />
-              </div>
-              <div>
-                <label style={lbl}>Sync which leads</label>
-                <div className="row" style={{ gap: 10, flexWrap: "wrap", paddingTop: 6 }}>
-                  {(["active", "enrolled", "inactive"] as const).map((s) => {
-                    const on = settings.mailchimp_sync_statuses?.includes(s);
-                    return (
-                      <label key={s} style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13 }}>
-                        <input
-                          type="checkbox"
-                          checked={!!on}
-                          onChange={(e) => {
-                            const cur = new Set(settings.mailchimp_sync_statuses ?? []);
-                            if (e.target.checked) cur.add(s); else cur.delete(s);
-                            void saveSettings({ mailchimp_sync_statuses: [...cur] });
-                          }}
-                        />
-                        {s}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <div className="row" style={{ gap: 10, marginTop: 16, flexWrap: "wrap", alignItems: "center" }}>
-              <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontWeight: 700, fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={settings.mailchimp_enabled}
-                  onChange={(e) => void saveSettings({ mailchimp_enabled: e.target.checked })}
-                />
-                Enabled
-              </label>
-              <button className="btn" disabled={busy} onClick={() => void callMailchimp("test")}>Test connection</button>
-              <button
-                className="btn"
-                disabled={busy || !settings.mailchimp_enabled}
-                onClick={async () => {
-                  const ok = await confirm(
-                    "Push all matching leads to the Mailchimp audience?\n\nNew contacts are added as “transactional”, never auto-subscribed.",
-                    { title: "Sync to Mailchimp", confirmLabel: "Sync" }
-                  );
-                  if (ok) void callMailchimp("sync");
-                }}
-              >
-                Sync now
-              </button>
-            </div>
-
-            {settings.mailchimp_last_sync_at && (
-              <div className="subtle" style={{ fontSize: 12, marginTop: 10 }}>
-                Last sync {new Date(settings.mailchimp_last_sync_at).toLocaleString()} — {settings.mailchimp_last_result}
-              </div>
-            )}
-          </>
-        )}
       </div>
 
       {/* ── Import ──────────────────────────────────────────────────────── */}

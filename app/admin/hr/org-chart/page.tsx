@@ -343,7 +343,8 @@ export default function HrOrgChartPage() {
         return;
       }
 
-      const { data: campusData, error: campusErr } = await supabase.from("hr_campuses").select("*").order("name", { ascending: true });
+      // Programme rosters aren't places anyone works, so they get no column.
+      const { data: campusData, error: campusErr } = await supabase.from("hr_campuses").select("*").eq("admissions_only", false).order("name", { ascending: true });
       if (campusErr) throw campusErr;
 
       setCampuses((campusData ?? []) as HrCampus[]);

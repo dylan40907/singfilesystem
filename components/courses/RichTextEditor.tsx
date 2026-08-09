@@ -5,10 +5,30 @@ import { uploadCourseMedia } from "@/lib/courses";
 
 /**
  * Lightweight rich-text editor (contentEditable + execCommand) — enough for
- * headers, body text, bold/italic/lists/links and inline images (uploaded to the
- * course-media bucket). Emits HTML via onChange.
+ * headers, body text, bold/italic/lists/links and inline images. Emits HTML via
+ * onChange.
+ *
+ * Images go to the course-media bucket unless `upload` says otherwise, and
+ * `tokens` adds a menu of locked chips (used by the sales email editor, where a
+ * placeholder like the meeting link must survive editing intact).
  */
-export default function RichTextEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
+export default function RichTextEditor({
+  value,
+  onChange,
+  upload,
+  tokens,
+  minHeight = 160,
+  maxHeight = 360,
+}: {
+  value: string;
+  onChange: (html: string) => void;
+  /** Where inserted images are stored. Defaults to the course-media bucket. */
+  upload?: (file: File) => Promise<{ url: string }>;
+  /** Insertable placeholders, rendered as one indivisible chip each. */
+  tokens?: { key: string; label: string; hint?: string }[];
+  minHeight?: number;
+  maxHeight?: number;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   const savedRange = useRef<Range | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -155,7 +175,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     if (!file) return;
     setUploading(true);
     try {
-      const { url } = await uploadCourseMedia(file);
+      const { url } = await (upload ?? uploadCourseMedia)(file);
       ref.current?.focus();
       document.execCommand("insertHTML", false, `<img src="${url}" style="max-width:100%;border-radius:8px;margin:8px 0;" />`);
       emit();
@@ -164,6 +184,24 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
     } finally {
       setUploading(false);
     }
+  }
+
+  /**
+   * Drop a placeholder chip at the caret. `contenteditable=false` makes the
+   * browser treat it as a single character, so a backspace removes the whole
+   * thing rather than leaving a broken `{{meet_lin}}` behind.
+   */
+  function insertToken(key: string) {
+    const t = tokens?.find((x) => x.key === key);
+    if (!t) return;
+    ref.current?.focus();
+    restoreSelection();
+    const label = t.label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    document.execCommand(
+      "insertHTML", false,
+      `<span class="etok" data-tok="${key}" contenteditable="false">${label}</span>&nbsp;`
+    );
+    emit();
   }
 
   /** The toolbar button: edits the link you're in, otherwise creates a new one. */
@@ -210,6 +248,20 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
           {uploading ? "…" : "🖼"}
           <input type="file" accept="image/*" style={{ display: "none" }} onChange={onPickImage} />
         </label>
+        {tokens && tokens.length > 0 && (
+          <select
+            title="Insert a placeholder"
+            value=""
+            onMouseDown={saveSelection}
+            onChange={(e) => { insertToken(e.target.value); e.currentTarget.value = ""; }}
+            style={{ ...btnStyle, cursor: "pointer", minWidth: 130, padding: "0 6px" }}
+          >
+            <option value="">+ Insert…</option>
+            {tokens.map((t) => (
+              <option key={t.key} value={t.key} title={t.hint}>{t.label}</option>
+            ))}
+          </select>
+        )}
       </div>
       {/* Make links look like links inside the editor (matches how they render
           when the course is taken). Scoped to .rte-content so it won't leak. */}
@@ -217,6 +269,12 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         .rte-content a { color: #2563eb; text-decoration: underline; cursor: pointer; }
         .rte-content h2 { font-size: 1.4em; font-weight: 800; margin: 0.4em 0; }
         .rte-content img { max-width: 100%; }
+        .rte-content .etok {
+          display: inline-block; padding: 1px 8px; border-radius: 999px;
+          background: #fce7f3; border: 1px solid #f9a8d4; color: #9d174d;
+          font-size: 0.85em; font-weight: 800; white-space: nowrap;
+          user-select: all; vertical-align: baseline;
+        }
       `}</style>
       {/* Caret inside a link → show where it points, with a way to change it. */}
       {activeLink && (
@@ -256,7 +314,7 @@ export default function RichTextEditor({ value, onChange }: { value: string; onC
         suppressContentEditableWarning
         onInput={emit}
         onBlur={emit}
-        style={{ minHeight: 160, maxHeight: 360, overflowY: "auto", padding: "12px 14px", fontSize: 16, lineHeight: 1.5, outline: "none" }}
+        style={{ minHeight, maxHeight, overflowY: "auto", padding: "12px 14px", fontSize: 16, lineHeight: 1.5, outline: "none" }}
       />
 
       {linkOpen && (

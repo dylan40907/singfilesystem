@@ -17,6 +17,7 @@ import {
 } from "@/lib/fileUtils";
 import { FilePreviewModal } from "@/components/FilePreviewModal";
 import TeacherScheduleView from "@/components/schedule/TeacherScheduleView";
+import PlansViewer from "@/components/schedule/PlansViewer";
 import EmployeeDocuments from "@/components/hr/EmployeeDocuments";
 import EmployeeCourses from "@/components/courses/EmployeeCourses";
 import { useDialog } from "@/components/ui/useDialog";
@@ -263,7 +264,7 @@ export default function HrPage() {
   const isAdmin = profile?.role === "admin";
   const canReviewOthers = isSupervisor || isAdmin;
 
-  type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "leave" | "timesheetLog" | "courses";
+  type HrTab = "attendance" | "documents" | "reviews" | "meetings" | "employeeReviews" | "schedule" | "plans" | "leave" | "timesheetLog" | "courses";
   const [activeTab, setActiveTab] = useState<HrTab>("attendance");
   // When taking a course, hide all page chrome except the top navbar.
   const [courseTaking, setCourseTaking] = useState(false);
@@ -1353,6 +1354,7 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
               subtabs. They're now the real HR Portal pages, reachable from the
               mode switcher, so this page is purely self-service again. */}
           <button className={`hr-mobile-tab${activeTab === "schedule" ? " active" : ""}`} onClick={() => setActiveTab("schedule")}>Schedule</button>
+          <button className={`hr-mobile-tab${activeTab === "plans" ? " active" : ""}`} onClick={() => setActiveTab("plans")}>Plans</button>
           <button className={`hr-mobile-tab${activeTab === "leave" ? " active" : ""}`} onClick={() => setActiveTab("leave")}>Leave</button>
           <button className={`hr-mobile-tab${activeTab === "timesheetLog" ? " active" : ""}`} onClick={() => setActiveTab("timesheetLog")}>Timesheet Log</button>
           <button className={`hr-mobile-tab${activeTab === "courses" ? " active" : ""}`} onClick={() => setActiveTab("courses")}>Courses</button>
@@ -1376,6 +1378,9 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
             </TabButton>
             <TabButton active={activeTab === "schedule"} onClick={() => setActiveTab("schedule")}>
               Schedule
+            </TabButton>
+            <TabButton active={activeTab === "plans"} onClick={() => setActiveTab("plans")}>
+              Plans
             </TabButton>
             <TabButton active={activeTab === "leave"} onClick={() => setActiveTab("leave")}>
               Leave
@@ -2005,6 +2010,10 @@ const [docsByMeeting, setDocsByMeeting] = useState<Map<string, HrMeetingDocument
                 )}
               </div>
             ) : null}
+
+            {/* Room plans, view-only. Not tied to a week and never counted
+                toward hours, so they're kept apart from Schedule. */}
+            {activeTab === "plans" ? <PlansViewer /> : null}
 
             {activeTab === "leave" ? (
               employee?.id ? (

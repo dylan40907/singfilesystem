@@ -54,7 +54,7 @@ export default function AddUserModal({
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("hr_campuses").select("id,name").order("name", { ascending: true });
+      const { data } = await supabase.from("hr_campuses").select("id,name").eq("admissions_only", false).order("name", { ascending: true });
       setCampuses((data ?? []) as CampusRow[]);
     })();
   }, []);

@@ -4439,7 +4439,8 @@ async function addMeetingType() {
   }, []);
 
   const reloadCampuses = useCallback(async () => {
-    const { data, error } = await supabase.from("hr_campuses").select("id,name").order("name", { ascending: true });
+    // Real sites only — nobody is employed at a programme roster.
+    const { data, error } = await supabase.from("hr_campuses").select("id,name").eq("admissions_only", false).order("name", { ascending: true });
     if (error) throw error;
     setCampuses((data ?? []) as CampusRow[]);
     return (data ?? []) as CampusRow[];
@@ -4771,7 +4772,7 @@ async function addMeetingType() {
 
         const [jlRes, cRes, etRes, empRaw, atRes] = await Promise.all([
           supabase.from("hr_job_levels").select("id,name").order("name", { ascending: true }),
-          supabase.from("hr_campuses").select("id,name").order("name", { ascending: true }),
+          supabase.from("hr_campuses").select("id,name").eq("admissions_only", false).order("name", { ascending: true }),
           supabase.from("hr_event_types").select("id,name").order("name", { ascending: true }),
           fetchEmployeeData(employeeId),
           supabase.from("hr_attendance_types").select("id,name,points_deduct").order("name", { ascending: true }),

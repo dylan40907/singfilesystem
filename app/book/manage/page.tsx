@@ -29,6 +29,16 @@ type Booking = {
   tour: { name: string; location: string | null; time_zone: string; slug: string };
 };
 
+/** Statuses a parent can still act on — must match the server's allow-list. */
+const ACTIVE = new Set(["requested", "scheduled", "confirmed"]);
+
+const STATUS_TITLE: Record<string, string> = {
+  cancelled: "This booking has been cancelled",
+  reschedule_requested: "We asked you to pick a new time",
+  completed: "Thank you for visiting",
+  no_show: "This booking has passed",
+};
+
 function ManageInner() {
   const token = useSearchParams().get("t") ?? "";
   const [booking, setBooking] = useState<Booking | null>(null);
@@ -37,6 +47,8 @@ function ManageInner() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState("");
 
   const load = useCallback(async () => {
     if (!token) { setError("This link is missing its booking reference."); return; }
@@ -82,10 +94,14 @@ function ManageInner() {
 
   if (msg) return <Shell><h1 style={h1}>Done</h1><p style={{ color: "#4b5563" }}>{msg}</p></Shell>;
 
-  if (booking.status !== "scheduled") {
+  // The same three statuses the server treats as live. It used to check only
+  // for "scheduled", which nothing has been created with since bookings became
+  // request-then-confirm — so every parent saw a dead end instead of a
+  // Cancel button.
+  if (!ACTIVE.has(booking.status)) {
     return (
       <Shell>
-        <h1 style={h1}>This booking is {booking.status}</h1>
+        <h1 style={h1}>{STATUS_TITLE[booking.status] ?? `This booking is ${booking.status}`}</h1>
         <p style={{ color: "#4b5563" }}>
           Nothing more to do here. You&apos;re very welcome to book again:{" "}
           <a href={`/book/${booking.tour.slug}`} style={{ color: PINK }}>pick a new time</a>.
@@ -96,26 +112,63 @@ function ManageInner() {
 
   return (
     <Shell>
-      <h1 style={h1}>Your tour</h1>
+      <h1 style={h1}>Your booking</h1>
       <p style={{ color: "#4b5563", margin: "0 0 4px" }}>{booking.tour.name}</p>
       <p style={{ fontWeight: 700, fontSize: 17, margin: "0 0 4px" }}>{booking.when}</p>
       {booking.tour.location && <p style={{ color: "#6b7280", fontSize: 14 }}>{booking.tour.location}</p>}
+      {booking.status === "requested" && (
+        <p style={{ color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "8px 12px", fontSize: 14, marginTop: 12 }}>
+          We&apos;re holding this time for you while we confirm it. You can still change or cancel it.
+        </p>
+      )}
 
-      {!picking ? (
+      {confirming ? (
+        <div style={{ marginTop: 22 }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Cancel this booking?</div>
+          <p style={{ color: "#6b7280", fontSize: 14, margin: "0 0 12px" }}>
+            The time goes back into our calendar straight away. You can book again whenever suits you.
+          </p>
+          <input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Anything you'd like us to know? (optional)"
+            style={{
+              width: "100%", padding: "11px 14px", fontSize: 15, borderRadius: 12,
+              border: "1.5px solid #e5e7eb", outline: "none", boxSizing: "border-box",
+            }}
+          />
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+            <button
+              style={{ ...cta, background: "#b91c1c" }}
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await callFn({ mode: "cancel", token, reason: reason.trim() || undefined });
+                  setMsg("Your booking has been cancelled. We've emailed you to confirm.");
+                } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+              }}
+            >
+              {busy ? "Cancelling…" : "Yes, cancel it"}
+            </button>
+            <button
+              style={{ ...cta, background: "#fff", color: "#374151", border: "1.5px solid #e5e7eb" }}
+              disabled={busy}
+              onClick={() => { setConfirming(false); setReason(""); }}
+            >
+              Keep my booking
+            </button>
+          </div>
+        </div>
+      ) : !picking ? (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 22 }}>
           <button style={cta} disabled={busy} onClick={() => void openReschedule()}>Pick a different time</button>
           <button
             style={{ ...cta, background: "#fff", color: "#b91c1c", border: "1.5px solid #fecaca" }}
             disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              try {
-                await callFn({ mode: "cancel", token });
-                setMsg("Your tour has been cancelled. We've emailed you to confirm.");
-              } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-            }}
+            onClick={() => setConfirming(true)}
           >
-            Cancel my tour
+            Cancel my booking
           </button>
         </div>
       ) : (
@@ -142,7 +195,7 @@ function ManageInner() {
                             setBusy(true);
                             try {
                               const r = await callFn({ mode: "reschedule", token, start: t });
-                              setMsg(`Your tour has moved to ${r.when}. We've emailed you the details.`);
+                              setMsg(`Your booking has moved to ${r.when}. We've emailed you the details.`);
                             } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
                           }}
                         >
