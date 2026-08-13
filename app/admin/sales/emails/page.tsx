@@ -55,11 +55,17 @@ export default function SalesEmailsPage() {
   // whatever internal address that happens to be, which is rarely what you want
   // when you're checking how a message looks to a parent.
   const [testTo, setTestTo] = useState("");
-  // Which template's contents are currently in the editor. The editor seeds its
-  // contentEditable once on mount, so it must not mount until this matches
-  // activeKey — otherwise it starts empty, and a blur would then save that
-  // emptiness over the real body.
-  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  /**
+   * Which template *and campus* is currently in the editor.
+   *
+   * The editor seeds its contentEditable once on mount and never re-reads
+   * `value`, so it must not mount until this matches what's selected. Tracking
+   * only the template key meant switching campus remounted it in the same
+   * commit that still held the previous campus's body — so an unlocked campus
+   * showed the primary wording and looked like its own version had been
+   * discarded. A blur would then have written that stale body back.
+   */
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
 
   const spec = specFor(activeKey);
   const active = rows.find((r) => r.key === activeKey) ?? null;
@@ -83,8 +89,12 @@ export default function SalesEmailsPage() {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // Load the selected template into the editor. Guarded on key + row identity so
-  // a save (which refetches) doesn't stomp on what's on screen.
+  /** The template + campus pair on screen. Also the editor's remount key. */
+  const editorFor = `${activeKey}::${campusId ?? "primary"}`;
+
+  // Load the selected template into the editor. Keyed on the pair, and on the
+  // stored content, so someone else's edit is picked up on the next reload.
+  const loadedStamp = `${editorFor}::${activeOverride?.updated_at ?? ""}::${active?.updated_at ?? ""}`;
   useEffect(() => {
     const row = rows.find((r) => r.key === activeKey);
     if (!row) return;
@@ -94,16 +104,9 @@ export default function SalesEmailsPage() {
     setEditorHtml(toEditorHtml(resolved.body_html, specFor(activeKey)));
     setAttachments(resolved.attachments);
     setDirty(false);
-    setLoadedKey(activeKey);
+    setLoadedFor(editorFor);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey, campusId, rows.length, overrides.length]);
-
-  // Switching template or campus unmounts the editor until the new body is in
-  // state, so it can't seed itself from the previous one.
-  const editorFor = `${activeKey}::${campusId ?? "primary"}`;
-  useEffect(() => {
-    setLoadedKey((k) => (k === activeKey ? k : null));
-  }, [activeKey, campusId]);
+  }, [loadedStamp, rows.length, overrides.length]);
 
   const storedHtml = useMemo(() => fromEditorHtml(editorHtml), [editorHtml]);
   const missing = useMemo(
@@ -113,6 +116,13 @@ export default function SalesEmailsPage() {
 
   async function save() {
     if (!active) return;
+    // The editor's contents belong to whatever was last loaded into it. If that
+    // isn't what's selected, saving would write one campus's wording over
+    // another's — which is exactly how this went wrong before.
+    if (loadedFor !== editorFor) {
+      await alert("Still loading this email. Try again in a moment.", { title: "Not ready" });
+      return;
+    }
     // An empty body is never intentional, and it's how two templates got wiped
     // before the editor waited for its contents.
     if (!storedHtml.replace(/<[^>]*>|&nbsp;|\s/g, "")) {
@@ -273,7 +283,7 @@ export default function SalesEmailsPage() {
                 {i === 0 ? (
                   <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.75 }}>primary</span>
                 ) : custom ? (
-                  <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.75 }}>🔓</span>
+                  <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.75 }}>custom</span>
                 ) : null}
               </button>
             );
@@ -314,7 +324,15 @@ export default function SalesEmailsPage() {
                       >
                         {row?.name ?? s.key}
                         {!isPrimary && overrides.some((o) => o.key === s.key && o.campus_id === campusId) && (
-                          <span title="This campus has its own version" style={{ marginLeft: 6 }}>🔓</span>
+                          <span
+                            title="This campus has its own version of this email"
+                            style={{
+                              marginLeft: 6, fontSize: 10, fontWeight: 800, padding: "1px 6px",
+                              borderRadius: 999, background: "#fce7f3", color: "#9d174d",
+                            }}
+                          >
+                            custom
+                          </span>
                         )}
                       </button>
                     );
@@ -341,11 +359,11 @@ export default function SalesEmailsPage() {
                 {!isPrimary && (
                   locked ? (
                     <button className="btn" onClick={() => void unlockForCampus()} disabled={busy === "unlock"}>
-                      {busy === "unlock" ? "Unlocking…" : "🔒 Unlock for this campus"}
+                      {busy === "unlock" ? "Unlocking…" : "Unlock for this campus"}
                     </button>
                   ) : (
                     <button className="btn" onClick={() => void relockForCampus()} disabled={busy === "relock"}>
-                      {busy === "relock" ? "Relocking…" : "🔓 Relock"}
+                      {busy === "relock" ? "Relocking…" : "Relock — use the primary version"}
                     </button>
                   )
                 )}
@@ -374,7 +392,7 @@ export default function SalesEmailsPage() {
 
               <div>
                 <label style={lbl}>Body</label>
-                {loadedKey !== activeKey ? (
+                {loadedFor !== editorFor ? (
                   <div className="subtle" style={{ padding: 20, border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
                     Loading…
                   </div>
