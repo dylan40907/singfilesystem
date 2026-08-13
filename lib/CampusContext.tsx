@@ -37,6 +37,12 @@ export type Campus = {
   parent_campus_id?: string | null;
   /** 'preschool' | 'hwc' | 'language_school' on containers, null on campuses. */
   program?: string | null;
+  /**
+   * Display order. Lowest first, name as the tie-break. The lowest-numbered
+   * real campus is also the primary one whose Sales email wording the others
+   * inherit, so this isn't purely cosmetic.
+   */
+  sort_order?: number | null;
 };
 
 export const PROGRAM_LABEL: Record<string, string> = {
@@ -85,7 +91,8 @@ export function CampusProvider({ children }: { children: ReactNode }) {
   const refreshCampuses = useCallback(async () => {
     const { data } = await supabase
       .from("hr_campuses")
-      .select("id, name, admissions_only, parent_campus_id, program")
+      .select("id, name, admissions_only, parent_campus_id, program, sort_order")
+      .order("sort_order", { ascending: true })
       .order("name", { ascending: true });
     setCampuses((data as Campus[]) ?? []);
   }, []);

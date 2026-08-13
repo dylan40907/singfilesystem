@@ -64,11 +64,9 @@ export default function SalesEmailsPage() {
   const spec = specFor(activeKey);
   const active = rows.find((r) => r.key === activeKey) ?? null;
 
-  // Real sites only, in a stable order — the first is the primary.
-  const campusTabs = useMemo(
-    () => [...campuses].sort((a, b) => a.name.localeCompare(b.name)),
-    [campuses]
-  );
+  // Real sites only. Already ordered by hr_campuses.sort_order, so the first is
+  // the primary — Torrance PV — and the rest inherit its wording.
+  const campusTabs = campuses;
   const primaryCampusId = campusTabs[0]?.id ?? null;
   const isPrimary = !campusId || campusId === primaryCampusId;
   const activeOverride = overrides.find((o) => o.key === activeKey && o.campus_id === campusId);
