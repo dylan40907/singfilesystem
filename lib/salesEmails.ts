@@ -35,50 +35,54 @@ const WHERE: EmailToken = { key: "location", label: "Location" };
 const PHONE: EmailToken = { key: "phone", label: "Phone number" };
 const MANAGE: EmailToken = { key: "manage_link", label: "Change / cancel link", required: true, hint: "The family's private link to reschedule or cancel." };
 const BOOK: EmailToken = { key: "book_link", label: "Booking page link", required: true };
-const MEET: EmailToken = { key: "meet_link", label: "Meeting link", required: true, hint: "The Google Meet room for this booking type. Blank for in-person tours." };
+/**
+ * Never required: an in-person tour has no meeting room, so insisting on it
+ * blocked saves on emails where it can only ever render as nothing.
+ */
+const MEET: EmailToken = { key: "meet_link", label: "Meeting link", hint: "The Google Meet room. Renders as nothing on in-person tours." };
+const CHILD: EmailToken = { key: "child_name", label: "Child name" };
+const CHILD_DOB: EmailToken = { key: "child_dob", label: "Child's date of birth" };
+const CHILD_START: EmailToken = { key: "child_start_date", label: "Child's desired start date" };
+const PORTAL: EmailToken = { key: "portal_link", label: "Open in the portal" };
+
+/** The family details every campus copy lists. */
+const STAFF_DETAIL: EmailToken[] = [
+  { key: "campus_name", label: "Campus" },
+  TOUR, WHEN, WHERE, MEET,
+  PARENT,
+  { key: "parent_email", label: "Parent email" },
+  { key: "parent_phone", label: "Parent phone" },
+  CHILD, CHILD_DOB, CHILD_START,
+  { key: "notes", label: "Notes from the family" },
+  PORTAL,
+];
+
+const WHAT_CHANGED: EmailToken = {
+  key: "what_changed", label: "What happened",
+  hint: "One line saying whether it was requested, cancelled or moved.",
+};
 
 export const EMAIL_TEMPLATES: EmailTemplateSpec[] = [
-  { key: "tour_requested", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, MANAGE] },
-  { key: "tour_confirmed", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, MANAGE] },
-  { key: "tour_reschedule_asked", group: "Tours", tokens: [PARENT, TOUR, WHEN, PHONE, BOOK] },
-  { key: "tour_reminder", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, MEET, MANAGE] },
-  { key: "tour_followup", group: "Tours", tokens: [PARENT, TOUR, WHEN, PHONE] },
-  { key: "tour_cancelled", group: "Tours", tokens: [PARENT, TOUR, WHEN, BOOK] },
-  { key: "tour_rescheduled", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, MEET, MANAGE] },
-  { key: "consult_booked", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
-  { key: "consult_reminder", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
-  { key: "consult_rescheduled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, MEET, MANAGE] },
-  { key: "consult_cancelled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, BOOK] },
-  { key: "consult_followup", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE] },
-  {
-    key: "staff_booking",
-    group: "Staff",
-    tokens: [
-      { key: "campus_name", label: "Campus" },
-      TOUR, WHEN, WHERE, MEET,
-      PARENT,
-      { key: "parent_email", label: "Parent email" },
-      { key: "parent_phone", label: "Parent phone" },
-      { key: "child_name", label: "Child name" },
-      { key: "notes", label: "Notes from the family" },
-      { key: "portal_link", label: "Open in the portal", required: true },
-    ],
-  },
-  {
-    key: "staff_changed",
-    group: "Staff",
-    tokens: [
-      { key: "what_changed", label: "What happened", hint: "One line saying whether it was requested, cancelled or moved." },
-      { key: "campus_name", label: "Campus" },
-      TOUR, WHEN, WHERE, MEET,
-      PARENT,
-      { key: "parent_email", label: "Parent email" },
-      { key: "parent_phone", label: "Parent phone" },
-      { key: "child_name", label: "Child name" },
-      { key: "notes", label: "Notes from the family" },
-      { key: "portal_link", label: "Open in the portal", required: true },
-    ],
-  },
+  { key: "tour_requested", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, CHILD, CHILD_DOB, CHILD_START, MANAGE] },
+  { key: "tour_confirmed", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, CHILD, CHILD_DOB, CHILD_START, MANAGE] },
+  { key: "tour_reschedule_asked", group: "Tours", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD, BOOK] },
+  { key: "tour_reminder", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, CHILD, CHILD_DOB, CHILD_START, MANAGE] },
+  { key: "tour_followup", group: "Tours", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD] },
+  { key: "tour_cancelled", group: "Tours", tokens: [PARENT, TOUR, WHEN, CHILD, BOOK] },
+  { key: "tour_rescheduled", group: "Tours", tokens: [PARENT, TOUR, WHEN, WHERE, CHILD, MANAGE] },
+
+  { key: "consult_booked", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD, MEET, MANAGE] },
+  { key: "consult_reminder", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD, MEET, MANAGE] },
+  { key: "consult_rescheduled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD, MEET, MANAGE] },
+  { key: "consult_cancelled", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD, BOOK] },
+  { key: "consult_followup", group: "Consultations", tokens: [PARENT, TOUR, WHEN, PHONE, CHILD] },
+
+  // Tours and meetings read differently to staff too — a tour needs the door
+  // and the child's details, a meeting needs the room link.
+  { key: "staff_tour_booking", group: "Staff", tokens: STAFF_DETAIL },
+  { key: "staff_tour_changed", group: "Staff", tokens: [WHAT_CHANGED, ...STAFF_DETAIL] },
+  { key: "staff_consult_booking", group: "Staff", tokens: STAFF_DETAIL },
+  { key: "staff_consult_changed", group: "Staff", tokens: [WHAT_CHANGED, ...STAFF_DETAIL] },
 ];
 
 export function specFor(key: string): EmailTemplateSpec | undefined {
@@ -97,6 +101,39 @@ export type EmailTemplateRow = {
   is_active: boolean;
   updated_at: string;
 };
+
+export type EmailOverrideRow = {
+  key: string;
+  campus_id: string;
+  subject: string;
+  body_html: string;
+  attachments: EmailAttachment[];
+  updated_at: string;
+};
+
+/**
+ * What one campus actually sends for one email.
+ *
+ * The primary campus edits `sales_email_templates` directly. Every other campus
+ * inherits that wording until someone unlocks the email for them, which writes
+ * a row into `sales_email_overrides` — so "locked" is simply the absence of a
+ * row, and a locked campus picks up edits to the primary automatically with no
+ * syncing to go wrong.
+ */
+export function resolveTemplate(
+  base: EmailTemplateRow,
+  override: EmailOverrideRow | undefined
+): { subject: string; body_html: string; attachments: EmailAttachment[]; locked: boolean } {
+  if (!override) {
+    return { subject: base.subject, body_html: base.body_html, attachments: base.attachments ?? [], locked: true };
+  }
+  return {
+    subject: override.subject,
+    body_html: override.body_html,
+    attachments: override.attachments ?? [],
+    locked: false,
+  };
+}
 
 /** Every `{{token}}` currently in a subject + body. */
 export function tokensIn(...parts: string[]): Set<string> {

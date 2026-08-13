@@ -74,6 +74,16 @@ function dowOf(day: string): number {
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
+/** A plain date (child DOB, desired start) with no time attached. */
+function fmtDay(day: string | null | undefined): string {
+  if (!day) return "";
+  const [y, m, d] = String(day).slice(0, 10).split("-").map(Number);
+  if (!y || !m || !d) return String(day);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC", year: "numeric", month: "long", day: "numeric",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
 function fmtWhen(at: Date, tz: string): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: tz, weekday: "long", month: "long", day: "numeric",
@@ -240,11 +250,34 @@ function link(url: string, label: string): Val {
 
 const tplCache = new Map<string, Tpl | null>();
 
-async function loadTpl(db: any, key: string): Promise<Tpl | null> {
-  if (tplCache.has(key)) return tplCache.get(key) ?? null;
-  const { data } = await db.from("sales_email_templates").select("*").eq("key", key).maybeSingle();
-  const tpl = (data as Tpl) ?? null;
-  tplCache.set(key, tpl);
+/**
+ * The wording for one email at one campus.
+ *
+ * sales_email_templates holds the primary set. A campus only appears in
+ * sales_email_overrides once someone has unlocked that email for it — no row
+ * means the campus follows the primary wording, which is what keeps the two in
+ * step with no syncing.
+ */
+async function loadTpl(db: any, key: string, campusId: string | null): Promise<Tpl | null> {
+  const cacheKey = `${key}::${campusId ?? "-"}`;
+  if (tplCache.has(cacheKey)) return tplCache.get(cacheKey) ?? null;
+
+  const { data: base } = await db.from("sales_email_templates").select("*").eq("key", key).maybeSingle();
+  let tpl = (base as Tpl) ?? null;
+
+  if (tpl && campusId) {
+    const { data: over } = await db
+      .from("sales_email_overrides")
+      .select("subject, body_html, attachments")
+      .eq("key", key)
+      .eq("campus_id", campusId)
+      .maybeSingle();
+    if (over) {
+      tpl = { ...tpl, subject: over.subject, body_html: over.body_html, attachments: over.attachments ?? [] };
+    }
+  }
+
+  tplCache.set(cacheKey, tpl);
   return tpl;
 }
 
@@ -254,10 +287,15 @@ async function loadTpl(db: any, key: string): Promise<Tpl | null> {
  */
 async function sendTemplate(
   db: any,
-  args: { key: string; to: string | null | undefined; vars: Record<string, Val>; ics?: string }
+  args: {
+    key: string; to: string | null | undefined; vars: Record<string, Val>;
+    ics?: string;
+    /** Which campus's wording to use. Falls back to the primary set. */
+    campusId?: string | null;
+  }
 ): Promise<boolean> {
   if (!args.to) return false;
-  const tpl = await loadTpl(db, args.key);
+  const tpl = await loadTpl(db, args.key, args.campusId ?? null);
   if (!tpl || !tpl.is_active) {
     if (!tpl) console.error("Missing email template:", args.key);
     return false;
@@ -334,6 +372,7 @@ Deno.serve(async (req) => {
     parentName?: string | null; tourName?: string | null; when: string;
     location?: string | null; meet?: string | null;
     manageToken?: string | null; slug?: string | null;
+    childName?: string | null; childDob?: string | null; childStart?: string | null;
   }): Record<string, Val> {
     const none = { html: "", text: "" };
     return {
@@ -342,6 +381,9 @@ Deno.serve(async (req) => {
       when: a.when,
       location: a.location || "",
       phone: PHONE,
+      child_name: a.childName || "",
+      child_dob: fmtDay(a.childDob),
+      child_start_date: fmtDay(a.childStart),
       meet_link: link((a.meet ?? "").trim(), "Join with Google Meet"),
       manage_link: a.manageToken
         ? link(`${PORTAL}/book/manage?t=${a.manageToken}`, "Change or cancel your booking")
@@ -356,7 +398,9 @@ Deno.serve(async (req) => {
    * for, and it only goes out when an address has been set in Sales → Settings.
    */
   async function mailCampus(a: {
-    key: "staff_booking" | "staff_changed";
+    /** "booking" once it's real, "changed" for requests and alterations. */
+    kind: "booking" | "changed";
+    isConsult: boolean;
     campusId: string | null;
     tour: Record<string, unknown>;
     tourName: string | null; when: string; location?: string | null; meet?: string | null;
@@ -366,22 +410,28 @@ Deno.serve(async (req) => {
     const { email, name } = await campusEmail(db, a.campusId);
     if (!email) return;
     await sendTemplate(db, {
-      key: a.key,
+      key: `staff_${a.isConsult ? "consult" : "tour"}_${a.kind}`,
       to: email,
       ics: a.ics,
+      campusId: a.campusId,
       vars: {
         ...baseVars({
           parentName: (a.tour.parent_name as string) ?? null,
           tourName: a.tourName, when: a.when, location: a.location, meet: a.meet,
           manageToken: (a.tour.manage_token as string) ?? null,
+          childName: (a.tour.child_name as string) ?? null,
+          childDob: (a.tour.child_dob as string) ?? null,
+          childStart: (a.tour.desired_start_date as string) ?? null,
         }),
         campus_name: name,
         parent_email: (a.tour.parent_email as string) || "",
         parent_phone: (a.tour.parent_phone as string) || "",
-        child_name: (a.tour.child_name as string) || "",
         notes: (a.tour.notes as string) || "",
         what_changed: a.headline || "",
-        portal_link: link(`${PORTAL}/admin/sales/tours`, "Open in the portal"),
+        portal_link: link(
+          `${PORTAL}/admin/sales/${a.isConsult ? "meetings" : "tours"}`,
+          "Open in the portal"
+        ),
       },
     });
   }
@@ -425,7 +475,7 @@ Deno.serve(async (req) => {
     // a backlog doesn't mail people about tours from weeks ago.
     const { data: finished } = await db
       .from("sales_tours")
-      .select("id, parent_name, parent_email, starts_at, ends_at, tour_type:sales_tour_types(name, time_zone, kind)")
+      .select("id, campus_id, parent_name, parent_email, child_name, child_dob, child_start_date, starts_at, ends_at, tour_type:sales_tour_types(name, time_zone, kind)")
       .eq("status", "confirmed")
       .is("followup_sent_at", null)
       .lte("ends_at", now.toISOString())
@@ -437,9 +487,11 @@ Deno.serve(async (req) => {
       const sent = await sendTemplate(db, {
         key: tplKey("followup", ft?.kind === "hwc_consult"),
         to: t.parent_email,
+        campusId: t.campus_id,
         vars: baseVars({
           parentName: t.parent_name, tourName: ft?.name ?? null,
           when: fmtWhen(new Date(t.starts_at), ft?.time_zone ?? "America/Los_Angeles"),
+          childName: t.child_name, childDob: t.child_dob, childStart: t.child_start_date,
         }),
       });
       if (sent) thanked++;
@@ -463,11 +515,13 @@ Deno.serve(async (req) => {
       const ok = await sendTemplate(db, {
         key: tplKey("reminder", tt?.kind === "hwc_consult"),
         to: t.parent_email,
+        campusId: t.campus_id,
         vars: baseVars({
           parentName: t.parent_name, tourName: tt?.name ?? null,
           when: fmtWhen(new Date(t.starts_at), tz),
           location: tt?.location, meet: tt?.meet_url,
           manageToken: t.manage_token,
+          childName: t.child_name, childDob: t.child_dob, childStart: t.child_start_date,
         }),
       });
       if (ok) sent++;
@@ -493,13 +547,17 @@ Deno.serve(async (req) => {
 
     const to = String(body?.to ?? "").trim();
     const key = String(body?.key ?? "").trim();
+    // Which campus's wording to preview — the tab you were on.
+    const previewCampus = body?.campus_id ? String(body.campus_id) : null;
     if (!to.includes("@") || !key) return json(400, { error: "Need a template and an address." });
 
     const sample = new Date(Date.now() + 3 * 24 * 3600 * 1000);
     const end = new Date(sample.getTime() + 45 * 60000);
+    const { name: previewCampusName } = await campusEmail(db, previewCampus);
     const sent = await sendTemplate(db, {
       key,
       to,
+      campusId: previewCampus,
       vars: {
         ...baseVars({
           parentName: "Sample Parent", tourName: "Sample booking",
@@ -507,11 +565,13 @@ Deno.serve(async (req) => {
           location: "1720 W Carson St, Torrance",
           meet: "https://meet.google.com/sample-test-room",
           manageToken: "sample-token", slug: "sample",
+          childName: "Sample Child",
+          childDob: "2022-04-18",
+          childStart: "2026-09-01",
         }),
-        campus_name: "Torrance PV",
+        campus_name: previewCampusName,
         parent_email: "parent@example.com",
         parent_phone: "(310) 555-0134",
-        child_name: "Sample Child",
         notes: "This is a test send — no booking exists.",
         what_changed: "This is a test send.",
         portal_link: link(`${PORTAL}/admin/sales/tours`, "Open in the portal"),
@@ -580,15 +640,17 @@ Deno.serve(async (req) => {
       await sendTemplate(db, {
         key: "tour_confirmed",
         to: tour.parent_email,
+        campusId: tour.campus_id,
         vars: baseVars({
           parentName: tour.parent_name, tourName: tt?.name ?? null, when,
           location: tt?.location, meet, manageToken: tour.manage_token, slug: tt?.slug,
+          childName: tour.child_name, childDob: tour.child_dob, childStart: tour.child_start_date,
         }),
         ics: invite,
       });
 
       await mailCampus({
-        key: "staff_booking", campusId: tour.campus_id, tour, tourName: tt?.name ?? null,
+        kind: "booking", isConsult: false, campusId: tour.campus_id, tour, tourName: tt?.name ?? null,
         when, location: tt?.location, meet, ics: invite,
       });
 
@@ -613,16 +675,18 @@ Deno.serve(async (req) => {
     await sendTemplate(db, {
       key: "tour_reschedule_asked",
       to: tour.parent_email,
+      campusId: tour.campus_id,
       vars: baseVars({
         parentName: tour.parent_name, tourName: tt?.name ?? null, when,
         location: tt?.location, slug: tt?.slug ?? String(body?.slug ?? ""),
+        childName: tour.child_name, childDob: tour.child_dob, childStart: tour.child_start_date,
       }),
     });
 
     // The campus was sent a held event when the request came in; take it back
     // off their calendar now the slot has been released.
     await mailCampus({
-      key: "staff_changed", campusId: tour.campus_id, tour,
+      kind: "changed", isConsult: false, campusId: tour.campus_id, tour,
       tourName: tt?.name ?? null, when, location: tt?.location, meet: tt?.meet_url,
       headline: "This request was declined and the family has been asked to pick another time.",
       ics: buildIcs({
@@ -813,6 +877,7 @@ Deno.serve(async (req) => {
       parent_phone: String(body?.parent_phone ?? "").trim() || null,
       child_name: String(body?.child_name ?? "").trim() || null,
       child_dob: body?.child_dob || null,
+      child_start_date: body?.desired_start_date || null,
       program: body?.program || null,
       source_id: body?.source_id ?? null,
       notes: String(body?.notes ?? "").trim() || null,
@@ -841,12 +906,17 @@ Deno.serve(async (req) => {
     const vars = baseVars({
       parentName: name, tourName: tt.name, when,
       location: tt.location, meet, manageToken: manage, slug: tt.slug,
+      childName: String(body?.child_name ?? "").trim(),
+      childDob: body?.child_dob || null,
+      childStart: body?.desired_start_date || null,
     });
     // The row we hand to the campus copy — the insert only returned an id.
     const forStaff = {
       parent_name: name, parent_email: email,
       parent_phone: String(body?.parent_phone ?? "").trim(),
       child_name: String(body?.child_name ?? "").trim(),
+      child_dob: body?.child_dob || null,
+      desired_start_date: body?.desired_start_date || null,
       notes: String(body?.notes ?? "").trim(),
       manage_token: manage,
     };
@@ -864,7 +934,7 @@ Deno.serve(async (req) => {
     if (tt.auto_confirm) {
       // Consultation: confirmed immediately, with the meeting room and a
       // calendar invite both sides can add in one tap.
-      await sendTemplate(db, { key: "consult_booked", to: email, vars, ics: invite });
+      await sendTemplate(db, { key: "consult_booked", to: email, vars, ics: invite, campusId: tt.campus_id });
       await alertStaff(
         db, tt.campus_id,
         `Consultation booked — ${tt.name}`,
@@ -872,11 +942,11 @@ Deno.serve(async (req) => {
         tour.id
       );
       await mailCampus({
-        key: "staff_booking", campusId: tt.campus_id, tour: forStaff,
+        kind: "booking", isConsult: true, campusId: tt.campus_id, tour: forStaff,
         tourName: tt.name, when, location: tt.location, meet, ics: invite,
       });
     } else {
-      await sendTemplate(db, { key: "tour_requested", to: email, vars });
+      await sendTemplate(db, { key: "tour_requested", to: email, vars, campusId: tt.campus_id });
       await alertStaff(
         db, tt.campus_id,
         `Tour request — ${tt.name}`,
@@ -887,7 +957,7 @@ Deno.serve(async (req) => {
       // It carries the same UID as the confirmation, so approving updates that
       // event and declining sends a cancellation for it.
       await mailCampus({
-        key: "staff_changed", campusId: tt.campus_id, tour: forStaff,
+        kind: "changed", isConsult: false, campusId: tt.campus_id, tour: forStaff,
         tourName: tt.name, when, location: tt.location, meet,
         headline: "A tour has been requested and is waiting for you to confirm or reschedule it.",
         ics: invite,
@@ -938,16 +1008,18 @@ Deno.serve(async (req) => {
     await sendTemplate(db, {
       key: tplKey("cancelled", isConsult),
       to: tour.parent_email,
+      campusId: tour.campus_id,
       vars: baseVars({
         parentName: tour.parent_name, tourName: tt.name, when: cancelledWhen,
         location: tt.location, meet: tt.meet_url, slug: tt.slug,
+        childName: tour.child_name, childDob: tour.child_dob, childStart: tour.child_start_date,
       }),
     });
     const noun = isConsult ? "meeting" : "tour";
     await notifyStaff(db, `${isConsult ? "Meeting" : "Tour"} cancelled`, `${tour.parent_name} cancelled their ${cancelledWhen} ${noun}.`, tour.lead_id, tour.id, PORTAL);
     await alertStaff(db, tour.campus_id, "Booking cancelled", `${tour.parent_name} cancelled their ${cancelledWhen} ${noun}.`, tour.id);
     await mailCampus({
-      key: "staff_changed", campusId: tour.campus_id, tour,
+      kind: "changed", isConsult, campusId: tour.campus_id, tour,
       tourName: tt.name, when: cancelledWhen, location: tt.location, meet: tt.meet_url,
       headline: `${tour.parent_name || "A family"} cancelled this booking. The slot is free again.`,
       // Takes the event off the campus calendar rather than leaving a ghost.
@@ -1007,9 +1079,11 @@ Deno.serve(async (req) => {
     await sendTemplate(db, {
       key: tplKey("rescheduled", movedConsult),
       to: tour.parent_email,
+      campusId: tour.campus_id,
       vars: baseVars({
         parentName: tour.parent_name, tourName: tt.name, when,
         location: tt.location, meet: tt.meet_url, manageToken: tok, slug: tt.slug,
+        childName: tour.child_name, childDob: tour.child_dob, childStart: tour.child_start_date,
       }),
       // A meeting the parent joins by link deserves the corrected invite.
       ics: movedConsult ? movedIcs : undefined,
@@ -1018,7 +1092,7 @@ Deno.serve(async (req) => {
     await notifyStaff(db, `${movedConsult ? "Meeting" : "Tour"} rescheduled`, `${tour.parent_name} moved their ${movedNoun} from ${oldWhen} to ${when}.`, tour.lead_id, tour.id, PORTAL);
     await alertStaff(db, tour.campus_id, "Booking moved", `${tour.parent_name} moved their ${movedNoun} from ${oldWhen} to ${when}.`, tour.id);
     await mailCampus({
-      key: "staff_changed", campusId: tour.campus_id, tour,
+      kind: "changed", isConsult: movedConsult, campusId: tour.campus_id, tour,
       tourName: tt.name, when, location: tt.location, meet: tt.meet_url,
       headline: `${tour.parent_name || "A family"} moved this booking — it was ${oldWhen}.`,
       ics: movedIcs,

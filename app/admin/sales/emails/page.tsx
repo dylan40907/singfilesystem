@@ -18,9 +18,11 @@ import RichTextEditor from "@/components/courses/RichTextEditor";
 import {
   EMAIL_TEMPLATES,
   EmailAttachment,
+  EmailOverrideRow,
   EmailTemplateRow,
   fromEditorHtml,
   missingRequired,
+  resolveTemplate,
   specFor,
   toEditorHtml,
   uploadEmailAsset,
@@ -30,12 +32,19 @@ import {
 const GROUPS = ["Tours", "Consultations", "Staff"] as const;
 
 export default function SalesEmailsPage() {
-  const { profile } = useCampusFilter();
+  const { profile, campuses } = useCampusFilter();
   const { confirm, alert, modal: dialogModal } = useDialog();
   const isTrueAdmin = profile?.role === "admin";
 
   const [rows, setRows] = useState<EmailTemplateRow[]>([]);
+  const [overrides, setOverrides] = useState<EmailOverrideRow[]>([]);
   const [activeKey, setActiveKey] = useState<string>("tour_requested");
+  /**
+   * Which campus's wording we're looking at. The first campus is the primary —
+   * it owns the wording every other campus inherits — so it's the default tab
+   * and the only one that can't be locked.
+   */
+  const [campusId, setCampusId] = useState<string | null>(null);
   const [subject, setSubject] = useState("");
   const [editorHtml, setEditorHtml] = useState("");
   const [attachments, setAttachments] = useState<EmailAttachment[]>([]);
@@ -55,9 +64,23 @@ export default function SalesEmailsPage() {
   const spec = specFor(activeKey);
   const active = rows.find((r) => r.key === activeKey) ?? null;
 
+  // Real sites only, in a stable order — the first is the primary.
+  const campusTabs = useMemo(
+    () => [...campuses].sort((a, b) => a.name.localeCompare(b.name)),
+    [campuses]
+  );
+  const primaryCampusId = campusTabs[0]?.id ?? null;
+  const isPrimary = !campusId || campusId === primaryCampusId;
+  const activeOverride = overrides.find((o) => o.key === activeKey && o.campus_id === campusId);
+  const locked = !isPrimary && !activeOverride;
+
   const reload = useCallback(async () => {
-    const { data } = await supabase.from("sales_email_templates").select("*").order("key");
-    setRows((data as EmailTemplateRow[]) ?? []);
+    const [{ data: tpl }, { data: ovr }] = await Promise.all([
+      supabase.from("sales_email_templates").select("*").order("key"),
+      supabase.from("sales_email_overrides").select("*"),
+    ]);
+    setRows((tpl as EmailTemplateRow[]) ?? []);
+    setOverrides((ovr as EmailOverrideRow[]) ?? []);
   }, []);
 
   useEffect(() => { void reload(); }, [reload]);
@@ -67,18 +90,22 @@ export default function SalesEmailsPage() {
   useEffect(() => {
     const row = rows.find((r) => r.key === activeKey);
     if (!row) return;
-    setSubject(row.subject);
-    setEditorHtml(toEditorHtml(row.body_html, specFor(activeKey)));
-    setAttachments(Array.isArray(row.attachments) ? row.attachments : []);
+    const over = overrides.find((o) => o.key === activeKey && o.campus_id === campusId);
+    const resolved = resolveTemplate(row, isPrimary ? undefined : over);
+    setSubject(resolved.subject);
+    setEditorHtml(toEditorHtml(resolved.body_html, specFor(activeKey)));
+    setAttachments(resolved.attachments);
     setDirty(false);
     setLoadedKey(activeKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeKey, rows.length]);
+  }, [activeKey, campusId, rows.length, overrides.length]);
 
-  // Switching templates unmounts the editor until the new body is in state.
+  // Switching template or campus unmounts the editor until the new body is in
+  // state, so it can't seed itself from the previous one.
+  const editorFor = `${activeKey}::${campusId ?? "primary"}`;
   useEffect(() => {
     setLoadedKey((k) => (k === activeKey ? k : null));
-  }, [activeKey]);
+  }, [activeKey, campusId]);
 
   const storedHtml = useMemo(() => fromEditorHtml(editorHtml), [editorHtml]);
   const missing = useMemo(
@@ -108,14 +135,58 @@ export default function SalesEmailsPage() {
     }
     setBusy("save");
     const { data: me } = await supabase.auth.getUser();
-    const { error } = await supabase
-      .from("sales_email_templates")
-      .update({ subject, body_html: storedHtml, attachments, updated_by: me.user?.id ?? null })
-      .eq("key", activeKey);
+    const patch = { subject, body_html: storedHtml, attachments, updated_by: me.user?.id ?? null };
+    const { error } = isPrimary
+      ? await supabase.from("sales_email_templates").update(patch).eq("key", activeKey)
+      : await supabase
+          .from("sales_email_overrides")
+          .upsert({ key: activeKey, campus_id: campusId!, ...patch }, { onConflict: "key,campus_id" });
     setBusy("");
     if (error) { setStatus("Save error: " + error.message); return; }
     setStatus("✅ Saved.");
     setDirty(false);
+    await reload();
+  }
+
+  /**
+   * Take this campus off the primary wording so it can say something different —
+   * the classic case being directions to a door that isn't the same door.
+   * Seeded with a copy of the primary, so unlocking never blanks anything.
+   */
+  async function unlockForCampus() {
+    if (!active || !campusId) return;
+    setBusy("unlock");
+    const { data: me } = await supabase.auth.getUser();
+    const { error } = await supabase.from("sales_email_overrides").insert({
+      key: activeKey,
+      campus_id: campusId,
+      subject: active.subject,
+      body_html: active.body_html,
+      attachments: active.attachments ?? [],
+      updated_by: me.user?.id ?? null,
+    });
+    setBusy("");
+    if (error) { setStatus("Unlock error: " + error.message); return; }
+    setStatus("🔓 Unlocked — this campus no longer follows the primary version.");
+    await reload();
+  }
+
+  async function relockForCampus() {
+    if (!campusId) return;
+    const campusName = campusTabs.find((c) => c.id === campusId)?.name ?? "this campus";
+    const ok = await confirm(
+      `Relock this email for ${campusName}?\n\n` +
+      `Everything written for ${campusName} will be discarded, and it will go back to using the ` +
+      `${campusTabs[0]?.name ?? "primary"} version — including every future change to it.`,
+      { title: "Relock", confirmLabel: "Relock & discard", danger: true }
+    );
+    if (!ok) return;
+    setBusy("relock");
+    const { error } = await supabase
+      .from("sales_email_overrides").delete().eq("key", activeKey).eq("campus_id", campusId);
+    setBusy("");
+    if (error) { setStatus("Relock error: " + error.message); return; }
+    setStatus("🔒 Relocked — back to the primary version.");
     await reload();
   }
 
@@ -154,7 +225,7 @@ export default function SalesEmailsPage() {
         Authorization: `Bearer ${sess.session?.access_token ?? ""}`,
         apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
       },
-      body: JSON.stringify({ mode: "test_send", key: activeKey, to }),
+      body: JSON.stringify({ mode: "test_send", key: activeKey, to, campus_id: isPrimary ? null : campusId }),
     });
     const out = await res.json().catch(() => ({}));
     setBusy("");
@@ -186,6 +257,37 @@ export default function SalesEmailsPage() {
         placeholders — they&apos;re filled in per booking and can&apos;t be typed by hand.
       </div>
 
+      {/* Campus tabs. The first campus owns the wording; the rest follow it
+          until an email is unlocked for them. Which one a family gets is
+          decided by the link they booked through. */}
+      {campusTabs.length > 1 && (
+        <div className="row" style={{ gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          {campusTabs.map((c, i) => {
+            const on = i === 0 ? isPrimary : campusId === c.id;
+            const custom = overrides.some((o) => o.campus_id === c.id);
+            return (
+              <button
+                key={c.id}
+                className={`btn${on ? " btn-primary" : ""}`}
+                onClick={() => setCampusId(i === 0 ? null : c.id)}
+              >
+                🏫 {c.name}
+                {i === 0 ? (
+                  <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.75 }}>primary</span>
+                ) : custom ? (
+                  <span style={{ marginLeft: 6, fontSize: 11, opacity: 0.75 }}>🔓</span>
+                ) : null}
+              </button>
+            );
+          })}
+          <span className="subtle" style={{ fontSize: 12, marginLeft: 6 }}>
+            {isPrimary
+              ? `Every campus uses this wording unless it has been unlocked for them.`
+              : `Locked emails follow ${campusTabs[0]?.name ?? "the primary campus"}. Unlock one to write a different version for this campus.`}
+          </span>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 240px) 1fr", gap: 14, alignItems: "start" }}>
         {/* Which email */}
         <div className="card" style={{ padding: 10, display: "grid", gap: 12 }}>
@@ -213,6 +315,9 @@ export default function SalesEmailsPage() {
                         }}
                       >
                         {row?.name ?? s.key}
+                        {!isPrimary && overrides.some((o) => o.key === s.key && o.campus_id === campusId) && (
+                          <span title="This campus has its own version" style={{ marginLeft: 6 }}>🔓</span>
+                        )}
                       </button>
                     );
                   })}
@@ -228,18 +333,39 @@ export default function SalesEmailsPage() {
             <div className="subtle">Loading…</div>
           ) : (
             <>
-              <div>
-                <div style={{ fontWeight: 900, fontSize: 16 }}>{active.name}</div>
-                {active.description && (
-                  <div className="subtle" style={{ fontSize: 13, marginTop: 3 }}>{active.description}</div>
+              <div className="row-between" style={{ gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 900, fontSize: 16 }}>{active.name}</div>
+                  {active.description && (
+                    <div className="subtle" style={{ fontSize: 13, marginTop: 3 }}>{active.description}</div>
+                  )}
+                </div>
+                {!isPrimary && (
+                  locked ? (
+                    <button className="btn" onClick={() => void unlockForCampus()} disabled={busy === "unlock"}>
+                      {busy === "unlock" ? "Unlocking…" : "🔒 Unlock for this campus"}
+                    </button>
+                  ) : (
+                    <button className="btn" onClick={() => void relockForCampus()} disabled={busy === "relock"}>
+                      {busy === "relock" ? "Relocking…" : "🔓 Relock"}
+                    </button>
+                  )
                 )}
               </div>
+
+              {!isPrimary && locked && (
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "#eff6ff", border: "1px solid #bfdbfe", color: "#1e40af", fontSize: 13 }}>
+                  This is the {campusTabs[0]?.name ?? "primary"} version, shown read-only. {campusTabs.find((c) => c.id === campusId)?.name ?? "This campus"} sends
+                  exactly this and follows every future edit to it. Unlock to write something different.
+                </div>
+              )}
 
               <div>
                 <label style={lbl}>Subject</label>
                 <input
                   className="input"
                   value={subject}
+                  disabled={locked}
                   onChange={(e) => { setSubject(e.target.value); setDirty(true); }}
                 />
                 <div className="subtle" style={{ fontSize: 12, marginTop: 5 }}>
@@ -250,11 +376,26 @@ export default function SalesEmailsPage() {
 
               <div>
                 <label style={lbl}>Body</label>
-                {loadedKey === activeKey ? (
+                {loadedKey !== activeKey ? (
+                  <div className="subtle" style={{ padding: 20, border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
+                    Loading…
+                  </div>
+                ) : locked ? (
+                  /* A locked campus shows the primary wording but can't type
+                     over it — editing here would be silently discarded. */
+                  <div
+                    className="rte-content"
+                    style={{
+                      border: "1.5px solid #e5e7eb", borderRadius: 10, padding: "12px 14px",
+                      maxHeight: 520, overflowY: "auto", fontSize: 16, lineHeight: 1.5, background: "#fafafa",
+                    }}
+                    dangerouslySetInnerHTML={{ __html: editorHtml }}
+                  />
+                ) : (
                   <RichTextEditor
-                    // Remount per template so the editor re-seeds from the body
-                    // it's being handed rather than keeping the previous one.
-                    key={activeKey}
+                    // Remount per template *and* campus so the editor re-seeds
+                    // from the body it's being handed rather than the last one.
+                    key={editorFor}
                     value={editorHtml}
                     onChange={(html) => { setEditorHtml(html); setDirty(true); }}
                     upload={async (f) => ({ url: (await uploadEmailAsset(f)).url })}
@@ -262,10 +403,6 @@ export default function SalesEmailsPage() {
                     minHeight={240}
                     maxHeight={520}
                   />
-                ) : (
-                  <div className="subtle" style={{ padding: 20, border: "1.5px solid #e5e7eb", borderRadius: 10 }}>
-                    Loading…
-                  </div>
                 )}
               </div>
 
@@ -288,13 +425,16 @@ export default function SalesEmailsPage() {
                     <div key={a.path} className="row" style={{ gap: 8, alignItems: "center" }}>
                       <span style={{ fontSize: 13, fontWeight: 700 }}>📎 {a.filename}</span>
                       <span className="subtle" style={{ fontSize: 12 }}>{Math.max(1, Math.round(a.size / 1024))} KB</span>
-                      <button className="btn" style={{ padding: "2px 9px", fontSize: 12, color: "#b91c1c" }} onClick={() => void removeAttachment(a)}>
-                        Remove
-                      </button>
+                      {!locked && (
+                        <button className="btn" style={{ padding: "2px 9px", fontSize: 12, color: "#b91c1c" }} onClick={() => void removeAttachment(a)}>
+                          Remove
+                        </button>
+                      )}
                     </div>
                   ))}
                   {attachments.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>None.</div>}
                 </div>
+                {!locked && (
                 <label className="btn" style={{ marginTop: 8, display: "inline-flex", cursor: "pointer" }}>
                   {busy === "attach" ? "Uploading…" : "+ Add attachment"}
                   <input
@@ -303,6 +443,7 @@ export default function SalesEmailsPage() {
                     onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void addAttachment(f); }}
                   />
                 </label>
+                )}
               </div>
 
               <div className="row-between" style={{ flexWrap: "wrap", gap: 10, borderTop: "1px solid #e5e7eb", paddingTop: 12 }}>
@@ -319,13 +460,15 @@ export default function SalesEmailsPage() {
                   </button>
                   <span className="subtle" style={{ fontSize: 12 }}>Placeholders are filled with sample values.</span>
                 </div>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => void save()}
-                  disabled={busy === "save" || !dirty || missing.length > 0}
-                >
-                  {busy === "save" ? "Saving…" : dirty ? "Save changes" : "Saved"}
-                </button>
+                {!locked && (
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void save()}
+                    disabled={busy === "save" || !dirty || missing.length > 0}
+                  >
+                    {busy === "save" ? "Saving…" : dirty ? "Save changes" : "Saved"}
+                  </button>
+                )}
               </div>
             </>
           )}
