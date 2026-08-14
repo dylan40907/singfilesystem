@@ -69,11 +69,47 @@ export default function ChatPage() {
       )
       .on(
         "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "chat_messages" },
+        () => { reload(); }
+      )
+      .on(
+        "postgres_changes",
         { event: "INSERT", schema: "public", table: "chat_members", filter: `user_id=eq.${myId}` },
+        () => { reload(); }
+      )
+      .on(
+        // Reading a chat elsewhere (phone, another tab) clears its unread here too.
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "chat_members", filter: `user_id=eq.${myId}` },
         () => { reload(); }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
+  }, [myId, reload]);
+
+  /**
+   * The websocket is not a guarantee. A tab left open overnight, a sleeping
+   * laptop or a dropped connection can leave the socket dead with nothing to
+   * say so, and the sidebar then sits on whatever it last heard — which is why
+   * the website went stale while the phone (which reloads every time you open
+   * the tab) stayed correct.
+   *
+   * Refresh whenever the tab becomes visible or the network returns, plus a
+   * slow poll as a floor.
+   */
+  useEffect(() => {
+    if (!myId) return;
+    const refresh = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("online", refresh);
+    const id = setInterval(refresh, 30000);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("online", refresh);
+      clearInterval(id);
+    };
   }, [myId, reload]);
 
   const selectedConversation = useMemo(

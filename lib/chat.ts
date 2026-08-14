@@ -94,60 +94,60 @@ export function conversationDisplayName(
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 
-/** Fetch all conversations the current user is in, enriched for sidebar. */
+/** Row shape returned by the chat_conversation_overview RPC. */
+type OverviewRow = {
+  conversation_id: string;
+  name: string | null;
+  is_group: boolean;
+  created_at: string;
+  last_message_at: string;
+  my_last_read_at: string;
+  unread_count: number;
+  last_message_id: string | null;
+  last_sender_id: string | null;
+  last_content: string | null;
+  last_created_at: string | null;
+  last_message_type: string | null;
+  last_attachment_kind: string | null;
+  last_attachment_name: string | null;
+};
+
+/**
+ * Fetch all conversations the current user is in, enriched for the sidebar.
+ *
+ * Previews, unread counts and ordering come from chat_conversation_overview()
+ * — the same RPC the mobile app uses. They used to be derived here from "the
+ * 500 most recent messages across every conversation", which covered barely
+ * half of them: quieter chats showed a stale preview and an unread count of
+ * zero, and the phone and the website disagreed because each grouped that
+ * window slightly differently.
+ *
+ * Only the member list is still assembled client-side; that part was never
+ * wrong, and it needs profile rows RLS already exposes.
+ */
 export async function fetchMyConversations(myId: string): Promise<ChatConversationView[]> {
-  // Get conversation IDs I'm a member of (with my last_read_at + hidden_at)
-  const { data: myMembership, error: memErr } = await supabase
-    .from("chat_members")
-    .select("conversation_id, last_read_at, hidden_at")
-    .eq("user_id", myId);
-  if (memErr) throw memErr;
-  const ids = (myMembership ?? []).map((m) => m.conversation_id);
-  if (ids.length === 0) return [];
+  const { data, error } = await supabase.rpc("chat_conversation_overview");
+  if (error) throw error;
+  const rows = (data ?? []) as OverviewRow[];
+  if (rows.length === 0) return [];
 
-  const hiddenAtByConv = new Map<string, string | null>();
-  for (const m of myMembership ?? []) {
-    hiddenAtByConv.set(m.conversation_id, (m as { hidden_at: string | null }).hidden_at ?? null);
-  }
-
-  // Fetch the conversation rows
-  const { data: convs, error: convErr } = await supabase
-    .from("chat_conversations")
-    .select("id, name, is_group, created_by, created_at, last_message_at")
-    .in("id", ids)
-    .order("last_message_at", { ascending: false });
-  if (convErr) throw convErr;
-
-  // Filter out conversations I've hidden, unless new activity arrived after hidden_at
-  const visibleConvs = (convs ?? []).filter((c) => {
-    const hidden = hiddenAtByConv.get(c.id);
-    if (!hidden) return true;
-    return new Date(c.last_message_at) > new Date(hidden);
-  });
-
-  const visibleIds = visibleConvs.map((c) => c.id);
-  if (visibleIds.length === 0) return [];
-
-  // Fetch all members for those conversations (RLS allows because we're a member)
-  const { data: allMembers, error: allMemErr } = await supabase
+  const convIds = rows.map((r) => r.conversation_id);
+  const { data: allMembers, error: memErr } = await supabase
     .from("chat_members")
     .select("conversation_id, user_id")
-    .in("conversation_id", visibleIds);
-  if (allMemErr) throw allMemErr;
+    .in("conversation_id", convIds);
+  if (memErr) throw memErr;
 
   const memberIds = [...new Set((allMembers ?? []).map((m) => m.user_id))];
-
-  // Fetch user profiles for display
   const { data: profs, error: profErr } = await supabase
     .from("user_profiles")
     .select("id, full_name, username, email")
-    .in("id", memberIds);
+    .in("id", memberIds.length ? memberIds : ["00000000-0000-0000-0000-000000000000"]);
   if (profErr) throw profErr;
   const profileMap = new Map<string, ChatUserLite>(
     (profs ?? []).map((p) => [p.id as string, p as ChatUserLite])
   );
 
-  // Group members by conversation
   const membersByConv = new Map<string, ChatUserLite[]>();
   for (const m of allMembers ?? []) {
     const arr = membersByConv.get(m.conversation_id) ?? [];
@@ -156,44 +156,36 @@ export async function fetchMyConversations(myId: string): Promise<ChatConversati
     membersByConv.set(m.conversation_id, arr);
   }
 
-  // Build my last_read_at lookup
-  const myLastReadMap = new Map<string, string>();
-  for (const m of myMembership ?? []) {
-    myLastReadMap.set(m.conversation_id, m.last_read_at);
-  }
+  return rows.map((r) => {
+    const conversation: ChatConversation = {
+      id: r.conversation_id,
+      name: r.name,
+      is_group: r.is_group,
+      created_by: null,
+      created_at: r.created_at,
+      last_message_at: r.last_message_at,
+    };
+    const members = membersByConv.get(r.conversation_id) ?? [];
+    const lastMessage: ChatMessage | null = r.last_message_id
+      ? {
+          id: r.last_message_id,
+          conversation_id: r.conversation_id,
+          sender_id: r.last_sender_id ?? "",
+          content: r.last_content ?? "",
+          created_at: r.last_created_at ?? r.last_message_at,
+          attachment_kind: (r.last_attachment_kind as ChatMessage["attachment_kind"]) ?? null,
+          attachment_name: r.last_attachment_name,
+          message_type: (r.last_message_type as ChatMessage["message_type"]) ?? "user",
+        }
+      : null;
 
-  // Fetch the latest message per conversation (one query, then group)
-  const { data: recentMsgs, error: msgErr } = await supabase
-    .from("chat_messages")
-    .select("id, conversation_id, sender_id, content, created_at")
-    .in("conversation_id", visibleIds)
-    .order("created_at", { ascending: false })
-    .limit(500);
-  if (msgErr) throw msgErr;
-
-  const lastByConv = new Map<string, ChatMessage>();
-  const messagesByConv = new Map<string, ChatMessage[]>();
-  for (const m of (recentMsgs ?? []) as ChatMessage[]) {
-    if (!lastByConv.has(m.conversation_id)) lastByConv.set(m.conversation_id, m);
-    const arr = messagesByConv.get(m.conversation_id) ?? [];
-    arr.push(m);
-    messagesByConv.set(m.conversation_id, arr);
-  }
-
-  return visibleConvs.map((c) => {
-    const members = membersByConv.get(c.id) ?? [];
-    const myLastRead = myLastReadMap.get(c.id) ?? c.created_at;
-    const allMsgs = messagesByConv.get(c.id) ?? [];
-    const unread = allMsgs.filter(
-      (m) => m.sender_id !== myId && new Date(m.created_at) > new Date(myLastRead)
-    ).length;
     return {
-      ...(c as ChatConversation),
+      ...conversation,
       members,
-      myLastReadAt: myLastRead,
-      lastMessage: lastByConv.get(c.id) ?? null,
-      unreadCount: unread,
-      displayName: conversationDisplayName(c as ChatConversation, members, myId),
+      myLastReadAt: r.my_last_read_at,
+      lastMessage,
+      unreadCount: r.unread_count,
+      displayName: conversationDisplayName(conversation, members, myId),
     };
   });
 }

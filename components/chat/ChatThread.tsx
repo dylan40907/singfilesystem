@@ -371,6 +371,32 @@ export default function ChatThread({
     return () => { cancelled = true; };
   }, [conversation.id, myId]);
 
+  /**
+   * Resync when the tab comes back. Realtime carries the thread while the tab
+   * is awake, but a socket that died while it was in the background says
+   * nothing, and the thread would then sit on stale messages until you clicked
+   * away and back. The phone reloads on focus for the same reason.
+   */
+  useEffect(() => {
+    const resync = () => {
+      if (document.visibilityState !== "visible") return;
+      fetchMessages(conversation.id)
+        .then((list) => {
+          setMessages(list);
+          markRead(conversation.id, myId).catch(() => {});
+        })
+        .catch(() => { /* a failed resync just leaves what's on screen */ });
+    };
+    document.addEventListener("visibilitychange", resync);
+    window.addEventListener("focus", resync);
+    window.addEventListener("online", resync);
+    return () => {
+      document.removeEventListener("visibilitychange", resync);
+      window.removeEventListener("focus", resync);
+      window.removeEventListener("online", resync);
+    };
+  }, [conversation.id, myId]);
+
   // Subscribe to new messages via Realtime
   useEffect(() => {
     const channel = supabase

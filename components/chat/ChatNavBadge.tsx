@@ -69,6 +69,28 @@ export default function ChatNavBadge({ size = 18 }: { size?: number }) {
     return () => { supabase.removeChannel(channel); };
   }, [myId, pathname]);
 
+  // Same reason as the chat list: a dead socket is silent, so re-ask whenever
+  // the tab comes back, and slowly in the background as a floor.
+  useEffect(() => {
+    if (!myId) return;
+    const onWake = () => {
+      if (document.visibilityState !== "visible") return;
+      if (pathname === "/chat" || pathname?.startsWith("/chat/")) return;
+      refetch();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    window.addEventListener("online", onWake);
+    const id = setInterval(onWake, 60000);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      window.removeEventListener("online", onWake);
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId, pathname]);
+
   if (count <= 0) return null;
 
   return (
