@@ -482,6 +482,26 @@ export async function assignToCourses(courseIds: string[], userIds: string[]): P
   for (const cid of courseIds) await assignUsers(cid, userIds);
 }
 
+/**
+ * How many of these courses each person already has.
+ *
+ * Bulk assignment spans several courses at once, so "already assigned" isn't a
+ * yes/no: someone can hold two of the three you picked. The picker needs the
+ * count to tell "nothing to do" apart from "partly done".
+ */
+export async function fetchAssignedCounts(courseIds: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (courseIds.length === 0) return counts;
+  const { data } = await supabase
+    .from("course_assignments")
+    .select("user_id, course_id")
+    .in("course_id", courseIds);
+  for (const row of (data ?? []) as { user_id: string }[]) {
+    counts.set(row.user_id, (counts.get(row.user_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** Remind everyone who hasn't completed the given course. Returns count reminded. */
 export async function remindIncomplete(courseId: string): Promise<number> {
   const { data } = await supabase

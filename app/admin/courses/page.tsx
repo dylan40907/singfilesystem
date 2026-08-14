@@ -8,7 +8,7 @@ import { useDialog } from "@/components/ui/useDialog";
 import {
   Course, CourseSegment, CourseStatus, CourseWithMeta, ScriptKind,
   archiveCourses, assignToCourses, createCourse, createSegment, deleteCourse, deleteSegment,
-  fetchCourses, fetchSegments, moveCourseToSegment, remindIncomplete, setCourseStatus,
+  fetchAssignedCounts, fetchCourses, fetchSegments, moveCourseToSegment, remindIncomplete, setCourseStatus,
   updateCourse, updateSegment,
 } from "@/lib/courses";
 import { ensureSegmentMirrors, mirrorInBackground, relockMirror, syncAllMirrors, unlockMirror } from "@/lib/courseMirror";
@@ -101,6 +101,22 @@ export default function AdminCoursesPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkAssignOpen, setBulkAssignOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  /**
+   * Who already has the selected courses. Loaded when the picker opens rather
+   * than kept in sync — it only matters while the picker is on screen, and it
+   * has to reflect the exact set of courses currently ticked.
+   */
+  const [assignedCount, setAssignedCount] = useState<Map<string, number>>(new Map());
+
+  async function openBulkAssign() {
+    setAssignedCount(new Map());
+    setBulkAssignOpen(true);
+    try {
+      setAssignedCount(await fetchAssignedCounts(Array.from(selected)));
+    } catch {
+      // Non-fatal: the picker still works, it just can't grey anyone out.
+    }
+  }
   const [courses, setCourses] = useState<CourseWithMeta[]>([]);
   const [segments, setSegments] = useState<CourseSegment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -556,7 +572,7 @@ export default function AdminCoursesPage() {
           <div className="row-between" style={{ marginBottom: 14, padding: "10px 14px", background: "#fdf2f8", border: "1px solid #fbcfe8", borderRadius: 12, flexWrap: "wrap", gap: 10 }}>
             <span style={{ fontWeight: 800, color: "#9d174d" }}>{selected.size} selected</span>
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <button className="btn" disabled={bulkBusy} onClick={() => setBulkAssignOpen(true)}>Assign…</button>
+              <button className="btn" disabled={bulkBusy} onClick={() => void openBulkAssign()}>Assign…</button>
               <button className="btn" disabled={bulkBusy} onClick={bulkRemind}>🔔 Remind not-completed</button>
               {/* Assigning and reminding are per-course and belong to the mirror.
                   Publish state and archiving come from Traditional, so they're
@@ -772,6 +788,20 @@ export default function AdminCoursesPage() {
       {bulkAssignOpen && (
         <AssignPeopleModal
           title={`Assign ${selected.size} course(s)`}
+          // Spell out which script these are: a Traditional course and its
+          // Simplified copy are separate courses with separate assignments, so
+          // assigning one does not cover the other.
+          subtitle={
+            `${isSimp ? "简 Simplified" : "繁 Traditional"} — assigning these does not assign the ` +
+            `${isSimp ? "Traditional" : "Simplified"} versions.`
+          }
+          alreadyAssigned={new Set(
+            Array.from(assignedCount.entries())
+              .filter(([, n]) => n >= selected.size)
+              .map(([id]) => id)
+          )}
+          assignedCount={assignedCount}
+          courseCount={selected.size}
           busy={bulkBusy}
           onClose={() => setBulkAssignOpen(false)}
           onAssign={bulkAssign}

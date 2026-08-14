@@ -14,13 +14,24 @@ function nameOf(u: { full_name: string | null; username: string | null; email: s
 /** Select people directly and/or via groups; returns the resolved set of user ids. */
 export default function AssignPeopleModal({
   title = "Assign people",
+  subtitle,
   alreadyAssigned,
+  assignedCount,
+  courseCount = 1,
   busy,
   onClose,
   onAssign,
 }: {
   title?: string;
+  subtitle?: string;
+  /** People who already have everything being assigned — nothing to do for them. */
   alreadyAssigned?: Set<string>;
+  /**
+   * How many of the selected courses each person already has. Only needed when
+   * assigning several at once, to show who is partway through.
+   */
+  assignedCount?: Map<string, number>;
+  courseCount?: number;
   busy?: boolean;
   onClose: () => void;
   onAssign: (userIds: string[]) => void;
@@ -67,7 +78,11 @@ export default function AssignPeopleModal({
     <div onMouseDown={(e) => { if (e.currentTarget === e.target) onClose(); }}
       style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 250, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div className="card" style={{ width: "100%", maxWidth: 480, maxHeight: "84vh", display: "flex", flexDirection: "column" }}>
-        <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 10 }}>{title}</div>
+        <div style={{ fontWeight: 900, fontSize: 17 }}>{title}</div>
+        {subtitle && (
+          <div className="subtle" style={{ fontSize: 12, marginTop: 2, marginBottom: 8 }}>{subtitle}</div>
+        )}
+        <div style={{ height: subtitle ? 2 : 10 }} />
 
         {loading ? <div className="subtle">Loading…</div> : (
           <div style={{ overflowY: "auto", flex: 1 }}>
@@ -86,10 +101,22 @@ export default function AssignPeopleModal({
             )}
             {users.map((u) => {
               const already = alreadyAssigned?.has(u.id);
+              // Partway through a multi-course assignment: still selectable,
+              // since picking them tops up the ones they're missing.
+              const has = assignedCount?.get(u.id) ?? 0;
+              const partial = !already && courseCount > 1 && has > 0;
               return (
                 <label key={u.id} className="row" style={{ gap: 10, padding: "8px 4px", alignItems: "center", opacity: already ? 0.5 : 1, cursor: already ? "default" : "pointer" }}>
                   <input type="checkbox" disabled={already} checked={sel.has(u.id) || !!already} onChange={(e) => toggleUser(u.id, e.target.checked)} />
-                  <span style={{ flex: 1 }}>{nameOf(u)} {already && <span className="subtle" style={{ fontSize: 12 }}>(assigned)</span>}</span>
+                  <span style={{ flex: 1 }}>
+                    {nameOf(u)}{" "}
+                    {already && <span className="subtle" style={{ fontSize: 12 }}>(assigned)</span>}
+                    {partial && (
+                      <span style={{ fontSize: 12, color: "#9a3412", fontWeight: 700 }}>
+                        (has {has} of {courseCount})
+                      </span>
+                    )}
+                  </span>
                   <span className="subtle" style={{ fontSize: 12 }}>{u.role}</span>
                 </label>
               );
