@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
@@ -696,6 +696,19 @@ export default function EmployeesPage() {
       return name.includes(s) || campus.includes(s) || jl.includes(s);
     });
   }, [q, rows]);
+  /**
+   * An employee is "deactivated" if their HR record OR their portal account is
+   * switched off — the same rule the Status pill shows, so the list can't
+   * disagree with the badge next to it.
+   */
+  const isDeactivated = useCallback(
+    (e: EmployeeListRow) => {
+      const meta = e.profile_id ? profileMeta.get(e.profile_id) : undefined;
+      return !e.is_active || (meta ? !meta.is_active : false);
+    },
+    [profileMeta]
+  );
+
   const displayed = useMemo(() => {
     const arr = (filtered ?? []).slice();
 
@@ -712,6 +725,14 @@ export default function EmployeesPage() {
     };
 
     arr.sort((a, b) => {
+      // Deactivated people always sit below everyone active, whichever column
+      // is sorted and whichever direction — they're a separate block, not
+      // rows to be scanned past. Sorting still applies normally within each
+      // block, so the tail stays ordered too.
+      const offA = isDeactivated(a);
+      const offB = isDeactivated(b);
+      if (offA !== offB) return offA ? 1 : -1;
+
       const va = getVal(a, sortState.key);
       const vb = getVal(b, sortState.key);
 
@@ -723,7 +744,7 @@ export default function EmployeesPage() {
     });
 
     return arr;
-  }, [filtered, sortState, profileMeta]);
+  }, [filtered, sortState, profileMeta, isDeactivated]);
 
   if (loading) {
     return <div style={{ padding: 20 }}>Loading…</div>;
@@ -814,10 +835,7 @@ export default function EmployeesPage() {
                 </td>
                 <td style={{ padding: 10 }}>
                   {(() => {
-                    const meta = e.profile_id ? profileMeta.get(e.profile_id) : undefined;
-                    // An employee is "deactivated" if their HR record OR their
-                    // portal account is switched off.
-                    const off = !e.is_active || (meta ? !meta.is_active : false);
+                    const off = isDeactivated(e);
                     return (
                       <span style={{
                         padding: "3px 10px", borderRadius: 999, fontWeight: 800, fontSize: 12, whiteSpace: "nowrap",
