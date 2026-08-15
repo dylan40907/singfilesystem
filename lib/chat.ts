@@ -191,14 +191,25 @@ export async function fetchMyConversations(myId: string): Promise<ChatConversati
 }
 
 /** Fetch the full message history for a conversation (newest at the bottom). */
-export async function fetchMessages(conversationId: string): Promise<ChatMessage[]> {
+/**
+ * The most recent `limit` messages, oldest-first for display.
+ *
+ * Ordered descending before the limit so this returns the newest, not the
+ * oldest. Without a limit at all this relied on PostgREST's default row cap,
+ * which would have silently truncated long conversations to their *oldest*
+ * 1000 messages — the same freeze the app hit at 200.
+ */
+export async function fetchMessages(conversationId: string, limit = 200): Promise<ChatMessage[]> {
   const { data, error } = await supabase
     .from("chat_messages")
     .select(MSG_COLS)
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    // Tiebreak so messages sent in the same instant keep a stable order.
+    .order("id", { ascending: false })
+    .limit(limit);
   if (error) throw error;
-  return (data ?? []) as ChatMessage[];
+  return ((data ?? []) as ChatMessage[]).slice().reverse();
 }
 
 /** Send a message (text and/or one attachment). */

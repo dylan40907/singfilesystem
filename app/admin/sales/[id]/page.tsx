@@ -503,7 +503,17 @@ export default function SalesLeadPage() {
         <div className="row-between" style={{ flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           <div style={{ fontWeight: 900, fontSize: 15 }}>Follow-up</div>
           {lead.next_action_date && (
-            <div style={{ fontWeight: 800, color: naState === "overdue" ? "#b91c1c" : naState === "today" ? "#b45309" : "#374151" }}>
+            // What's due is the thing you opened this lead to find out, so it
+            // reads in the brand pink. Overdue and due-today keep their own
+            // colours — those are warnings, and a warning that looks like
+            // everything else isn't a warning.
+            <div
+              style={{
+                fontWeight: 900,
+                fontSize: 15,
+                color: naState === "overdue" ? "#b91c1c" : naState === "today" ? "#b45309" : "#e6178d",
+              }}
+            >
               {lead.next_action_type ? ACTION_TYPE_LABEL[lead.next_action_type] : "Follow up"} · {fmtDate(lead.next_action_date)}
               {naState === "overdue" ? " · overdue" : naState === "today" ? " · today" : ""}
             </div>
@@ -517,7 +527,7 @@ export default function SalesLeadPage() {
         ) : (
           <>
             {lead.next_action_note && (
-              <div style={{ marginBottom: 6, color: "#374151" }}>{lead.next_action_note}</div>
+              <div style={{ marginBottom: 6, color: "#9d174d", fontWeight: 700 }}>{lead.next_action_note}</div>
             )}
             {lead.next_action_assigned_to && (
               <div className="subtle" style={{ fontSize: 13, marginBottom: 10 }}>

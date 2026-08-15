@@ -58,6 +58,11 @@ export default function NotificationsBell() {
     const { data } = await supabase
       .from("hr_notifications")
       .select("id, type, title, body, data, read_at, created_at")
+      // Chat messages still create rows — that's what fires the push — but they
+      // stay out of the log. Reading a message in Chat already clears it, so
+      // listing it here meant marking the same thing read twice, and it buried
+      // everything that actually needs attention.
+      .neq("type", "chat")
       .order("created_at", { ascending: false })
       .limit(50);
     setNotifs((data ?? []) as Notif[]);
@@ -112,7 +117,11 @@ export default function NotificationsBell() {
   }, [notifs]);
 
   async function markAllRead() {
-    await supabase.from("hr_notifications").update({ read_at: new Date().toISOString() }).is("read_at", null);
+    await supabase
+      .from("hr_notifications")
+      .update({ read_at: new Date().toISOString() })
+      .neq("type", "chat")
+      .is("read_at", null);
     void load();
   }
 
