@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import {
   ChatConversationView, ChatMessage, ChatReaction, ChatUserLite, PreviewKind, REACTION_MORE,
@@ -239,6 +239,7 @@ export default function ChatThread({
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -533,11 +534,12 @@ export default function ChatThread({
     }
   }
 
-  async function handleAttachmentChosen(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
+  /**
+   * Send a file with whatever is currently typed. Shared by the attach menu,
+   * pasting a screenshot, and dropping a file on the composer.
+   */
+  const sendFile = useCallback(async (file: File) => {
     setAttachOpen(false);
-    if (!file) return;
     setUploading(true);
     setError(null);
     try {
@@ -547,11 +549,34 @@ export default function ChatThread({
       setDraft("");
       setDraftMentions([]);
       onMessageSent();
-    } catch (e2: any) {
-      setError(e2?.message ?? "Failed to upload");
+    } catch (e2) {
+      setError((e2 as Error)?.message ?? "Failed to upload");
     } finally {
       setUploading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.id, myId, draft, draftMentions]);
+
+  async function handleAttachmentChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    await sendFile(file);
+  }
+
+  /** Paste a screenshot straight into the composer. */
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const item = Array.from(e.clipboardData?.items ?? []).find((i) => i.type.startsWith("image/"));
+    if (!item) return; // ordinary text paste — leave it alone
+    const file = item.getAsFile();
+    if (!file) return;
+    e.preventDefault();
+    // Clipboard images are usually called "image.png"; give it a name that
+    // reads sensibly in the thread and in downloads.
+    const named = new File([file], `pasted-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.png`, {
+      type: file.type,
+    });
+    void sendFile(named);
   }
 
   function applyMention(u: ChatUserLite) {
@@ -1134,14 +1159,25 @@ export default function ChatThread({
             onClick={(e) => syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyUp={(e) => syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyDown={handleKeyDown}
-            placeholder={editing ? "Edit your message — Enter to save, Esc to cancel" : "Type a message — @ to mention, Enter to send"}
+            onPaste={handlePaste}
+            onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              const file = e.dataTransfer.files?.[0];
+              if (!file) return;
+              e.preventDefault();
+              setDragOver(false);
+              void sendFile(file);
+            }}
+            placeholder={editing ? "Edit your message — Enter to save, Esc to cancel" : "Type a message — @ to mention, paste or drop an image, Enter to send"}
             rows={1}
             disabled={sending}
             style={{
               flex: 1,
               padding: "10px 14px",
               borderRadius: 12,
-              border: "1.5px solid #e5e7eb",
+              border: dragOver ? "1.5px dashed #e6178d" : "1.5px solid #e5e7eb",
+              background: dragOver ? "#fdf2f8" : undefined,
               fontSize: 14,
               fontFamily: "inherit",
               lineHeight: 1.45,
