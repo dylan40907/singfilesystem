@@ -39,10 +39,12 @@ type Field = {
 const LEAD_KEYS = new Set([
   "parent_first_name", "parent_last_name", "email", "phone", "city",
   "accepts_marketing", "notes", "heard_about_us", "campus",
+  "preferred_language", "referred_by", "source_other",
 ]);
 const CHILD_KEYS = new Set([
   "child_first_name", "child_last_name", "child_dob", "chinese_level",
   "previous_school", "schedule", "program",
+  "desired_start_date", "desired_start_note",
 ]);
 
 Deno.serve(async (req) => {
@@ -92,6 +94,7 @@ Deno.serve(async (req) => {
   // Server-side validation — the browser's `required` is a convenience, not a
   // guarantee, and this endpoint is public.
   for (const f of fields) {
+    if (f.type === "heading") continue;
     if (f.required && f.type !== "checkbox" && !str(f.key)) {
       return json(400, { error: `Please fill in "${f.label}".` });
     }
@@ -111,7 +114,7 @@ Deno.serve(async (req) => {
     // Anything without a column of its own still reaches the team, appended to
     // the notes with its question, so no answer is silently dropped.
     const extraLines = fields
-      .filter((f) => !LEAD_KEYS.has(f.key) && !CHILD_KEYS.has(f.key))
+      .filter((f) => f.type !== "heading" && !LEAD_KEYS.has(f.key) && !CHILD_KEYS.has(f.key))
       .map((f) => {
         const v = f.type === "checkbox" ? (answers[f.key] ? "Yes" : "No") : str(f.key);
         return v ? `${f.label}: ${v}` : "";
@@ -158,7 +161,10 @@ Deno.serve(async (req) => {
         email,
         phone: str("phone") || null,
         source_id: sourceId,
-        source_other: sourceId ? null : (heard || null),
+        source_other: sourceId ? null : (str("source_other") || heard || null),
+        referred_by: str("referred_by") || null,
+        city: str("city") || null,
+        preferred_language: str("preferred_language") || null,
         first_contact_type: form.first_contact_type,
         inquiry_date: new Date().toISOString().slice(0, 10),
         notes: notes || null,
@@ -189,7 +195,10 @@ Deno.serve(async (req) => {
           chinese_level: str("chinese_level") || null,
           previous_school: str("previous_school") || null,
           schedule: str("schedule") || null,
-          program: str("program") || null,
+          // The form they chose already tells us the programme; no need to ask.
+          program: str("program") || form.default_program || null,
+          desired_start_date: str("desired_start_date") || null,
+          desired_start_note: str("desired_start_note") || null,
           order_index: known.size,
         });
       }

@@ -19,7 +19,7 @@ const PINK = "#e6178d";
 type Field = {
   key: string;
   label: string;
-  type: "text" | "email" | "tel" | "date" | "select" | "textarea" | "checkbox";
+  type: "text" | "email" | "tel" | "date" | "select" | "textarea" | "checkbox" | "heading";
   required?: boolean;
   half?: boolean;
   options?: string[];
@@ -88,7 +88,7 @@ export default function InquiryFormPage() {
     if (!form || busy) return;
     // Name the first missing field rather than a generic "check the form".
     const missing = form.fields.find(
-      (f) => f.required && f.type !== "checkbox" && !String(answers[f.key] ?? "").trim()
+      (f) => f.type !== "heading" && f.required && f.type !== "checkbox" && !String(answers[f.key] ?? "").trim()
     );
     if (missing) { setError(`Please fill in "${missing.label}".`); return; }
 
@@ -127,7 +127,9 @@ export default function InquiryFormPage() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 14 }}>
         {form.fields.map((f) => (
           <div key={f.key} style={{ flex: f.half ? "1 1 calc(50% - 7px)" : "1 1 100%", minWidth: 200 }}>
-            {f.type === "checkbox" ? (
+            {f.type === "heading" ? (
+              <div style={{ fontSize: 15, fontWeight: 600, color: "#374151", marginTop: 6 }}>{f.label}</div>
+            ) : f.type === "checkbox" ? (
               <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 15, color: "#374151", cursor: "pointer" }}>
                 <input
                   type="checkbox"
@@ -141,7 +143,7 @@ export default function InquiryFormPage() {
               <>
                 <label style={labelStyle}>
                   {f.label}
-                  {f.required && <span style={{ color: PINK, marginLeft: 4 }}>*</span>}
+                  {f.required && <span style={{ color: "#9ca3af", marginLeft: 6, fontWeight: 400 }}>(REQUIRED)</span>}
                 </label>
                 {f.type === "select" ? (
                   <select
