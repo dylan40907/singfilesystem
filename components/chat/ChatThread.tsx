@@ -16,7 +16,11 @@ import {
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
 
-type PreviewTarget = { url: string; kind: PreviewKind; name: string; type: string | null };
+type PreviewTarget = {
+  url: string; kind: PreviewKind; name: string; type: string | null;
+  /** Signed URLs expire after an hour; the lightbox re-signs from this. */
+  path?: string | null;
+};
 
 /** How tall the composer may grow before it starts scrolling instead. */
 const COMPOSER_MAX_HEIGHT = 220;
@@ -41,14 +45,21 @@ function ChatAttachment({
   const hasText = !!message.content?.trim();
   const kind = previewKindFor(message.attachment_type, message.attachment_name, message.attachment_kind);
   const name = message.attachment_name ?? "Attachment";
-  const open = () => { if (url) onOpen({ url, kind, name, type: message.attachment_type ?? null }); };
+  const open = () => {
+    if (url) onOpen({ url, kind, name, type: message.attachment_type ?? null, path: message.attachment_path ?? null });
+  };
 
   if (kind === "image") {
     return (
       <button onClick={open} style={{ display: "block", border: "none", padding: 0, background: "none", cursor: url ? "pointer" : "default", marginBottom: hasText ? 6 : 0 }}>
         {url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={url} alt={name} style={{ maxWidth: 240, maxHeight: 240, borderRadius: 12, display: "block", background: "#e5e7eb" }} />
+          <img
+            src={url}
+            alt={name}
+            onError={() => { if (message.attachment_path) getAttachmentUrl(message.attachment_path).then((u) => u && setUrl(u)); }}
+            style={{ maxWidth: 240, maxHeight: 240, borderRadius: 12, display: "block", background: "#e5e7eb" }}
+          />
         ) : (
           <div style={{ width: 200, height: 160, borderRadius: 12, background: "#e5e7eb" }} />
         )}
@@ -112,7 +123,20 @@ function TextLightbox({ url }: { url: string }) {
 }
 
 function PreviewLightbox({ target, onClose }: { target: PreviewTarget; onClose: () => void }) {
-  const { url, kind, name } = target;
+  const { kind, name } = target;
+
+  /**
+   * Re-sign on open rather than trusting the URL minted when the message first
+   * rendered — after an hour that link is dead, and the viewer would otherwise
+   * show an empty black screen with nothing to retry.
+   */
+  const [url, setUrl] = useState(target.url);
+  useEffect(() => {
+    if (!target.path) return;
+    let cancelled = false;
+    getAttachmentUrl(target.path).then((u) => { if (!cancelled && u) setUrl(u); });
+    return () => { cancelled = true; };
+  }, [target.path]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
