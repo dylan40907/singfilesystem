@@ -18,6 +18,7 @@ import {
   leadPrograms,
   leadSortName,
   leadStartDate,
+  ACTION_TYPE_LABEL,
   leadStartNote,
   lostToOtherCampus,
   nextActionState,
@@ -70,13 +71,26 @@ function StatusPill({ status }: { status: SalesStatus }) {
 function NextActionCell({ lead }: { lead: SalesLeadFull }) {
   const state = nextActionState(lead);
   if (state === "none") return <span className="subtle">—</span>;
-  const color = state === "overdue" ? "#b91c1c" : state === "today" ? "#b45309" : "#374151";
-  const weight = state === "overdue" || state === "today" ? 800 : 600;
+  // Upcoming actions are the signature pink and bold so the next thing to do
+  // stands out at a glance. Overdue and due-today keep their own colours —
+  // those are warnings, and making everything pink would bury them.
+  const color = state === "overdue" ? "#b91c1c" : state === "today" ? "#b45309" : "#e6178d";
+  const type = lead.next_action_type ? ACTION_TYPE_LABEL[lead.next_action_type] : null;
+  const note = (lead.next_action_note ?? "").trim();
   return (
-    <span style={{ color, fontWeight: weight, whiteSpace: "nowrap" }}>
-      {fmtDate(lead.next_action_date)}
-      {state === "overdue" ? " ⚠" : state === "today" ? " •" : ""}
-    </span>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ color, fontWeight: 800 }}>
+        {/* What to do and when, together — the date alone didn't say which
+            action was due. */}
+        {type ? `${type} — ` : ""}{fmtDate(lead.next_action_date)}
+        {state === "overdue" ? " ⚠" : state === "today" ? " •" : ""}
+      </div>
+      {note && (
+        <div style={{ color, fontWeight: 700, fontSize: 12, marginTop: 2, opacity: 0.85 }}>
+          {note}
+        </div>
+      )}
+    </div>
   );
 }
 
