@@ -16,6 +16,7 @@ export default function LayoutShell({ children }: { children: ReactNode }) {
   if (
     pathname === "/clock" || pathname.startsWith("/clock/") ||
     pathname === "/book" || pathname.startsWith("/book/") ||
+    pathname === "/inquire" || pathname.startsWith("/inquire/") ||
     pathname === "/privacy" || pathname === "/hr-privacy" || pathname === "/terms" || pathname === "/delete-account"
   ) {
     return <>{children}</>;
