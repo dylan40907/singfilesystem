@@ -240,6 +240,8 @@ export default function ChatThread({
   const [uploading, setUploading] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  /** Nested elements fire their own enter/leave, so count depth rather than toggling. */
+  const dragDepth = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
@@ -620,8 +622,62 @@ export default function ChatThread({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "white" }}>
+    <div
+      style={{ display: "flex", flexDirection: "column", height: "100%", background: "white", position: "relative" }}
+      /* The whole conversation is the drop zone, not just the little text box —
+         that's what makes dragging a screenshot in feel like iMessage. */
+      onDragEnter={(e) => {
+        // preventDefault is what makes this a valid drop target. It has to be
+        // unconditional: while a drag is in progress the browser often won't
+        // reveal what's being dragged, so testing dataTransfer.types here meant
+        // the check failed and the drop event never fired at all.
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragOver(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        // Moving between child elements fires leave/enter pairs; only clear
+        // once we've actually left the panel.
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragDepth.current = 0;
+        setDragOver(false);
+        const file =
+          e.dataTransfer.files?.[0] ??
+          Array.from(e.dataTransfer.items ?? [])
+            .find((i) => i.kind === "file")
+            ?.getAsFile() ??
+          null;
+        if (file) void sendFile(file);
+      }}
+    >
       {dialogModal}
+
+      {dragOver && (
+        <div
+          style={{
+            position: "absolute", inset: 0, zIndex: 60,
+            background: "rgba(230,23,141,0.06)", border: "3px dashed #e6178d", borderRadius: 12,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <div style={{
+            background: "white", padding: "14px 24px", borderRadius: 999,
+            fontWeight: 800, color: "#9d174d", boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+          }}>
+            Drop to send
+          </div>
+        </div>
+      )}
       {preview && <PreviewLightbox target={preview} onClose={() => setPreview(null)} />}
       {participantsOpen && (
         <ChatParticipantsModal
@@ -1160,15 +1216,6 @@ export default function ChatThread({
             onKeyUp={(e) => syncMention(draft, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              const file = e.dataTransfer.files?.[0];
-              if (!file) return;
-              e.preventDefault();
-              setDragOver(false);
-              void sendFile(file);
-            }}
             placeholder={editing ? "Edit your message — Enter to save, Esc to cancel" : "Type a message — @ to mention, paste or drop an image, Enter to send"}
             rows={1}
             disabled={sending}
