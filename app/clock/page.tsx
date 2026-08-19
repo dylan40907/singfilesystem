@@ -215,7 +215,7 @@ export default function ClockPage() {
     // Look up employee by PIN
     const { data: emp, error: empErr } = await supabase
       .from("hr_employees")
-      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, hours_pin")
+      .select("id, legal_first_name, legal_middle_name, legal_last_name, nicknames, hours_pin, campus_id")
       .eq("hours_pin", p)
       .eq("is_active", true)
       .maybeSingle();
@@ -250,31 +250,44 @@ export default function ClockPage() {
     // Get the most recent published schedule covering today (anchored to LA, not
     // the runtime's local timezone — see lib/laTime).
     const today = todayLA();
+    // Only weeks that could actually contain today. The old query took the five
+    // most recent published schedules across *every* campus and used the first
+    // one covering today — so whichever campus happened to sort first won, for
+    // everybody. That is invisible while only one campus publishes, and silently
+    // sends every kiosk to the wrong campus the moment a second one does. The
+    // old limit of 5 could also skip past the covering week entirely.
+    const weekFloor = new Date(today);
+    weekFloor.setDate(weekFloor.getDate() - 6);
     const { data: schedules } = await supabase
       .from("schedules")
-      .select("id, week_start")
+      .select("id, week_start, campus_id")
       .eq("status", "published")
+      .eq("kind", "week")
       .lte("week_start", today)
-      .order("week_start", { ascending: false })
-      .limit(5);
+      .gte("week_start", weekFloor.toISOString().slice(0, 10))
+      .order("week_start", { ascending: false });
 
-    // Find the schedule whose week contains today
-    let scheduleId: string | null = null;
-    if (schedules) {
-      for (const s of schedules) {
-        const mon = new Date(s.week_start);
-        const fri = new Date(mon);
-        fri.setDate(mon.getDate() + 4);
-        const todayDate = new Date(today);
-        if (todayDate >= mon && todayDate <= fri) {
-          scheduleId = s.id;
-          break;
-        }
-      }
-    }
+    const coversToday = (weekStart: string) => {
+      const mon = new Date(weekStart);
+      const fri = new Date(mon);
+      fri.setDate(mon.getDate() + 4);
+      const todayDate = new Date(today);
+      return todayDate >= mon && todayDate <= fri;
+    };
+
+    const covering = (schedules ?? []).filter((s) => coversToday(s.week_start));
+    // Prefer this employee's own campus, but fall back to any covering schedule
+    // rather than refusing. Today a single schedule (labelled North Torrance)
+    // carries staff from both campuses, so requiring a campus match would lock
+    // out everyone at the other one. The preference only starts to bite once a
+    // campus publishes its own — which is exactly when it should.
+    const scheduleId =
+      covering.find((s) => emp.campus_id && s.campus_id === emp.campus_id)?.id ??
+      covering[0]?.id ??
+      null;
 
     if (!scheduleId) {
-      setPinError("No published schedule found for this week.");
+      setPinError("No published schedule for this week yet. Ask your supervisor to publish it.");
       setPin("");
       return;
     }
@@ -297,6 +310,19 @@ export default function ClockPage() {
 
     const allSessions = buildSessions((blocks as BlockRow[]) ?? []);
     setSessions(allSessions);
+
+    // Nothing scheduled for them today. Previously this fell through to an empty
+    // screen, which reads as "the clock is broken" — and is why supervisors have
+    // been entering these by hand instead of reporting a fixable gap.
+    if (allSessions.length === 0) {
+      setPinError(
+        "You have no shifts on this week's published schedule for today. " +
+        "Ask your supervisor to add you, then try again."
+      );
+      setPin("");
+      setEmployee(null);
+      return;
+    }
 
     // Auto-clock-out any open entries from previous days
     const { data: openPrevEntries } = await supabase

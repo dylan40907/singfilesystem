@@ -56,6 +56,14 @@ export default function InquiryFormPage() {
   const [error, setError] = useState("");
   const [done, setDone] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * Embedding needs a Squarespace Business plan, so this page has to work as a
+   * standalone destination too — a plain link from any plan. Bare and
+   * transparent inside an iframe so it inherits the host page; branded and
+   * centred when it *is* the page.
+   */
+  const [embedded, setEmbedded] = useState(true);
+  useEffect(() => { setEmbedded(window.self !== window.top); }, []);
 
   useEffect(() => {
     callFn({ mode: "form", slug })
@@ -105,14 +113,14 @@ export default function InquiryFormPage() {
   }
 
   if (error && !form) {
-    return <Shell innerRef={rootRef}><p style={{ color: "#b91c1c" }}>{error}</p></Shell>;
+    return <Shell innerRef={rootRef} embedded={embedded}><p style={{ color: "#b91c1c" }}>{error}</p></Shell>;
   }
   if (!form) {
-    return <Shell innerRef={rootRef}><p style={{ color: "#9ca3af" }}>Loading…</p></Shell>;
+    return <Shell innerRef={rootRef} embedded={embedded}><p style={{ color: "#9ca3af" }}>Loading…</p></Shell>;
   }
   if (done) {
     return (
-      <Shell innerRef={rootRef}>
+      <Shell innerRef={rootRef} embedded={embedded}>
         <h2 style={h2}>Thank you</h2>
         <p style={{ color: "#4b5563", fontSize: 16, lineHeight: 1.6 }}>{done}</p>
       </Shell>
@@ -120,7 +128,7 @@ export default function InquiryFormPage() {
   }
 
   return (
-    <Shell innerRef={rootRef}>
+    <Shell innerRef={rootRef} embedded={embedded}>
       {form.headline && <h2 style={h2}>{form.headline}</h2>}
       {form.intro && <p style={{ color: "#6b7280", margin: "0 0 22px", fontSize: 15 }}>{form.intro}</p>}
 
@@ -197,18 +205,38 @@ export default function InquiryFormPage() {
   );
 }
 
-function Shell({ children, innerRef }: { children: React.ReactNode; innerRef: React.RefObject<HTMLDivElement | null> }) {
-  return (
+function Shell({
+  children, innerRef, embedded,
+}: {
+  children: React.ReactNode;
+  innerRef: React.RefObject<HTMLDivElement | null>;
+  embedded: boolean;
+}) {
+  const inner = (
     <div
       ref={innerRef}
       style={{
         fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
         background: "transparent",
-        padding: "8px 4px 28px",
+        padding: embedded ? "8px 4px 28px" : "8px 4px 12px",
         maxWidth: 640,
+        margin: embedded ? undefined : "0 auto",
       }}
     >
       {children}
+    </div>
+  );
+
+  if (embedded) return inner;
+
+  // Standalone: give it enough of a frame to stand on its own as a real page.
+  return (
+    <div style={{ minHeight: "100vh", background: "#fff", padding: "28px 18px 56px" }}>
+      <div style={{ maxWidth: 640, margin: "0 auto 18px", textAlign: "center" }}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/logo.png" alt="Sing in Chinese" style={{ height: 62, objectFit: "contain" }} />
+      </div>
+      {inner}
     </div>
   );
 }
