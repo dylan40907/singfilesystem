@@ -11,7 +11,7 @@ import {
 import { fetchMyProfile } from "@/lib/teachers";
 import {
   DraftMention, EVERYONE_ID, EVERYONE_LABEL, activeMentionQuery, draftToStored, insertMention,
-  mentionLabel, mentionsToPlainText, parseMentions, storedToDraft,
+  mentionLabel, mentionsToPlainText, parseMentions, parseRichBody, storedToDraft,
 } from "@/lib/mentions";
 import ChatParticipantsModal from "@/components/chat/ChatParticipantsModal";
 import { useDialog } from "@/components/ui/useDialog";
@@ -249,11 +249,16 @@ export default function ChatThread({
   myId,
   onMessageSent,
   onMembersChanged,
+  focusMessageId,
+  onFocusHandled,
 }: {
   conversation: ChatConversationView;
   myId: string;
   onMessageSent: () => void;
   onMembersChanged: () => void;
+  /** A search hit to scroll to once the thread has loaded. */
+  focusMessageId?: string | null;
+  onFocusHandled?: () => void;
 }) {
   const { confirm, modal: dialogModal } = useDialog();
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
@@ -346,6 +351,20 @@ export default function ChatThread({
     el.style.background = "#fdf2f8";
     setTimeout(() => { el.style.background = ""; }, 1200);
   };
+
+  /**
+   * Scroll to a message picked from search. Waits for the thread to finish
+   * loading — the element does not exist before then — and clears the request
+   * afterwards so it can't re-fire on the next render.
+   */
+  useEffect(() => {
+    if (!focusMessageId || loading) return;
+    const found = messages.some((m) => m.id === focusMessageId);
+    if (!found) { onFocusHandled?.(); return; }
+    const t = setTimeout(() => { jumpToMessage(focusMessageId); onFocusHandled?.(); }, 60);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusMessageId, loading, messages.length]);
 
   /** Members matching the in-progress @query, for the composer dropdown. */
   const mentionMatches = useMemo(() => {
@@ -917,9 +936,24 @@ export default function ChatThread({
                         })()}
                         {m.attachment_path && <ChatAttachment message={m} mine={isMine} onOpen={setPreview} />}
                         {m.content?.trim()
-                          ? parseMentions(m.content).map((seg, si) =>
+                          ? parseRichBody(m.content).map((seg, si) =>
                               seg.type === "text" ? (
                                 <span key={si}>{seg.text}</span>
+                              ) : seg.type === "link" ? (
+                                <a
+                                  key={si}
+                                  href={seg.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    textDecoration: "underline",
+                                    color: isMine ? "#ffffff" : "#1d4ed8",
+                                    wordBreak: "break-all",
+                                  }}
+                                >
+                                  {seg.text}
+                                </a>
                               ) : (
                                 <span
                                   key={si}

@@ -640,3 +640,77 @@ export async function fetchPickableUsers(myId: string): Promise<ChatUserLite[]> 
       id: u.id, full_name: u.full_name, username: u.username, email: u.email,
     }));
 }
+
+
+/**
+ * Mark a conversation unread again.
+ *
+ * Unread is derived from last_read_at, so this rewinds it to just before the
+ * most recent message somebody else sent — leaving exactly that message unread.
+ * Rewinding to epoch instead would resurrect every message in the thread as
+ * unread, which is not what "mark unread" means anywhere else.
+ *
+ * Returns false when there is nothing to mark (an empty chat, or one where the
+ * only messages are your own).
+ */
+export async function markConversationUnread(conversationId: string, myId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from("chat_messages")
+    .select("id, created_at")
+    .eq("conversation_id", conversationId)
+    .neq("sender_id", myId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const last = data as { created_at: string } | null;
+  if (!last) return false;
+
+  // A millisecond earlier, so the comparison counts that message as unread.
+  const justBefore = new Date(new Date(last.created_at).getTime() - 1).toISOString();
+  const { error } = await supabase
+    .from("chat_members")
+    .update({ last_read_at: justBefore })
+    .eq("conversation_id", conversationId)
+    .eq("user_id", myId);
+  if (error) throw error;
+  return true;
+}
+
+
+// ─── Search ──────────────────────────────────────────────────────────────────
+
+export type MessageHit = {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  content: string;
+  created_at: string;
+};
+
+/**
+ * Messages matching a query, newest first.
+ *
+ * RLS already limits chat_messages to conversations you belong to, so this
+ * needs no explicit scoping — a search can never surface a thread you are not
+ * in. Deleted (unsent) messages are excluded so search can not resurrect
+ * something somebody deliberately took back.
+ */
+export async function searchMessages(query: string, limit = 40): Promise<MessageHit[]> {
+  const raw = query.trim();
+  if (raw.length < 2) return [];
+  // % and _ are ilike wildcards; a literal one typed by a user must not turn
+  // into "match everything".
+  const safe = raw.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+
+  const { data, error } = await supabase
+    .from("chat_messages")
+    .select("id, conversation_id, sender_id, content, created_at")
+    .ilike("content", `%${safe}%`)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return (data ?? []) as MessageHit[];
+}

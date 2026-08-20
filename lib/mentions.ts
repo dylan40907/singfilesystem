@@ -16,6 +16,13 @@ export type MentionSegment =
   | { type: "mention"; userId: string }
   | { type: "everyone" };
 
+/**
+ * What a message bubble renders: mentions plus clickable links. Kept separate
+ * from MentionSegment so existing callers that narrow on "not text" and read
+ * .userId keep compiling — only the bubble renderers deal with links.
+ */
+export type RichSegment = MentionSegment | { type: "link"; text: string; url: string };
+
 /** A mention the user picked while composing: the visible label + who it is. */
 export type DraftMention = { text: string; userId: string };
 
@@ -147,4 +154,55 @@ export function storedToDraft(
     })
     .join("");
   return { draft, mentions };
+}
+
+// ─── Links ───────────────────────────────────────────────────────────────────
+
+/**
+ * URLs typed into a message. Deliberately conservative: it stops at whitespace
+ * and angle brackets, and drops trailing punctuation so "see example.com/a."
+ * doesn't capture the full stop as part of the address. Bare "www." is matched
+ * too, since that is how people usually type one.
+ */
+const URL_RE = /((?:https?:\/\/|www\.)[^\s<>]+)/gi;
+
+/** Trailing characters that are almost always sentence punctuation, not URL. */
+function trimUrlTail(raw: string): string {
+  let url = raw;
+  while (url.length > 1 && /[.,!?;:'"]$/.test(url)) url = url.slice(0, -1);
+  // Balance a closing bracket only when it was opened inside the URL.
+  while (url.endsWith(")") && (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)) {
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+/**
+ * Mentions *and* links, in order — what a message bubble should render.
+ *
+ * Built on top of parseMentions so a URL can never swallow a mention token and
+ * the two can't disagree about where a segment starts.
+ */
+export function parseRichBody(content: string): RichSegment[] {
+  const out: RichSegment[] = [];
+  for (const seg of parseMentions(content)) {
+    if (seg.type !== "text") { out.push(seg); continue; }
+    let last = 0;
+    URL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = URL_RE.exec(seg.text)) !== null) {
+      const shown = trimUrlTail(m[1]);
+      if (!shown) continue;
+      if (m.index > last) out.push({ type: "text", text: seg.text.slice(last, m.index) });
+      out.push({
+        type: "link",
+        text: shown,
+        // Without a scheme the OS and the browser both treat it as relative.
+        url: /^https?:\/\//i.test(shown) ? shown : `https://${shown}`,
+      });
+      last = m.index + shown.length;
+    }
+    if (last < seg.text.length) out.push({ type: "text", text: seg.text.slice(last) });
+  }
+  return out;
 }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { ChatConversationView, fetchMyConversations, hideConversation } from "@/lib/chat";
+import { ChatConversationView, fetchMyConversations, hideConversation, markConversationUnread } from "@/lib/chat";
 import ChatSidebar from "@/components/chat/ChatSidebar";
 import ChatThread from "@/components/chat/ChatThread";
 import NewChatModal from "@/components/chat/NewChatModal";
@@ -18,6 +18,8 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newChatOpen, setNewChatOpen] = useState(false);
+  /** A search hit to scroll to once its conversation is open. */
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
 
   // Auth guard + capture user id
   useEffect(() => {
@@ -139,6 +141,22 @@ export default function ChatPage() {
         selectedId={selectedId}
         onSelect={(id) => setSelectedId(id)}
         onNewChat={() => setNewChatOpen(true)}
+        onSelectMessage={(conversationId, messageId) => {
+          setSelectedId(conversationId);
+          setFocusMessageId(messageId);
+        }}
+        onMarkUnread={async (id) => {
+          if (!myId) return;
+          try {
+            const ok = await markConversationUnread(id, myId);
+            if (!ok) { setError("There are no messages from anyone else in this chat yet."); return; }
+            // Leaving it selected would immediately mark it read again.
+            setSelectedId((cur) => (cur === id ? null : cur));
+            reload();
+          } catch (e) {
+            setError((e as Error)?.message ?? "Could not mark unread");
+          }
+        }}
         onHide={async (id) => {
           if (!myId) return;
           try {
@@ -163,6 +181,8 @@ export default function ChatPage() {
             key={selectedConversation.id}
             conversation={selectedConversation}
             myId={myId}
+            focusMessageId={focusMessageId}
+            onFocusHandled={() => setFocusMessageId(null)}
             onMessageSent={() => reload()}
             onMembersChanged={() => reload()}
           />
