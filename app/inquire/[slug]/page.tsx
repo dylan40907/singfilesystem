@@ -5,6 +5,11 @@
  * the same pattern as the tour and consultation booking pages. It replaces the
  * Squarespace form block, which can't post anywhere we can read.
  *
+ * One page, one form row per programme. The programme comes from the link the
+ * parent followed (`default_program` on the row), so the form never has to ask
+ * — and each page can carry its own extra questions, which is how Homework
+ * Club gets a days-per-week question that the others don't show.
+ *
  * (It was originally built to be iframed into the Classes page. Squarespace
  * gates iframe and script embeds behind its Business plan, so linking out is
  * the route that works on any plan — and it keeps the form on a page we own.)

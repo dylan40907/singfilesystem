@@ -63,7 +63,10 @@ export type SalesSource = {
 };
 
 /** The programs a family can enquire about. */
-export const PROGRAMS = ["Preschool", "HWC", "Language Classes", "Camps"] as const;
+// Renamed to the words the school actually uses on its site and links. Safe to
+// rename rather than add: every child on record is "Preschool", so nothing was
+// stored under the old labels to orphan.
+export const PROGRAMS = ["Preschool", "Chinese Classes", "Homework Club", "Camps"] as const;
 
 export type SalesLeadChild = {
   id: string;
