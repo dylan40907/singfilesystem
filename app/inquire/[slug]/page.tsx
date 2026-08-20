@@ -1,15 +1,19 @@
 "use client";
 
 /**
- * Public enquiry form, embedded in singinchinese.com through a Squarespace
- * Code Block — the replacement for their form blocks, which can't post to us.
+ * Public enquiry form — a standalone page that singinchinese.com links out to,
+ * the same pattern as the tour and consultation booking pages. It replaces the
+ * Squarespace form block, which can't post anywhere we can read.
+ *
+ * (It was originally built to be iframed into the Classes page. Squarespace
+ * gates iframe and script embeds behind its Business plan, so linking out is
+ * the route that works on any plan — and it keeps the form on a page we own.)
  *
  * Renders whatever `fields` the form row describes, so new questions are a row
- * edit rather than a deploy. Deliberately plain and self-contained: it sits
- * inside someone else's page, so it inherits nothing and imposes nothing.
+ * edit rather than a deploy.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
 const FN = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/inquiries-public`;
@@ -55,38 +59,12 @@ export default function InquiryFormPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<string | null>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
-  /**
-   * Embedding needs a Squarespace Business plan, so this page has to work as a
-   * standalone destination too — a plain link from any plan. Bare and
-   * transparent inside an iframe so it inherits the host page; branded and
-   * centred when it *is* the page.
-   */
-  const [embedded, setEmbedded] = useState(true);
-  useEffect(() => { setEmbedded(window.self !== window.top); }, []);
 
   useEffect(() => {
     callFn({ mode: "form", slug })
       .then((d) => setForm(d.form as FormDef))
       .catch((e) => setError((e as Error).message));
   }, [slug]);
-
-  /**
-   * An iframe can't size itself, so tell the parent page how tall we are and
-   * let its snippet resize us. Without this the form is stuck in a short box
-   * with its own scrollbar.
-   */
-  const postHeight = useCallback(() => {
-    const h = rootRef.current?.scrollHeight ?? 0;
-    if (h) window.parent?.postMessage({ type: "sic-inquiry-height", height: h }, "*");
-  }, []);
-
-  useEffect(() => {
-    postHeight();
-    const ro = new ResizeObserver(postHeight);
-    if (rootRef.current) ro.observe(rootRef.current);
-    return () => ro.disconnect();
-  }, [postHeight, form, done, error]);
 
   function set(key: string, value: string | boolean) {
     setAnswers((a) => ({ ...a, [key]: value }));
@@ -113,14 +91,14 @@ export default function InquiryFormPage() {
   }
 
   if (error && !form) {
-    return <Shell innerRef={rootRef} embedded={embedded}><p style={{ color: "#b91c1c" }}>{error}</p></Shell>;
+    return <Shell><p style={{ color: "#b91c1c" }}>{error}</p></Shell>;
   }
   if (!form) {
-    return <Shell innerRef={rootRef} embedded={embedded}><p style={{ color: "#9ca3af" }}>Loading…</p></Shell>;
+    return <Shell><p style={{ color: "#9ca3af" }}>Loading…</p></Shell>;
   }
   if (done) {
     return (
-      <Shell innerRef={rootRef} embedded={embedded}>
+      <Shell>
         <h2 style={h2}>Thank you</h2>
         <p style={{ color: "#4b5563", fontSize: 16, lineHeight: 1.6 }}>{done}</p>
       </Shell>
@@ -128,7 +106,7 @@ export default function InquiryFormPage() {
   }
 
   return (
-    <Shell innerRef={rootRef} embedded={embedded}>
+    <Shell>
       {form.headline && <h2 style={h2}>{form.headline}</h2>}
       {form.intro && <p style={{ color: "#6b7280", margin: "0 0 22px", fontSize: 15 }}>{form.intro}</p>}
 
@@ -205,38 +183,23 @@ export default function InquiryFormPage() {
   );
 }
 
-function Shell({
-  children, innerRef, embedded,
-}: {
-  children: React.ReactNode;
-  innerRef: React.RefObject<HTMLDivElement | null>;
-  embedded: boolean;
-}) {
-  const inner = (
-    <div
-      ref={innerRef}
-      style={{
-        fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
-        background: "transparent",
-        padding: embedded ? "8px 4px 28px" : "8px 4px 12px",
-        maxWidth: 640,
-        margin: embedded ? undefined : "0 auto",
-      }}
-    >
-      {children}
-    </div>
-  );
-
-  if (embedded) return inner;
-
-  // Standalone: give it enough of a frame to stand on its own as a real page.
+function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: "100vh", background: "#fff", padding: "28px 18px 56px" }}>
       <div style={{ maxWidth: 640, margin: "0 auto 18px", textAlign: "center" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo.png" alt="Sing in Chinese" style={{ height: 62, objectFit: "contain" }} />
       </div>
-      {inner}
+      <div
+        style={{
+          fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+          padding: "8px 4px 12px",
+          maxWidth: 640,
+          margin: "0 auto",
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
