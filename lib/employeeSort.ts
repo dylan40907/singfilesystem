@@ -7,8 +7,12 @@
  * is legally Yongming, so she landed after Shelly. These helpers sort by what
  * is on screen instead.
  *
- * Last name first, then the displayed first name, which keeps the familiar
- * grouping by family name that the lists already had.
+ * Sorted by the *displayed* first name, then the last name.
+ *
+ * It used to sort by surname, which is a perfectly good order — but every
+ * picker labels people "First Last", so a surname sort reads as no sort at all
+ * to anyone scanning the list. Ordering by what is actually on screen is what
+ * makes it look alphabetical.
  */
 
 export type EmployeeNameParts = {
@@ -26,11 +30,18 @@ export function preferredFirstName(e: EmployeeNameParts): string {
 
 const collator = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
 
-/** Sort comparator for any employee picker. */
+/**
+ * Sort comparator for any employee picker.
+ *
+ * Note for callers that show the legal first name rather than the nickname
+ * (employee meetings): the order still follows the nickname, so a "Mindy" filed
+ * under M reads slightly oddly there. Matching each caller's own label exactly
+ * would mean passing a name function in; not worth the API for one screen.
+ */
 export function compareEmployeesForPicker(a: EmployeeNameParts, b: EmployeeNameParts): number {
-  const last = collator.compare((a.legal_last_name ?? "").trim(), (b.legal_last_name ?? "").trim());
-  if (last !== 0) return last;
-  return collator.compare(preferredFirstName(a), preferredFirstName(b));
+  const first = collator.compare(preferredFirstName(a), preferredFirstName(b));
+  if (first !== 0) return first;
+  return collator.compare((a.legal_last_name ?? "").trim(), (b.legal_last_name ?? "").trim());
 }
 
 /**

@@ -440,6 +440,15 @@ export default function LeavePage() {
   const [cfgPtoPlan, setCfgPtoPlan] = useState<number>(0);
   const [cfgPtoWeeks, setCfgPtoWeeks] = useState<number>(48);
   const [cfgSickFrontloaded, setCfgSickFrontloaded] = useState(false);
+  /**
+   * How much sick leave this person may accrue in a year.
+   *
+   * This existed in the database but had no field and was hardcoded to 40 on
+   * every save, so a policy cap could neither be entered nor survive one — which
+   * is why staff on a 26h 7m cap kept accruing past it.
+   */
+  const [cfgSickCapH, setCfgSickCapH] = useState(40);
+  const [cfgSickCapM, setCfgSickCapM] = useState(0);
   const [cfgSickInitialH, setCfgSickInitialH] = useState(0);
   const [cfgSickInitialM, setCfgSickInitialM] = useState(0);
   const [cfgPtoInitialH, setCfgPtoInitialH] = useState(0);
@@ -597,6 +606,7 @@ export default function LeavePage() {
         setCfgPtoPlan(b.pto_plan_hours);
         setCfgPtoWeeks(b.pto_weeks);
         setCfgSickFrontloaded(b.sick_frontloaded);
+        const [scph, scpm] = decToHM(b.sick_annual_cap ?? 40); setCfgSickCapH(scph); setCfgSickCapM(scpm);
         const [sih, sim] = decToHM(b.sick_initial_balance ?? 0); setCfgSickInitialH(sih); setCfgSickInitialM(sim);
         const [pih, pim] = decToHM(b.pto_initial_balance ?? 0); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
         const [sch, scm] = decToHM(b.sick_carryover ?? 0); setCfgSickCarryoverH(sch); setCfgSickCarryoverM(scm);
@@ -751,7 +761,7 @@ export default function LeavePage() {
     const insertRow = {
       employee_id: selectedEmployeeId, year,
       pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
-      sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
+      sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: hmToDec(cfgSickCapH, cfgSickCapM),
       pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
       sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
       sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
@@ -773,7 +783,7 @@ export default function LeavePage() {
       const patch = {
         employee_id: selectedEmployeeId, year,
         pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
-        sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: 40,
+        sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: hmToDec(cfgSickCapH, cfgSickCapM),
         pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
         sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
         sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
@@ -1547,6 +1557,13 @@ export default function LeavePage() {
                 <div>
                   <FieldLabel>Sick carryover</FieldLabel>
                   <HMInput h={cfgSickCarryoverH} m={cfgSickCarryoverM} onChangeH={setCfgSickCarryoverH} onChangeM={setCfgSickCarryoverM} />
+                </div>
+                <div>
+                  <FieldLabel>Annual accrual cap</FieldLabel>
+                  <HMInput h={cfgSickCapH} m={cfgSickCapM} onChangeH={setCfgSickCapH} onChangeM={setCfgSickCapM} />
+                  <div className="subtle" style={{ fontSize: 11, marginTop: 4 }}>
+                    Accrual stops here for the year. Carryover and the initial balance sit on top of it.
+                  </div>
                 </div>
                 <div>
                   <FieldLabel>Initial sick balance</FieldLabel>
