@@ -253,6 +253,13 @@ export default function AlbumsPage() {
                       alt={it.name}
                       loading="lazy"
                       decoding="async"
+                      /*
+                       * Browsers fetch on a shared, limited connection pool, so
+                       * a grid still filling in would keep the full-size photo
+                       * waiting behind it. Marking tiles low and the lightbox
+                       * high reorders that queue instead of just shortening it.
+                       */
+                      fetchPriority="low"
                       style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     />
                   ) : urls[it.path] && it.kind === "video" ? (
@@ -352,8 +359,13 @@ export default function AlbumsPage() {
               style={{ maxWidth: "92vw", maxHeight: "86vh", borderRadius: 8, background: "#000" }} />
           ) : (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={urls[lightbox.path]} alt={lightbox.name}
-              style={{ maxWidth: "92vw", maxHeight: "86vh", borderRadius: 8 }} />
+            <img
+              src={urls[lightbox.path]}
+              alt={lightbox.name}
+              fetchPriority="high"
+              decoding="sync"
+              style={{ maxWidth: "92vw", maxHeight: "86vh", borderRadius: 8 }}
+            />
           )}
         </div>
       )}
