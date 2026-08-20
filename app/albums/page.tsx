@@ -248,10 +248,25 @@ export default function AlbumsPage() {
                 >
                   {urls[it.path] && it.kind === "image" ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={urls[it.path]} alt={it.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    <img
+                      src={urls[it.path]}
+                      alt={it.name}
+                      loading="lazy"
+                      decoding="async"
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
                   ) : urls[it.path] && it.kind === "video" ? (
-                    <video src={urls[it.path]} muted playsInline preload="metadata"
-                      style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000" }} />
+                    <video
+                      src={urls[it.path]}
+                      muted
+                      playsInline
+                      // "none", not "metadata": fetching metadata for every
+                      // tile filled the browser's request queue, so opening one
+                      // photo waited on the entire album. The ▶ badge already
+                      // marks these as videos.
+                      preload="none"
+                      style={{ width: "100%", height: "100%", objectFit: "cover", background: "#000" }}
+                    />
                   ) : (
                     <span style={{ fontSize: 26 }}>{it.kind === "video" ? "🎬" : "🖼"}</span>
                   )}
@@ -299,7 +314,13 @@ export default function AlbumsPage() {
               <div style={{ width: "100%", aspectRatio: "4 / 3", background: "#f3f4f6", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {a.cover_path && covers[a.cover_path] ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={covers[a.cover_path]} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <img
+                    src={covers[a.cover_path]}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
                 ) : (
                   <span style={{ fontSize: 30 }}>📷</span>
                 )}
