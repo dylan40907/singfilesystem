@@ -100,6 +100,12 @@ function token(): string {
 const PHONE = "(310) 957-2258";
 
 /**
+ * Module-level so the template helpers can reach it, not just the request
+ * handler — sendTemplate fetches email assets through this origin.
+ */
+const PORTAL = Deno.env.get("PORTAL_URL") ?? "https://www.singlearning.com";
+
+/**
  * Tell the right staff about a tour. Admins hear about every campus; campus
  * admins and supervisors only about their own. Anyone with no campus on their
  * HR record hears nothing — that rule lives in tour_alert_recipients().
@@ -304,12 +310,26 @@ async function sendTemplate(
   const html = tidyHtml(fill(tpl.body_html, args.vars, "html"));
   const text = htmlToText(fill(tpl.body_html, args.vars, "text"));
 
-  // Attachments live in a Storage bucket; Resend wants them base64-encoded.
+  // Resend wants attachments base64-encoded.
+  //
+  // Files moved to R2 and are fetched through the public email-asset route —
+  // the same URL the inline images use, so there is one way in rather than
+  // R2 credentials living in the edge function too. Anything not yet migrated
+  // still has a bare key and comes from Supabase Storage.
   const files: MailAttachment[] = [];
   for (const a of tpl.attachments ?? []) {
-    const { data, error } = await db.storage.from("sales-email-assets").download(a.path);
-    if (error || !data) { console.error("Attachment missing:", a.path, error?.message); continue; }
-    const bytes = new Uint8Array(await data.arrayBuffer());
+    let bytes: Uint8Array | null = null;
+
+    if (a.path.startsWith("sales-email/")) {
+      const res = await fetch(`${PORTAL}/api/email-asset/${a.path}`);
+      if (!res.ok) { console.error("Attachment missing:", a.path, res.status); continue; }
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } else {
+      const { data, error } = await db.storage.from("sales-email-assets").download(a.path);
+      if (error || !data) { console.error("Attachment missing:", a.path, error?.message); continue; }
+      bytes = new Uint8Array(await data.arrayBuffer());
+    }
+
     let bin = "";
     for (let i = 0; i < bytes.length; i += 0x8000) {
       bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -360,7 +380,6 @@ Deno.serve(async (req) => {
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
   const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-  const PORTAL = Deno.env.get("PORTAL_URL") ?? "https://www.singlearning.com";
   if (!SUPABASE_URL || !SERVICE_KEY) return json(500, { error: "Server not configured" });
 
   const db = createClient(SUPABASE_URL, SERVICE_KEY);

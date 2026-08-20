@@ -243,11 +243,29 @@ export async function uploadChatAttachment(
   file: File
 ): Promise<ChatAttachment> {
   const safeName = (file.name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
-  const path = `${conversationId}/${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName}`;
-  const { error } = await supabase.storage
-    .from("chat-attachments")
-    .upload(path, file, { contentType: file.type || "application/octet-stream", upsert: false });
-  if (error) throw error;
+
+  // Presigned PUT straight to R2 — see lib/r2Media.ts.
+  const presign = await fetch("/api/r2/media-presign", {
+    method: "POST",
+    headers: await chatAuthHeaders(),
+    body: JSON.stringify({
+      scope: "chat",
+      group: conversationId,
+      filename: file.name || "file",
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
+  const signed = await presign.json();
+  if (!presign.ok || !signed?.uploadUrl) throw new Error(signed?.error ?? "Could not start the upload.");
+
+  const put = await fetch(signed.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!put.ok) throw new Error(`Upload failed (${put.status}).`);
+  const path: string = signed.objectKey;
+
   return {
     attachment_path: path,
     attachment_name: file.name || safeName,
@@ -257,8 +275,31 @@ export async function uploadChatAttachment(
   };
 }
 
-/** Short-lived signed URL for an attachment. */
+async function chatAuthHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${data.session?.access_token ?? ""}`,
+  };
+}
+
+/**
+ * Short-lived signed URL for an attachment.
+ *
+ * Attachments moved from Supabase Storage to R2; anything sent before that
+ * still has a bare key, so it keeps resolving against Supabase until the
+ * migration script copies it.
+ */
 export async function getAttachmentUrl(path: string): Promise<string | null> {
+  if (path.startsWith("chat/")) {
+    const res = await fetch("/api/r2/media-urls", {
+      method: "POST",
+      headers: await chatAuthHeaders(),
+      body: JSON.stringify({ keys: [path] }),
+    });
+    if (!res.ok) return null;
+    return ((await res.json())?.urls ?? {})[path] ?? null;
+  }
   const { data } = await supabase.storage.from("chat-attachments").createSignedUrl(path, 3600);
   return data?.signedUrl ?? null;
 }

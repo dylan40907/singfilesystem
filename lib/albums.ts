@@ -11,6 +11,26 @@ import { supabase } from "./supabaseClient";
 
 const BUCKET = "albums";
 
+/**
+ * Files live in R2, reached through the /api/r2/media-* routes.
+ *
+ * Older items still carry a Supabase Storage key (no "albums/" prefix) until
+ * the migration script has copied them, so reads fall back to Supabase for
+ * those. Once `scripts/migrate-storage-to-r2.mjs --verify` reports nothing
+ * missing, the fallback is dead code and can go.
+ */
+function isR2Key(path: string): boolean {
+  return path.startsWith("albums/");
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${data.session?.access_token ?? ""}`,
+  };
+}
+
 export type Album = {
   id: string;
   name: string;
@@ -90,13 +110,13 @@ export async function deleteAlbum(albumId: string): Promise<void> {
   const items = await fetchAlbumItems(albumId);
   const { error } = await supabase.from("albums").delete().eq("id", albumId);
   if (error) throw error;
-  if (items.length) await supabase.storage.from(BUCKET).remove(items.map((i) => i.path));
+  if (items.length) await removeObjects(items.map((i) => i.path));
 }
 
 export async function deleteAlbumItem(item: AlbumItem): Promise<void> {
   const { error } = await supabase.from("album_items").delete().eq("id", item.id);
   if (error) throw error;
-  await supabase.storage.from(BUCKET).remove([item.path]);
+  await removeObjects([item.path]);
 }
 
 /** Only images and videos belong in an album. */
@@ -114,19 +134,33 @@ export async function uploadToAlbum(albumId: string, file: File): Promise<AlbumI
   const kind = albumKindOf(file.type, file.name);
   if (!kind) throw new Error(`${file.name} isn't a photo or a video.`);
 
-  const safe = (file.name || "file").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-100);
-  const path = `${albumId}/${Date.now()}-${Math.random().toString(36).slice(2)}-${safe}`;
+  // Presign, then PUT straight to R2 — the file never passes through our server.
+  const presign = await fetch("/api/r2/media-presign", {
+    method: "POST",
+    headers: await authHeaders(),
+    body: JSON.stringify({
+      scope: "album",
+      group: albumId,
+      filename: file.name || "file",
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
+  const presigned = await presign.json();
+  if (!presign.ok) throw new Error(presigned?.error ?? "Could not start the upload.");
 
-  const { error: upErr } = await supabase.storage
-    .from(BUCKET)
-    .upload(path, file, { contentType: file.type || undefined, upsert: false });
-  if (upErr) throw upErr;
+  const put = await fetch(presigned.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!put.ok) throw new Error(`Upload failed (${put.status}).`);
+  const path: string = presigned.objectKey;
 
   const { data: me } = await supabase.auth.getUser();
   const { data, error } = await supabase
     .from("album_items")
     .insert({
-      album_id: albumId, path, name: file.name || safe,
+      album_id: albumId, path, name: file.name || "file",
       mime: file.type || null, size: file.size ?? null, kind,
       uploaded_by: me.user?.id ?? null,
     })
@@ -134,26 +168,63 @@ export async function uploadToAlbum(albumId: string, file: File): Promise<AlbumI
     .single();
   if (error) {
     // Don't leave a file nobody can see behind.
-    await supabase.storage.from(BUCKET).remove([path]);
+    await removeObjects([path]);
     throw error;
   }
   return data as AlbumItem;
 }
 
 export async function albumItemUrl(path: string, seconds = 3600): Promise<string | null> {
-  const { data } = await supabase.storage.from(BUCKET).createSignedUrl(path, seconds);
-  return data?.signedUrl ?? null;
+  const urls = await albumItemUrls([path], seconds);
+  return urls[path] ?? null;
 }
 
-/** Signed URLs for a whole album in one round trip. */
+/**
+ * Signed URLs for a whole album in one round trip.
+ *
+ * Split by where each object actually is: R2 for anything migrated, Supabase
+ * for the rest. Both are signed in a single call to their respective service,
+ * so an album grid still costs two requests at most.
+ */
 export async function albumItemUrls(paths: string[], seconds = 3600): Promise<Record<string, string>> {
   if (paths.length === 0) return {};
-  const { data } = await supabase.storage.from(BUCKET).createSignedUrls(paths, seconds);
   const out: Record<string, string> = {};
-  for (const row of data ?? []) {
-    if (row.path && row.signedUrl) out[row.path] = row.signedUrl;
+
+  const r2Keys = paths.filter(isR2Key);
+  const legacy = paths.filter((p) => !isR2Key(p));
+
+  if (r2Keys.length) {
+    const res = await fetch("/api/r2/media-urls", {
+      method: "POST",
+      headers: await authHeaders(),
+      body: JSON.stringify({ keys: r2Keys, expiresIn: seconds }),
+    });
+    if (res.ok) Object.assign(out, ((await res.json())?.urls ?? {}) as Record<string, string>);
   }
+
+  if (legacy.length) {
+    const { data } = await supabase.storage.from(BUCKET).createSignedUrls(legacy, seconds);
+    for (const row of data ?? []) {
+      if (row.path && row.signedUrl) out[row.path] = row.signedUrl;
+    }
+  }
+
   return out;
+}
+
+/** Delete objects from wherever they live. */
+async function removeObjects(paths: string[]): Promise<void> {
+  const r2Keys = paths.filter(isR2Key);
+  const legacy = paths.filter((p) => !isR2Key(p));
+
+  if (r2Keys.length) {
+    await fetch("/api/r2/media-delete", {
+      method: "POST",
+      headers: await authHeaders(),
+      body: JSON.stringify({ keys: r2Keys }),
+    });
+  }
+  if (legacy.length) await supabase.storage.from(BUCKET).remove(legacy);
 }
 
 /**

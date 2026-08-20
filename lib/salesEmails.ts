@@ -187,21 +187,66 @@ export function escapeHtml(s: string): string {
 const ASSET_BUCKET = "sales-email-assets";
 
 /**
- * Inline images have to be fetchable by whatever mail client opens the message,
- * so the bucket is public and we hand back the plain URL. Attachments live in
- * the same place; the edge function downloads and encodes them at send time.
+ * The public URL for an email asset.
+ *
+ * Served through our own route rather than a presigned link: an email sits in
+ * an inbox for months and a presigned URL would expire, leaving broken images
+ * in a message already sent. Old assets still carry a bare Supabase key and
+ * keep using the Supabase public URL until they're repointed.
+ */
+export function emailAssetUrl(path: string): string {
+  if (path.startsWith("sales-email/")) return `/api/email-asset/${path}`;
+  return supabase.storage.from(ASSET_BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+async function assetAuthHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${data.session?.access_token ?? ""}`,
+  };
+}
+
+/**
+ * Upload an inline image or attachment to R2.
+ *
+ * The returned `url` is absolute on purpose — it is pasted straight into email
+ * HTML, where a relative path would resolve against the recipient's mail
+ * client rather than against us.
  */
 export async function uploadEmailAsset(file: File): Promise<{ url: string; path: string }> {
-  const safe = file.name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(-80) || "file";
-  const path = `${crypto.randomUUID()}-${safe}`;
-  const { error } = await supabase.storage
-    .from(ASSET_BUCKET)
-    .upload(path, file, { contentType: file.type || undefined, upsert: false });
-  if (error) throw new Error(error.message);
-  const { data } = supabase.storage.from(ASSET_BUCKET).getPublicUrl(path);
-  return { url: data.publicUrl, path };
+  const presign = await fetch("/api/r2/media-presign", {
+    method: "POST",
+    headers: await assetAuthHeaders(),
+    body: JSON.stringify({
+      scope: "email",
+      filename: file.name || "file",
+      contentType: file.type || "application/octet-stream",
+    }),
+  });
+  const signed = await presign.json();
+  if (!presign.ok || !signed?.uploadUrl) throw new Error(signed?.error ?? "Could not start the upload.");
+
+  const put = await fetch(signed.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!put.ok) throw new Error(`Upload failed (${put.status}).`);
+
+  const path: string = signed.objectKey;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  return { url: `${origin}/api/email-asset/${path}`, path };
 }
 
 export async function deleteEmailAsset(path: string): Promise<void> {
+  if (path.startsWith("sales-email/")) {
+    await fetch("/api/r2/media-delete", {
+      method: "POST",
+      headers: await assetAuthHeaders(),
+      body: JSON.stringify({ keys: [path] }),
+    });
+    return;
+  }
   await supabase.storage.from(ASSET_BUCKET).remove([path]);
 }
