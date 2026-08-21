@@ -3,6 +3,8 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AccessMap, NO_ACCESS, canView, fetchAccess } from "@/lib/access";
+import { PAGES_BY_KEY } from "@/lib/pagePermissions";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
@@ -144,27 +146,38 @@ export default function HrNavbar() {
 
   const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
 
-  const adminLinks = canUseHr && hasAdminAccess ? [
-    { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
-    { href: "/admin/hr/documents", label: "Documents", tab: "documents" },
-    { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
-    { href: "/admin/hr/org-chart", label: "Org Chart", tab: "org-chart" },
-    { href: "/admin/hr/employee-meetings", label: "Meetings", tab: "employee-meetings" },
-    { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
-    { href: "/admin/hr/timesheets", label: "Timesheets", tab: "timesheets" },
-    { href: "/admin/hr/leave", label: "Leave", tab: "leave" },
-    ...((isAdmin || isCampusAdmin) ? [{ href: "/admin/courses", label: "Courses", tab: "courses" }] : []),
-    ...(isAdmin ? [{ href: "/admin/hr/settings", label: "Settings", tab: "settings" }] : []),
-    ...(isAdmin ? [{ href: "/admin/hr/roles", label: "Roles", tab: "roles" }] : []),
-  ] : canUseHr && isSupervisor ? [
-    // Supervisors get the real pages rather than subtabs bolted onto /hr.
-    // Everything here is read-only for them except administering monthly
-    // scorecards, which is enforced by RLS, not just by hiding buttons.
-    { href: "/admin/hr/employees", label: "Employees", tab: "employees" },
-    { href: "/admin/hr/attendance", label: "Attendance", tab: "attendance" },
-    { href: "/admin/hr/employee-meetings", label: "Meetings", tab: "employee-meetings" },
-    { href: "/admin/hr/schedule", label: "Schedule", tab: "schedule" },
-  ] : [];
+  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
+  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
+
+  /**
+   * Built from resolved page permissions rather than role checks, so a custom
+   * role that grants or removes a page changes the tab strip without this list
+   * needing to know the role exists.
+   */
+  const adminLinks = useMemo(() => {
+    if (!canUseHr) return [] as { href: string; label: string; tab: string }[];
+    const hrPages = [
+      { key: "hr.employees", tab: "employees" },
+      { key: "hr.documents", tab: "documents" },
+      { key: "hr.attendance", tab: "attendance" },
+      { key: "hr.org_chart", tab: "org-chart" },
+      { key: "hr.meetings", tab: "employee-meetings" },
+      { key: "hr.schedule", tab: "schedule" },
+      { key: "hr.timesheets", tab: "timesheets" },
+      { key: "hr.leave", tab: "leave" },
+      { key: "hr.courses", tab: "courses" },
+      { key: "hr.settings", tab: "settings" },
+    ];
+    const links = hrPages
+      .filter((p) => canView(access, p.key))
+      .map((p) => {
+        const def = PAGES_BY_KEY.get(p.key)!;
+        return { href: def.path, label: def.label, tab: p.tab };
+      });
+    // Roles is admin-only and deliberately not grantable.
+    if (isAdmin) links.push({ href: "/admin/hr/roles", label: "Roles", tab: "roles" });
+    return links;
+  }, [canUseHr, access, isAdmin]);
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 50, background: "white", borderBottom: "1px solid #e5e7eb" }}>

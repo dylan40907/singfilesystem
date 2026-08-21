@@ -54,6 +54,12 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const target_user_id = (body?.target_user_id ?? "").toString();
     const new_role = (body?.new_role ?? "").toString();
+    /**
+     * Optional custom role (hr_roles.id). Its base level must match new_role —
+     * the caller derives new_role from the role's base_role, and we re-check
+     * here rather than trusting the client to have done so.
+     */
+    const hr_role_id = body?.hr_role_id ? String(body.hr_role_id) : null;
     const campus_id = body?.campus_id ? (body.campus_id as string).toString() : null;
     // "App Supervisor" = supervisor + this flag. Only meaningful for supervisors.
     const grant_learning = body?.can_manage_learning === true && new_role === "supervisor";
@@ -74,7 +80,7 @@ Deno.serve(async (req) => {
     // Validate target
     const { data: targetProfile, error: targetErr } = await supabaseAdmin
       .from("user_profiles")
-      .select("id, role, can_manage_learning")
+      .select("id, role, can_manage_learning, hr_role_id")
       .eq("id", target_user_id)
       .single();
 
@@ -93,7 +99,8 @@ Deno.serve(async (req) => {
     // Reject only if nothing changes (same role AND same learning flag). This
     // allows Supervisor <-> App Supervisor, which keep new_role = "supervisor".
     const flagChanged = (targetProfile.can_manage_learning ?? false) !== grant_learning;
-    if (targetProfile.role === new_role && !flagChanged) {
+    const roleChanged = (targetProfile.hr_role_id ?? null) !== hr_role_id;
+    if (targetProfile.role === new_role && !flagChanged && !roleChanged) {
       return json({ error: `User is already a ${new_role}.` }, 400);
     }
 
@@ -106,6 +113,19 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (campusErr) return json({ error: campusErr.message }, 500);
       if (!campusRow) return json({ error: "Campus not found." }, 404);
+    }
+
+    if (hr_role_id) {
+      const { data: roleRow, error: roleErr } = await supabaseAdmin
+        .from("hr_roles")
+        .select("id, base_role")
+        .eq("id", hr_role_id)
+        .maybeSingle();
+      if (roleErr) return json({ error: roleErr.message }, 500);
+      if (!roleRow) return json({ error: "Role not found." }, 404);
+      if (roleRow.base_role !== new_role) {
+        return json({ error: `That role is a ${roleRow.base_role}, not a ${new_role}.` }, 400);
+      }
     }
 
     // Only clear supervisor-teacher assignments when actually LEAVING the
@@ -124,6 +144,8 @@ Deno.serve(async (req) => {
       role: new_role,
       campus_id: new_role === "campus_admin" ? campus_id : null,
       can_manage_learning: grant_learning,
+      // Null clears any custom role, putting them back on their level's defaults.
+      hr_role_id,
       updated_at: new Date().toISOString(),
     };
 

@@ -14,6 +14,8 @@ export type TeacherProfile = {
   // (learning) area. Optional because some teacher-list queries don't select it;
   // absent/undefined is treated the same as false by all gates.
   can_manage_learning?: boolean;
+  /** Custom role layered on top of `role`. Null = the level's defaults. */
+  hr_role_id?: string | null;
 };
 
 export async function fetchActiveTeachers(): Promise<TeacherProfile[]> {
@@ -29,7 +31,7 @@ export async function fetchMyProfile(): Promise<TeacherProfile | null> {
 
   const { data, error } = await supabase
     .from("user_profiles")
-    .select("id, email, username, full_name, role, is_active, campus_id, can_manage_learning")
+    .select("id, email, username, full_name, role, is_active, campus_id, can_manage_learning, hr_role_id")
     .eq("id", uid)
     .single();
 

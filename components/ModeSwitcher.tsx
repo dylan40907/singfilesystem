@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { TeacherProfile } from "@/lib/teachers";
+import { AccessMap, NO_ACCESS, canEnterMode, fetchAccess } from "@/lib/access";
 
 /**
  * The portal has several "modes", each with its own navbar and tab set.
@@ -31,23 +32,19 @@ export function modeHome(mode: PortalMode, profile: TeacherProfile | null): stri
   }
 }
 
-/** Which modes this account may enter. */
-export function availableModes(profile: TeacherProfile | null): PortalMode[] {
-  if (!profile?.is_active) return [];
-  const role = profile.role;
-  const isAdmin = role === "admin";
-  const isCampusAdmin = role === "campus_admin";
-  const isSupervisor = role === "supervisor";
-
-  const modes: PortalMode[] = ["curriculum"];
-  if (isAdmin || isCampusAdmin || isSupervisor) modes.push("hr");
-  // Students is readable by every active account — teachers need to look up the
-  // children they teach. Editing stays with admins; see canEditStudents().
-  modes.push("students");
-  // Sales tracks prospective families, not enrolled ones — supervisors work
-  // those leads too, and campus scoping doesn't apply since a family may end up
-  // at either campus (or neither).
-  if (isAdmin || isCampusAdmin || isSupervisor) modes.push("sales");
+/**
+ * Which modes this account may enter.
+ *
+ * Derived from the resolved page permissions rather than hardcoded role checks:
+ * a mode is offered when at least one page inside it is visible. That way a
+ * custom role granting, say, Timesheets to a teacher opens the HR section
+ * without anyone having to remember to update this function too.
+ */
+export function availableModes(access: AccessMap): PortalMode[] {
+  const modes: PortalMode[] = [];
+  for (const mode of ["curriculum", "hr", "students", "sales"] as PortalMode[]) {
+    if (canEnterMode(access, mode)) modes.push(mode);
+  }
   return modes;
 }
 
@@ -79,7 +76,9 @@ export default function ModeSwitcher({
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  const modes = availableModes(profile);
+  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
+  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
+  const modes = availableModes(access);
 
   // Escape closes (house rule for every popup), as does an outside click.
   useEffect(() => {

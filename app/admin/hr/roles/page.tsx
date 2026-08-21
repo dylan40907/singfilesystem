@@ -6,6 +6,8 @@ import { fetchMyProfile, TeacherProfile, UserRole } from "@/lib/teachers";
 import { useDialog } from "@/components/ui/useDialog";
 import { useCampusFilter } from "@/lib/CampusContext";
 import AccessReview from "@/components/hr/AccessReview";
+import RoleEditor, { RoleRow } from "@/components/hr/RoleEditor";
+import { BASE_ROLE_LABEL } from "@/lib/roleLabels";
 
 /**
  * Roles — true admins only. Lets a true admin change any non-admin user's role
@@ -23,6 +25,7 @@ type UserRow = {
   role: Exclude<UserRole, "admin" | "employee" | "hours_manager">;
   campus_id: string | null;
   can_manage_learning: boolean;
+  hr_role_id: string | null;
 };
 
 type EligibleRole = "teacher" | "supervisor" | "campus_admin";
@@ -59,17 +62,30 @@ export default function HrRolesPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
 
   // Per-row staged change: pending role + campus selection (before user clicks Save).
-  const [staged, setStaged] = useState<Record<string, { role: EligibleSelection; campusId: string }>>({});
+  const [staged, setStaged] = useState<Record<string, { roleId: string; campusId: string }>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [accessReviewOpen, setAccessReviewOpen] = useState(false);
+  // Custom roles: the list, plus whichever one is open in the editor.
+  const [roles, setRoles] = useState<RoleRow[]>([]);
+  const [editingRole, setEditingRole] = useState<RoleRow | null>(null);
+  const [creatingRole, setCreatingRole] = useState(false);
 
   const isTrueAdmin = !!me?.is_active && me.role === "admin";
+
+  const reloadRoles = useCallback(async () => {
+    const { data } = await supabase
+      .from("hr_roles")
+      .select("id, name, description, base_role, is_system")
+      .order("is_system", { ascending: false })
+      .order("name");
+    setRoles((data ?? []) as RoleRow[]);
+  }, []);
 
   const reload = useCallback(async () => {
     const { data, error } = await supabase
       .from("user_profiles")
-      .select("id, email, username, full_name, is_active, role, campus_id, can_manage_learning")
+      .select("id, email, username, full_name, is_active, role, campus_id, can_manage_learning, hr_role_id")
       .in("role", ["teacher", "supervisor", "campus_admin"])
       .order("role", { ascending: true })
       .order("full_name", { ascending: true });
@@ -92,6 +108,8 @@ export default function HrRolesPage() {
     setUsers(rows);
   }, []);
 
+  useEffect(() => { void reloadRoles(); }, [reloadRoles]);
+
   useEffect(() => {
     (async () => {
       const p = await fetchMyProfile();
@@ -106,11 +124,25 @@ export default function HrRolesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reload]);
 
-  function getStagedFor(u: UserRow): { role: EligibleSelection; campusId: string } {
-    return staged[u.id] ?? { role: currentSelection(u), campusId: u.campus_id ?? "" };
+  /**
+   * The role this user currently holds: their custom role if they have one,
+   * otherwise the built-in role matching their level.
+   */
+  function currentRoleId(u: UserRow): string {
+    if (u.hr_role_id) return u.hr_role_id;
+    const builtIn = roles.find((r) => r.is_system && r.base_role === u.role);
+    return builtIn?.id ?? "";
   }
 
-  function setStagedFor(u: UserRow, next: { role: EligibleSelection; campusId: string }) {
+  function roleName(id: string): string {
+    return roles.find((r) => r.id === id)?.name ?? "—";
+  }
+
+  function getStagedFor(u: UserRow): { roleId: string; campusId: string } {
+    return staged[u.id] ?? { roleId: currentRoleId(u), campusId: u.campus_id ?? "" };
+  }
+
+  function setStagedFor(u: UserRow, next: { roleId: string; campusId: string }) {
     setStaged((prev) => ({ ...prev, [u.id]: next }));
   }
 
@@ -125,16 +157,22 @@ export default function HrRolesPage() {
   function isDirty(u: UserRow): boolean {
     const s = staged[u.id];
     if (!s) return false;
-    if (s.role !== currentSelection(u)) return true;
-    if (s.role === "campus_admin" && s.campusId !== (u.campus_id ?? "")) return true;
+    if (s.roleId !== currentRoleId(u)) return true;
+    const level = roles.find((r) => r.id === s.roleId)?.base_role;
+    if (level === "campus_admin" && s.campusId !== (u.campus_id ?? "")) return true;
     return false;
   }
 
   async function saveRow(u: UserRow) {
     const s = getStagedFor(u);
-    // "App Supervisor" is stored as a supervisor + the can_manage_learning flag.
-    const newRole: EligibleRole = s.role === "app_supervisor" ? "supervisor" : s.role;
-    const grantLearning = s.role === "app_supervisor";
+    const picked = roles.find((r) => r.id === s.roleId);
+    if (!picked) { setStatus("Pick a role."); return; }
+    // The level is the role's own base — never chosen separately, so the two
+    // can't disagree.
+    const newRole: EligibleRole = picked.base_role;
+    // The old can_manage_learning flag is superseded by page overrides; it is
+    // written as false so nothing keeps reading it.
+    const grantLearning = false;
 
     if (newRole === "campus_admin" && !s.campusId) {
       setStatus("Pick a campus for the campus admin.");
@@ -150,14 +188,14 @@ export default function HrRolesPage() {
       const n = count ?? 0;
       if (n > 0) {
         const ok = await confirm(
-          `${labelFor(u)} is currently supervising ${n} teacher${n === 1 ? "" : "s"}.\n\nChanging their role to ${SELECTION_LABEL[s.role]} will remove all of those teacher assignments. Continue?`,
+          `${labelFor(u)} is currently supervising ${n} teacher${n === 1 ? "" : "s"}.\n\nMoving them to ${picked.name} will remove all of those teacher assignments. Continue?`,
           { title: "Supervisor has assignments", danger: true, confirmLabel: "Change role and unassign" }
         );
         if (!ok) return;
       }
     } else {
       const ok = await confirm(
-        `Change ${labelFor(u)} from ${SELECTION_LABEL[currentSelection(u)]} to ${SELECTION_LABEL[s.role]}?`,
+        `Change ${labelFor(u)} from ${roleName(currentRoleId(u))} to ${picked.name}?`,
         { title: "Change role", confirmLabel: "Change" }
       );
       if (!ok) return;
@@ -169,6 +207,7 @@ export default function HrRolesPage() {
       target_user_id: u.id,
       new_role: newRole,
       can_manage_learning: grantLearning,
+      hr_role_id: picked.is_system ? null : picked.id,
     };
     if (newRole === "campus_admin") body.campus_id = s.campusId;
 
@@ -176,9 +215,31 @@ export default function HrRolesPage() {
     setBusyId(null);
 
     if (error) { setStatus("Update error: " + error.message); return; }
-    setStatus(`✅ ${labelFor(u)} is now ${SELECTION_LABEL[s.role]}.`);
+    setStatus(`✅ ${labelFor(u)} is now ${picked.name}.`);
     resetStagedFor(u);
     await reload();
+  }
+
+  async function deleteRole(r: RoleRow) {
+    // Anyone still holding it would silently fall back to their base level, so
+    // say how many people that is before it happens.
+    const { count } = await supabase
+      .from("user_profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("hr_role_id", r.id);
+    const n = count ?? 0;
+    const ok = await confirm(
+      n > 0
+        ? `${n} ${n === 1 ? "person holds" : "people hold"} "${r.name}". Deleting it puts them back on plain ${BASE_ROLE_LABEL[r.base_role]} access.`
+        : `Delete the role "${r.name}"?`,
+      { title: "Delete role", confirmLabel: "Delete", danger: true }
+    );
+    if (!ok) return;
+    const { error } = await supabase.from("hr_roles").delete().eq("id", r.id);
+    if (error) { setStatus("Delete error: " + error.message); return; }
+    await reloadRoles();
+    await reload();
+    setStatus(`Deleted "${r.name}".`);
   }
 
   const filtered = useMemo(() => {
@@ -220,6 +281,68 @@ export default function HrRolesPage() {
         </div>
 
         {accessReviewOpen && <AccessReview onClose={() => setAccessReviewOpen(false)} />}
+
+        {(creatingRole || editingRole) && (
+          <RoleEditor
+            role={editingRole}
+            onClose={() => { setCreatingRole(false); setEditingRole(null); }}
+            onSaved={async () => {
+              setCreatingRole(false);
+              setEditingRole(null);
+              await reloadRoles();
+              setStatus("✅ Role saved.");
+            }}
+          />
+        )}
+
+        <div className="card">
+          <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 900 }}>Roles ({roles.length})</div>
+              <div className="subtle" style={{ fontSize: 12.5, marginTop: 2 }}>
+                Each role is one of the three levels plus any pages that should differ.
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={() => setCreatingRole(true)}>+ New role</button>
+          </div>
+
+          <div className="hr" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+            {roles.map((r) => (
+              <div key={r.id} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
+                <div className="row-between" style={{ alignItems: "flex-start", gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 800, fontSize: 14 }}>{r.name}</div>
+                    <div className="subtle" style={{ fontSize: 12 }}>
+                      Based on {BASE_ROLE_LABEL[r.base_role]}
+                    </div>
+                  </div>
+                  {r.is_system && (
+                    <span className="subtle" style={{ fontSize: 10.5, fontWeight: 800, whiteSpace: "nowrap" }}>BUILT-IN</span>
+                  )}
+                </div>
+                {r.description && (
+                  <div className="subtle" style={{ fontSize: 12, marginTop: 5 }}>{r.description}</div>
+                )}
+                <div className="row" style={{ gap: 6, marginTop: 9 }}>
+                  <button className="btn" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => setEditingRole(r)}>
+                    Edit
+                  </button>
+                  {!r.is_system && (
+                    <button
+                      className="btn"
+                      style={{ padding: "3px 10px", fontSize: 12, color: "#b91c1c" }}
+                      onClick={() => void deleteRole(r)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
         <div className="card">
           <div className="row-between" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -264,7 +387,7 @@ export default function HrRolesPage() {
                     <div style={{ minWidth: 220 }}>
                       <div style={{ fontWeight: 800 }}>{labelFor(u)}</div>
                       <div className="subtle" style={{ fontSize: 12 }}>
-                        Current: {SELECTION_LABEL[currentSelection(u)]}
+                        Current: {roleName(currentRoleId(u))}
                         {u.role === "campus_admin" && currentCampusName ? ` · ${currentCampusName}` : ""}
                         {!u.is_active ? " · inactive" : ""}
                       </div>
@@ -278,23 +401,24 @@ export default function HrRolesPage() {
                       </label>
                       <select
                         className="select"
-                        value={s.role}
+                        value={s.roleId}
                         disabled={busy}
                         onChange={(e) =>
-                          setStagedFor(u, { role: e.target.value as EligibleSelection, campusId: s.campusId })
+                          setStagedFor(u, { roleId: e.target.value, campusId: s.campusId })
                         }
                       >
-                        <option value="teacher">Teacher</option>
-                        <option value="supervisor">Supervisor</option>
-                        <option value="app_supervisor">App Supervisor</option>
-                        <option value="campus_admin">Campus Admin</option>
+                        {roles.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}{r.is_system ? "" : ` (${BASE_ROLE_LABEL[r.base_role]})`}
+                          </option>
+                        ))}
                       </select>
-                      {s.role === "campus_admin" && (
+                      {roles.find((r) => r.id === s.roleId)?.base_role === "campus_admin" && (
                         <select
                           className="select"
                           value={s.campusId}
                           disabled={busy}
-                          onChange={(e) => setStagedFor(u, { role: s.role, campusId: e.target.value })}
+                          onChange={(e) => setStagedFor(u, { roleId: s.roleId, campusId: e.target.value })}
                         >
                           <option value="">— Select campus —</option>
                           {campuses.map((c) => (
