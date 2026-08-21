@@ -29,6 +29,7 @@ type LeaveBalanceRow = {
   pto_weeks: number;
   sick_frontloaded: boolean;
   sick_annual_cap: number;
+  sick_annual_use_cap: number;
   pto_initial_balance: number;
   sick_initial_balance: number;
   sick_carryover: number;
@@ -334,7 +335,7 @@ function defaultBalance(employeeId: string, year: number): LeaveBalanceRow {
   return {
     id: "", employee_id: employeeId, year,
     pto_active: false, pto_plan_hours: 0, pto_weeks: 48,
-    sick_frontloaded: false, sick_annual_cap: 40,
+    sick_frontloaded: false, sick_annual_cap: 40, sick_annual_use_cap: 40,
     pto_initial_balance: 0, sick_initial_balance: 0,
     sick_carryover: 0, pto_carryover: 0,
     hours_worked_override: null, unpaid_override: null,
@@ -449,6 +450,9 @@ export default function LeavePage() {
    */
   const [cfgSickCapH, setCfgSickCapH] = useState(40);
   const [cfgSickCapM, setCfgSickCapM] = useState(0);
+  /** Separate from the accrual cap: how much may actually be taken in a year. */
+  const [cfgSickUseCapH, setCfgSickUseCapH] = useState(40);
+  const [cfgSickUseCapM, setCfgSickUseCapM] = useState(0);
   const [cfgSickInitialH, setCfgSickInitialH] = useState(0);
   const [cfgSickInitialM, setCfgSickInitialM] = useState(0);
   const [cfgPtoInitialH, setCfgPtoInitialH] = useState(0);
@@ -607,6 +611,7 @@ export default function LeavePage() {
         setCfgPtoWeeks(b.pto_weeks);
         setCfgSickFrontloaded(b.sick_frontloaded);
         const [scph, scpm] = decToHM(b.sick_annual_cap ?? 40); setCfgSickCapH(scph); setCfgSickCapM(scpm);
+        const [such, sucm] = decToHM(b.sick_annual_use_cap ?? 40); setCfgSickUseCapH(such); setCfgSickUseCapM(sucm);
         const [sih, sim] = decToHM(b.sick_initial_balance ?? 0); setCfgSickInitialH(sih); setCfgSickInitialM(sim);
         const [pih, pim] = decToHM(b.pto_initial_balance ?? 0); setCfgPtoInitialH(pih); setCfgPtoInitialM(pim);
         const [sch, scm] = decToHM(b.sick_carryover ?? 0); setCfgSickCarryoverH(sch); setCfgSickCarryoverM(scm);
@@ -762,6 +767,7 @@ export default function LeavePage() {
       employee_id: selectedEmployeeId, year,
       pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
       sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: hmToDec(cfgSickCapH, cfgSickCapM),
+        sick_annual_use_cap: hmToDec(cfgSickUseCapH, cfgSickUseCapM),
       pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
       sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
       sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
@@ -784,6 +790,7 @@ export default function LeavePage() {
         employee_id: selectedEmployeeId, year,
         pto_active: cfgPtoActive, pto_plan_hours: cfgPtoPlan, pto_weeks: cfgPtoWeeks,
         sick_frontloaded: cfgSickFrontloaded, sick_annual_cap: hmToDec(cfgSickCapH, cfgSickCapM),
+        sick_annual_use_cap: hmToDec(cfgSickUseCapH, cfgSickUseCapM),
         pto_initial_balance: hmToDec(cfgPtoInitialH, cfgPtoInitialM),
         sick_initial_balance: hmToDec(cfgSickInitialH, cfgSickInitialM),
         sick_carryover: Math.min(hmToDec(cfgSickCarryoverH, cfgSickCarryoverM), CARRYOVER_CAP),
@@ -831,6 +838,30 @@ export default function LeavePage() {
     if (logType === "sick_paid" && probation && !probation.passed) {
       const ok = await confirm(`This employee is still in probation (ends ${fmtYmd(probation.endDate)}). Log paid sick anyway?`);
       if (!ok) return;
+    }
+
+    /**
+     * Using sick leave and accruing it are separate limits: someone may hold a
+     * larger balance (carryover and initial sit on top of the accrual cap) but
+     * still only take so many hours in a year. Nothing checked the second one.
+     */
+    if (logType === "sick_paid" && hours > 0) {
+      const useCap = Number(balance?.sick_annual_use_cap ?? 40);
+      const alreadyUsed = sickCalc.used;
+      if (alreadyUsed + hours > useCap + 1e-9) {
+        const remaining = Math.max(0, useCap - alreadyUsed);
+        const ok = await confirm(
+          `${getDisplayName(selectedEmployee!)} has used ${fmtHours(alreadyUsed)} of sick this year and the annual limit is ${fmtHours(useCap)}.
+
+` +
+          `Logging ${fmtHours(hours)} would take them to ${fmtHours(alreadyUsed + hours)} — ${fmtHours(remaining)} remains within the limit.
+
+` +
+          `Log it anyway?`,
+          { title: "Over the annual sick limit", danger: true, confirmLabel: "Log anyway" }
+        );
+        if (!ok) return;
+      }
     }
 
     setLogBusy(true);
@@ -1563,6 +1594,13 @@ export default function LeavePage() {
                   <HMInput h={cfgSickCapH} m={cfgSickCapM} onChangeH={setCfgSickCapH} onChangeM={setCfgSickCapM} />
                   <div className="subtle" style={{ fontSize: 11, marginTop: 4 }}>
                     Accrual stops here for the year. Carryover and the initial balance sit on top of it.
+                  </div>
+                </div>
+                <div>
+                  <FieldLabel>Annual usage limit</FieldLabel>
+                  <HMInput h={cfgSickUseCapH} m={cfgSickUseCapM} onChangeH={setCfgSickUseCapH} onChangeM={setCfgSickUseCapM} />
+                  <div className="subtle" style={{ fontSize: 11, marginTop: 4 }}>
+                    Most hours of sick that may be taken in the year, even if the balance is higher.
                   </div>
                 </div>
                 <div>
