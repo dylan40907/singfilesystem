@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile } from "@/lib/teachers";
+import { canEnterMode, fetchAccess } from "@/lib/access";
 
 export default function HrLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
@@ -20,11 +21,15 @@ export default function HrLayout({ children }: { children: ReactNode }) {
       }
 
       const profile = await fetchMyProfile();
-      const isAdmin = profile?.role === "admin" && !!profile?.is_active;
-      const isCampusAdmin = profile?.role === "campus_admin" && !!profile?.is_active;
-      const isSupervisor = profile?.role === "supervisor" && !!profile?.is_active;
-
-      if (!isAdmin && !isCampusAdmin && !isSupervisor) {
+      /**
+       * Resolved permissions, not a role list.
+       *
+       * This used to hardcode admin/campus_admin/supervisor, so a custom role
+       * granting a teacher one HR page put the tab in the nav and then bounced
+       * them straight back out of it.
+       */
+      const access = await fetchAccess(profile);
+      if (!canEnterMode(access, "hr")) {
         router.replace("/");
         return;
       }

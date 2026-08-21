@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { AccessMap, NO_ACCESS, fetchAccess } from "@/lib/access";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
 import NotificationsBell from "@/components/NotificationsBell";
@@ -52,6 +53,8 @@ export default function ModeNavbar({
 
   const [sessionEmail, setSessionEmail] = useState<string | null>(null);
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
+  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
+  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -112,7 +115,7 @@ export default function ModeNavbar({
       <div className="container">
         <div className="row-between" style={{ padding: "12px 0", gap: 12 }}>
           <div className="row" style={{ gap: 12, alignItems: "center", minWidth: 0 }}>
-            <Link href={modeHome(mode, profile)} aria-label={`Go to ${title} home`} style={{ display: "block", width: 46, height: 34, position: "relative", flexShrink: 0 }}>
+            <Link href={modeHome(mode, access)} aria-label={`Go to ${title} home`} style={{ display: "block", width: 46, height: 34, position: "relative", flexShrink: 0 }}>
               <Image src="/logo.png" alt="SING Portal logo" fill priority sizes="46px" style={{ objectFit: "contain" }} />
             </Link>
             <div style={{ minWidth: 0, lineHeight: 1.15 }}>

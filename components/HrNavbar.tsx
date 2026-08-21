@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AccessMap, NO_ACCESS, canView, fetchAccess } from "@/lib/access";
+import { AccessMap, NO_ACCESS, canEnterMode, canView, fetchAccess } from "@/lib/access";
 import { PAGES_BY_KEY } from "@/lib/pagePermissions";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -63,13 +63,18 @@ export default function HrNavbar() {
     }
   }
 
+  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
+  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
+
   const isActive = !!profile?.is_active;
   const isAdmin = isActive && profile?.role === "admin";
   const isCampusAdmin = isActive && profile?.role === "campus_admin";
   const isSupervisor = isActive && profile?.role === "supervisor";
 
   // ✅ HR access: admin OR campus_admin OR supervisor
-  const canUseHr = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || isSupervisor);
+  // Permission-derived: a custom role granting any HR page counts, which a
+  // role list would miss.
+  const canUseHr = !!sessionEmail && isActive && canEnterMode(access, "hr");
   // ✅ "Admin-level" access (excludes supervisors) — controls visibility of admin-only tabs/buttons
   const hasAdminAccess = isAdmin || isCampusAdmin;
 
@@ -146,8 +151,6 @@ export default function HrNavbar() {
 
   const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
 
-  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
-  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
 
   /**
    * Built from resolved page permissions rather than role checks, so a custom

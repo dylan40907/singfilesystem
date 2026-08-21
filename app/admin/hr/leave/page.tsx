@@ -900,11 +900,51 @@ export default function LeavePage() {
     }
   }
 
+  /**
+   * Would this push the employee past their annual sick limit?
+   *
+   * Takes an employee id rather than reading the selected employee's state:
+   * approvals act on whoever submitted the request, which is very often not the
+   * person currently open on the page.
+   */
+  async function sickUsageWarning(employeeId: string, addHours: number): Promise<string | null> {
+    const [{ data: bal }, { data: rows }] = await Promise.all([
+      supabase.from("hr_leave_balances").select("sick_annual_use_cap")
+        .eq("employee_id", employeeId).eq("year", year).maybeSingle(),
+      supabase.from("hr_leave_entries").select("hours")
+        .eq("employee_id", employeeId).eq("entry_type", "sick_paid")
+        .gte("start_date", `${year}-01-01`).lte("start_date", `${year}-12-31`),
+    ]);
+    const cap = Number((bal as { sick_annual_use_cap?: number } | null)?.sick_annual_use_cap ?? 40);
+    const used = (rows ?? []).reduce((sum, r) => sum + Number((r as { hours: number }).hours), 0);
+    if (used + addHours <= cap + 1e-9) return null;
+    return (
+      `They have used ${fmtHours(used)} of sick this year and the annual limit is ${fmtHours(cap)}.
+
+` +
+      `Approving ${fmtHours(addHours)} takes them to ${fmtHours(used + addHours)}.`
+    );
+  }
+
   async function approveRequest(req: LeaveRequestRow & { employee?: EmployeeRow }) {
     const empName = req.employee ? getDisplayName(req.employee) : req.employee_id;
     const durationStr = fmtHours(Number(req.hours));
     const ok = await confirm(`Approve ${REQUEST_LABELS[req.entry_type]} request for ${empName} (${fmtRange(req.start_date, req.end_date)}, ${durationStr})?`);
     if (!ok) return;
+
+    // Approving is the other way hours get logged, so it needs the same limit
+    // check as logging them directly.
+    if (req.entry_type === "sick_paid" && Number(req.hours) > 0) {
+      const warning = await sickUsageWarning(req.employee_id, Number(req.hours));
+      if (warning) {
+        const past = await confirm(`${warning}
+
+Approve anyway?`, {
+          title: "Over the annual sick limit", danger: true, confirmLabel: "Approve anyway",
+        });
+        if (!past) return;
+      }
+    }
     try {
       // Create a leave entry (deducts from balance)
       const { error: entryErr } = await supabase.from("hr_leave_entries").insert({

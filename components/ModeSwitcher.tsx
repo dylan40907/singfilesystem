@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { TeacherProfile } from "@/lib/teachers";
-import { AccessMap, NO_ACCESS, canEnterMode, fetchAccess } from "@/lib/access";
+import { AccessMap, NO_ACCESS, canEnterMode, canView, fetchAccess } from "@/lib/access";
+import { PAGES } from "@/lib/pagePermissions";
 
 /**
  * The portal has several "modes", each with its own navbar and tab set.
@@ -18,18 +19,19 @@ export const MODE_LABEL: Record<PortalMode, string> = {
   sales: "Sales",
 };
 
-/** Landing route for each mode. */
-export function modeHome(mode: PortalMode, profile: TeacherProfile | null): string {
-  switch (mode) {
-    case "curriculum":
-      return "/";
-    case "hr":
-      return "/admin/hr/employees";
-    case "students":
-      return "/admin/students/admissions";
-    case "sales":
-      return "/admin/sales";
-  }
+/**
+ * Landing route for each mode — the first page in it this person can open.
+ *
+ * It used to be a fixed route per mode, which broke as soon as roles stopped
+ * being uniform: a teacher granted only Timesheets was sent to Employees, had
+ * no access, and was bounced straight back.
+ */
+export function modeHome(mode: PortalMode, access: AccessMap): string {
+  if (mode === "curriculum") return "/";
+  const first = PAGES.find((p) => p.mode === mode && canView(access, p.key));
+  if (first) return first.path;
+  // No page visible — shouldn't be reachable, since the mode wouldn't be offered.
+  return "/";
 }
 
 /**
@@ -119,7 +121,7 @@ export default function ModeSwitcher({
                 onClick={() => {
                   setOpen(false);
                   onNavigate?.();
-                  router.push(modeHome(m, profile));
+                  router.push(modeHome(m, access));
                 }}
                 style={{
                   display: "block", width: "100%", textAlign: "left",
