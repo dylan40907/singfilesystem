@@ -30,7 +30,10 @@ const REMINDER_ZONES = [
 export default function SalesSettingsPage() {
   const { profile, campuses } = useCampusFilter();
   const { modal: dialogModal } = useDialog();
-  const isTrueAdmin = profile?.role === "admin";
+  // Was `role === "admin"`, so a role granted Emails or Sales Settings got a
+  // "Not authorized" card. PageAccessGuard has already resolved the grant;
+  // both pages default to nobody below admin, so a holder got them on purpose.
+  const canUse = !!profile?.is_active;
 
   const [settings, setSettings] = useState<Settings | null>(null);
   const [sources, setSources] = useState<SalesSource[]>([]);
@@ -100,7 +103,7 @@ export default function SalesSettingsPage() {
     else await reload();
   }
 
-  if (profile && !isTrueAdmin) {
+  if (profile && !canUse) {
     return (
       <main className="stack">
         <h1 className="h1">Sales settings</h1>

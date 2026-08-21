@@ -29,9 +29,9 @@ export default function SalesReportsPage() {
   const { loading: campusLoading, profile, campuses } = useCampusFilter();
   // Own filter, not the shared HR one — see the leads page for why.
   const [filter, setFilter] = useState<string>("all");
-  const canUse =
-    !!profile?.is_active &&
-    (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
+  // Was a role list, so a role granted a Sales page got "Not authorized".
+  // PageAccessGuard in app/admin/sales/layout.tsx decides access now.
+  const canUse = !!profile?.is_active;
 
   const [leads, setLeads] = useState<SalesLeadFull[]>([]);
   const [loading, setLoading] = useState(true);

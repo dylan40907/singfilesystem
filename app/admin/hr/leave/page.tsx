@@ -1209,11 +1209,13 @@ Approve anyway?`, {
 
   // ── Access control ────────────────────────────────────────────────────────
   if (meLoading) return <div className="container" style={{ padding: 24 }}>Loading…</div>;
-  if (!me || (me.role !== "admin" && me.role !== "campus_admin") || !me.is_active) {
+  // Was admin/campus_admin only, which meant a role granted Leave landed on
+  // "Admins only." PageAccessGuard owns that decision now.
+  if (!me?.is_active) {
     return (
       <div className="container" style={{ padding: 24 }}>
         <h1 style={{ marginBottom: 8 }}>Leave</h1>
-        <div className="subtle">Admins only.</div>
+        <div className="subtle">Not signed in.</div>
       </div>
     );
   }

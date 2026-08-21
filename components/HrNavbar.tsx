@@ -140,14 +140,20 @@ export default function HrNavbar() {
 
   const hrHomeHref = "/admin/hr/employees";
 
+  /**
+   * Custom roles are named here first. Falling through to the base level said
+   * "No HR access" to people who were standing inside the HR portal on a grant,
+   * which reads as a bug even though the tabs were right.
+   */
   const subtitle = useMemo(() => {
     if (!sessionEmail) return "Not signed in";
     if (!isActive) return "Inactive account";
     if (isAdmin) return "Admin";
+    if (access.roleName) return access.roleName;
     if (isCampusAdmin) return "Campus Admin";
     if (isSupervisor) return "Supervisor";
-    return "No HR access";
-  }, [sessionEmail, isActive, isAdmin, isCampusAdmin, isSupervisor]);
+    return canUseHr ? "Limited access" : "No HR access";
+  }, [sessionEmail, isActive, isAdmin, isCampusAdmin, isSupervisor, access.roleName, canUseHr]);
 
   const displayName = (profile?.full_name ?? "").trim() || sessionEmail || "";
 

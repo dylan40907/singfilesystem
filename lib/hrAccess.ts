@@ -35,20 +35,6 @@ export function hasAdminAccess(p: TeacherProfile | null): boolean {
   return isAdmin(p) || isCampusAdmin(p);
 }
 
-/** May open the HR Portal at all. */
-export function canUseHrPortal(p: TeacherProfile | null): boolean {
-  return hasAdminAccess(p) || isSupervisor(p);
-}
-
-/**
- * Supervisors read HR data; they never write it. Their one long-standing
- * exception is administering monthly scorecards for non-privileged staff, which
- * lives with the review UI rather than here.
- */
-export function canEditHr(p: TeacherProfile | null): boolean {
-  return hasAdminAccess(p);
-}
-
 /**
  * Can this viewer see an employee whose linked portal account has `role`?
  * Supervisors are limited to non-privileged staff; an employee with no linked
@@ -62,15 +48,15 @@ export function canSeeEmployeeWithRole(p: TeacherProfile | null, role: string | 
   return false;
 }
 
-/**
- * Students view: teachers and supervisors may read it, nobody below admin may
- * change it. Supervisors keep whatever edit rights they already had elsewhere;
- * this only governs the Students section.
+/*
+ * Deliberately gone: canUseHrPortal, canEditHr, canViewStudents,
+ * canEditStudents.
+ *
+ * They answered "may you open this / change this" from the account's level
+ * alone, which a role grant can no longer be expressed in — a teacher granted
+ * Schedule: edit failed canEditHr and got a read-only grid. Ask
+ * canView / canEdit from lib/access.ts, or usePageAccess() inside a page.
+ *
+ * What stays here is the part roles don't govern: which *records* a viewer may
+ * see, which is still a question about their level.
  */
-export function canViewStudents(p: TeacherProfile | null): boolean {
-  return isActive(p);
-}
-
-export function canEditStudents(p: TeacherProfile | null): boolean {
-  return hasAdminAccess(p);
-}

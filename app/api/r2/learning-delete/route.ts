@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { LEARNING_PAGES, serverHasPageAccess } from "@/lib/serverAccess";
 
 export const runtime = "nodejs";
 
@@ -49,7 +50,15 @@ export async function POST(req: Request) {
       .eq("id", userData.user.id)
       .single();
 
-    if (!prof?.is_active || (prof.role !== "admin" && prof.role !== "campus_admin" && !prof.can_manage_learning)) {
+    // A custom role granted one of the learning pages counts too. The old
+    // check was role plus the can_manage_learning flag, so a granted role got
+    // the page in the portal and a 403 from the upload behind it.
+    const legacyOk =
+      !!prof?.is_active && (prof.role === "admin" || prof.role === "campus_admin" || !!prof.can_manage_learning);
+    const grantOk =
+      !legacyOk && (await serverHasPageAccess(adminClient, userData.user.id, LEARNING_PAGES, "edit"));
+
+    if (!legacyOk && !grantOk) {
       return NextResponse.json({ error: "Admin access required" }, { status: 403 });
     }
 

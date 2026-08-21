@@ -110,7 +110,8 @@ export default function AttendancePage() {
   const [profile, setProfile] = useState<TeacherProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<string>("Loading...");
 
-  const canUseHr = !!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
+  // Page access comes from the role's Attendance grant via PageAccessGuard.
+  const canUseHr = !!profile?.is_active;
 
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
@@ -234,7 +235,7 @@ export default function AttendancePage() {
       try {
         const p = await fetchMyProfile();
         setProfile(p);
-        if (!!p?.is_active && (p.role === "admin" || p.role === "campus_admin" || p.role === "supervisor")) setAccessStatus("");
+        if (p?.is_active) setAccessStatus("");
         else setAccessStatus("HR access required (admin or supervisor).");
       } catch {
         setAccessStatus("HR access required (admin or supervisor).");

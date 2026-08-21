@@ -1,30 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import ScheduleListView from "@/components/schedule/ScheduleListView";
 import ScheduleGridEditor from "@/components/schedule/ScheduleGridEditor";
-import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
-import { canEditHr } from "@/lib/hrAccess";
+import { usePageAccess } from "@/components/PageAccessGuard";
 
 export default function SchedulePage() {
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
-  const [me, setMe] = useState<TeacherProfile | null>(null);
-  const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      setMe(await fetchMyProfile());
-      setLoaded(true);
-    })();
-  }, []);
+  /**
+   * Whether the grid opens writable comes from the Schedule grant, not from the
+   * account's level. It used to be `admin || campus_admin`, so a role granted
+   * "Schedule: edit" got the page and no way to change anything on it.
+   *
+   * The matching "page grant edit schedules" policies mean the database agrees,
+   * rather than the editor offering saves that RLS then refuses.
+   */
+  const { readOnly, loading } = usePageAccess();
 
-  // Supervisors may read every schedule but change none — the database has only
-  // ever given them SELECT here, so opening the editor in write mode would just
-  // produce failures. Wait for the profile before deciding, so the editor never
-  // renders as writable and then flips.
-  const readOnly = !canEditHr(me);
-
-  if (!loaded) {
+  if (loading) {
     return <div className="container" style={{ padding: 20 }}><div className="subtle">Loading…</div></div>;
   }
 

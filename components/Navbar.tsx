@@ -6,6 +6,7 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
+import { AccessMap, NO_ACCESS, canEnterMode, fetchAccess } from "@/lib/access";
 import ChatNavBadge from "@/components/chat/ChatNavBadge";
 import NotificationsBell from "@/components/NotificationsBell";
 import ModeSwitcher from "@/components/ModeSwitcher";
@@ -72,8 +73,16 @@ export default function Navbar() {
 
   const isAdmin = !!profile?.is_active && profile.role === "admin";
   const isCampusAdmin = !!profile?.is_active && profile.role === "campus_admin";
-  // App (learning) page: full admins, campus admins, + "App Supervisors" (the flag).
-  const showApp = !!sessionEmail && isActive && (isAdmin || isCampusAdmin || !!profile?.can_manage_learning);
+
+  const [access, setAccess] = useState<AccessMap>(NO_ACCESS);
+  useEffect(() => { fetchAccess(profile).then(setAccess).catch(() => setAccess(NO_ACCESS)); }, [profile]);
+
+  /**
+   * App (learning) admin. Was `admin || campus_admin || can_manage_learning`;
+   * that flag was the whole of "App Supervisor" and is now three grantable
+   * pages, so this asks whether any of them is visible.
+   */
+  const showApp = !!sessionEmail && isActive && canEnterMode(access, "app");
 
   // ✅ HR visible to ALL active users. Admins/campus-admins get a "switch portal"
   // button (→ /admin/hr); everyone else gets a normal HR tab (→ /hr).

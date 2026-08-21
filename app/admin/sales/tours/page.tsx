@@ -34,9 +34,9 @@ type Tour = {
 export default function SalesToursPage() {
   const { profile, campuses } = useCampusFilter();
   const { confirm, modal: dialogModal } = useDialog();
-  const canUse =
-    !!profile?.is_active &&
-    (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
+  // Was a role list, so a role granted a Sales page got "Not authorized".
+  // PageAccessGuard in app/admin/sales/layout.tsx decides access now.
+  const canUse = !!profile?.is_active;
 
   const [tab, setTab] = useState<"upcoming" | "past" | "setup">("upcoming");
   const [types, setTypes] = useState<TourType[]>([]);

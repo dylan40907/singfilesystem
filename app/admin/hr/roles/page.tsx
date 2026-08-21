@@ -248,6 +248,24 @@ export default function HrRolesPage() {
     return users.filter((u) => labelFor(u).toLowerCase().includes(q));
   }, [users, search]);
 
+  /**
+   * Who actually holds each role, shown on its card.
+   *
+   * Two similarly-named roles are easy to confuse, and editing the empty one
+   * while testing against someone on the other looks exactly like the
+   * permission system ignoring the change.
+   */
+  const holdersByRole = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const u of users) {
+      if (!u.hr_role_id) continue;
+      const name = (u.full_name ?? "").trim() || labelFor(u);
+      m.set(u.hr_role_id, [...(m.get(u.hr_role_id) ?? []), name]);
+    }
+    for (const list of m.values()) list.sort((a, b) => a.localeCompare(b));
+    return m;
+  }, [users]);
+
   if (!isTrueAdmin) {
     return (
       <main className="stack">
@@ -325,6 +343,23 @@ export default function HrRolesPage() {
                 {r.description && (
                   <div className="subtle" style={{ fontSize: 12, marginTop: 5 }}>{r.description}</div>
                 )}
+                {(() => {
+                  const holders = holdersByRole.get(r.id) ?? [];
+                  return (
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        marginTop: 6,
+                        color: holders.length ? "#e6178d" : "#9ca3af",
+                        fontWeight: holders.length ? 700 : 500,
+                      }}
+                    >
+                      {holders.length
+                        ? `${holders.length === 1 ? "Held by" : `Held by ${holders.length}:`} ${holders.join(", ")}`
+                        : "Nobody has this role"}
+                    </div>
+                  );
+                })()}
                 <div className="row" style={{ gap: 6, marginTop: 9 }}>
                   <button className="btn" style={{ padding: "3px 10px", fontSize: 12 }} onClick={() => setEditingRole(r)}>
                     Edit

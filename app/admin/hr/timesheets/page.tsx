@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { applyCampusFilterToQuery, hideRegularAdminsForCampusAdmin, useCampusFilter } from "@/lib/CampusContext";
+import { usePageAccess } from "@/components/PageAccessGuard";
 import { todayLA, isoToLATimeInput, isoToLADisplayTime, isoToLADateStr, laWallTimeToISO } from "@/lib/laTime";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -196,6 +197,10 @@ function SessionModal({
   onEntriesChanged: (updated: ClockEntry[]) => void;
   onLeaveChanged: (updated: LeaveEntry[]) => void;
 }) {
+  // A Timesheets: view grant reads hours and changes nothing. The matching
+  // "page grant edit clock_entries" policy refuses the write either way, but a
+  // button that always fails is worse than no button.
+  const { readOnly } = usePageAccess();
   const [entries, setEntries] = useState<ClockEntry[]>(
     [...initialEntries].sort((a, b) => a.session_start.localeCompare(b.session_start))
   );
@@ -665,7 +670,7 @@ function SessionModal({
         <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Action buttons */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
+            {!readOnly && <button
               onClick={openAddForm}
               disabled={adding}
               style={{
@@ -675,7 +680,7 @@ function SessionModal({
               }}
             >
               + Add Session
-            </button>
+            </button>}
             <button
               onClick={toggleFullDaySchedule}
               style={{
@@ -685,7 +690,7 @@ function SessionModal({
             >
               {scheduleOpen ? "▲ Hide" : "▼ View"} Full Day Schedule
             </button>
-            <button
+            {!readOnly && <button
               onClick={openAddLeave}
               disabled={addingLeave}
               style={{
@@ -695,7 +700,7 @@ function SessionModal({
               }}
             >
               + Add Leave
-            </button>
+            </button>}
           </div>
 
           {/* Add Leave inline form */}
@@ -1000,7 +1005,7 @@ function SessionModal({
                     >
                       {expanded ? "▲" : "▼"} Shift Details
                     </button>
-                    {confirmDelete === entry.id ? (
+                    {readOnly ? null : confirmDelete === entry.id ? (
                       <>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>Delete this session?</span>
                         <button
@@ -1125,7 +1130,7 @@ function SessionModal({
                     <div style={{ fontSize: 13, color: "#374151", fontStyle: "italic" }}>📝 {lv.notes}</div>
                   )}
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                    {leaveConfirmDelete === lv.id ? (
+                    {readOnly ? null : leaveConfirmDelete === lv.id ? (
                       <>
                         <span style={{ fontSize: 12, fontWeight: 700, color: "#991b1b" }}>Delete this {label} entry?</span>
                         <button
@@ -1193,6 +1198,9 @@ function EditRequestsModal({
   onUpdate: (reqId: string, entryId?: string, field?: string, newValue?: string) => void;
   onGoTo: (sessionDate: string) => void;
 }) {
+  // Approving an edit request writes to clock_entries, so a view grant sees
+  // what people asked for without being able to act on it.
+  const { readOnly } = usePageAccess();
   const [requests, setRequests] = useState(initialRequests);
   const [busy, setBusy] = useState<Set<string>>(new Set());
 
@@ -1280,20 +1288,20 @@ function EditRequestsModal({
                         Go to
                       </button>
                     )}
-                    <button
+                    {!readOnly && <button
                       onClick={() => approve(req)}
                       disabled={isBusy}
                       style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #86efac", background: "#dcfce7", color: "#15803d", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
                     >
                       Approve
-                    </button>
-                    <button
+                    </button>}
+                    {!readOnly && <button
                       onClick={() => deny(req)}
                       disabled={isBusy}
                       style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid #fca5a5", background: "#fee2e2", color: "#991b1b", fontWeight: 700, fontSize: 13, cursor: "pointer" }}
                     >
                       Deny
-                    </button>
+                    </button>}
                   </div>
                 </div>
               </div>

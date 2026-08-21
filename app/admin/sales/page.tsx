@@ -112,9 +112,9 @@ export default function SalesLeadsPage() {
 
   // Prospective families aren't campus property, so everyone on the sales side
   // sees every lead regardless of campus.
-  const canUse =
-    !!profile?.is_active &&
-    (profile.role === "admin" || profile.role === "campus_admin" || profile.role === "supervisor");
+  // Was a role list, so a role granted a Sales page got "Not authorized".
+  // PageAccessGuard in app/admin/sales/layout.tsx decides access now.
+  const canUse = !!profile?.is_active;
 
   const [leads, setLeads] = useState<SalesLeadFull[]>([]);
   const [sources, setSources] = useState<SalesSource[]>([]);

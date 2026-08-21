@@ -34,7 +34,10 @@ const GROUPS = ["Tours", "Consultations", "Staff"] as const;
 export default function SalesEmailsPage() {
   const { profile, campuses } = useCampusFilter();
   const { confirm, alert, modal: dialogModal } = useDialog();
-  const isTrueAdmin = profile?.role === "admin";
+  // Was `role === "admin"`, so a role granted Emails or Sales Settings got a
+  // "Not authorized" card. PageAccessGuard has already resolved the grant;
+  // both pages default to nobody below admin, so a holder got them on purpose.
+  const canUse = !!profile?.is_active;
 
   const [rows, setRows] = useState<EmailTemplateRow[]>([]);
   const [overrides, setOverrides] = useState<EmailOverrideRow[]>([]);
@@ -240,7 +243,7 @@ export default function SalesEmailsPage() {
     setStatus(res.ok ? `✅ Test sent to ${to}.` : `Test failed: ${out?.error ?? res.status}`);
   }
 
-  if (profile && !isTrueAdmin) {
+  if (profile && !canUse) {
     return (
       <main className="stack">
         <h1 className="h1">Emails</h1>

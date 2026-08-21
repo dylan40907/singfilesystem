@@ -119,7 +119,9 @@ export default function HrDocumentsPage() {
   const { filter } = useCampusFilter();
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const isAdmin = !!me?.is_active && me.role === "admin";
-  const canUse = !!me?.is_active && (me.role === "admin" || me.role === "campus_admin");
+  // Whether this page may be opened is settled by PageAccessGuard, from the
+  // role's Documents grant. All that's left to check here is the session.
+  const canUse = !!me?.is_active;
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [packs, setPacks] = useState<Pack[]>([]);

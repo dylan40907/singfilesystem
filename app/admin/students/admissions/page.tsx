@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { fetchMyProfile, TeacherProfile } from "@/lib/teachers";
-import { canEditStudents } from "@/lib/hrAccess";
+import { usePageAccess } from "@/components/PageAccessGuard";
 import { useCampusFilter, PROGRAM_LABEL, PROGRAM_ORDER } from "@/lib/CampusContext";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import WaitlistView from "@/components/hr/admissions/WaitlistView";
@@ -27,11 +27,12 @@ export default function AdmissionsPage() {
    * teacher planning their class doesn't need next year's projections.
    */
   const isTeacherView = !!me && !isSupervisor && !isCampusAdmin && me.role !== "admin";
-  // Every active account may read the roster; only admins, campus admins and
-  // supervisors may change it. The database enforces the same split, so the
-  // read-only mode below is convenience rather than the actual gate.
+  // Who may change the roster comes from the Admissions grant rather than the
+  // account's level, so a role can hand editing to someone below campus admin.
+  // The database enforces the same split through "page grant edit" policies on
+  // the roster and waitlist tables, so this is convenience, not the gate.
   const canUse = !!me?.is_active;
-  const readOnly = !canEditStudents(me);
+  const { readOnly } = usePageAccess();
 
   const [tab, setTab] = useState<Tab>("roster");
   // Two-step roster picker: campus, then programme. A popup rather than a page

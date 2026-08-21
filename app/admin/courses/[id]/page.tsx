@@ -48,7 +48,8 @@ export default function CourseBuilderPage() {
   // section create/rename modal (no browser prompts)
   const [sectionModal, setSectionModal] = useState<{ mode: "create" | "rename"; id?: string; value: string } | null>(null);
 
-  useEffect(() => { (async () => { const p = await fetchMyProfile(); setAuthzd(!!p?.is_active && (p.role === "admin" || p.role === "campus_admin")); })(); }, []);
+  // Access is settled by the Courses grant in app/admin/courses/layout.tsx.
+  useEffect(() => { (async () => { const p = await fetchMyProfile(); setAuthzd(!!p?.is_active); })(); }, []);
 
   const reload = useCallback(async () => {
     const f = await fetchCourseFull(courseId);

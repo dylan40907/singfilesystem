@@ -8,7 +8,8 @@ import { useDialog } from "@/components/ui/useDialog";
 import { useEscapeKey } from "@/components/ui/useEscapeKey";
 import { applyCampusFilterToQuery, useCampusFilter } from "@/lib/CampusContext";
 import { roleLabel, roleBadgeStyle, roleRank } from "@/lib/roles";
-import { canSeeEmployeeWithRole, canUseHrPortal, hasAdminAccess } from "@/lib/hrAccess";
+import { canSeeEmployeeWithRole } from "@/lib/hrAccess";
+import { usePageAccess } from "@/components/PageAccessGuard";
 import AddUserModal from "@/components/hr/AddUserModal";
 
 type CampusRow = { id: string; name: string };
@@ -41,6 +42,10 @@ function displayName(e: EmployeeListRow) {
 
 export default function EmployeesPage() {
   const { alert, modal: dialogModal } = useDialog();
+  // Creating accounts and the "view only" wording follow the Employees grant,
+  // not the account's level — a role can now hand editing to a supervisor, or
+  // withhold it from a campus admin.
+  const { readOnly } = usePageAccess();
   const [me, setMe] = useState<TeacherProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -665,11 +670,8 @@ export default function EmployeesPage() {
         const prof = await fetchMyProfile();
         setMe(prof);
 
-        if (!canUseHrPortal(prof)) {
-          setError("Access denied: HR access required.");
-          return;
-        }
-
+        // No role check here any more: PageAccessGuard in the HR layout has
+        // already resolved whether this page may be opened at all.
         await loadEmployees(prof);
         await loadJobLevels();
       } finally {
@@ -681,7 +683,7 @@ export default function EmployeesPage() {
 
   // Reload when the campus filter changes (after initial mount)
   useEffect(() => {
-    if (!canUseHrPortal(me)) return;
+    if (!me?.is_active) return;
     loadEmployees(me);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campusFilter]);
@@ -756,9 +758,9 @@ export default function EmployeesPage() {
         <div>
           <div style={{ fontWeight: 900, fontSize: 26 }}>Employees</div>
           <div style={{ color: "#6b7280" }}>
-            {hasAdminAccess(me)
-              ? "Directory (click an employee to view / edit)"
-              : "Directory — view only. Shows the staff you supervise."}
+            {readOnly
+              ? "Directory — view only. Shows the staff you supervise."
+              : "Directory (click an employee to view / edit)"}
           </div>
         </div>
 
@@ -769,8 +771,8 @@ export default function EmployeesPage() {
           <button type="button" className="btn" onClick={() => setBulkOpen(true)}>
             Export All Scorecards
           </button>
-          {/* Supervisors read this directory; they don't create accounts. */}
-          {hasAdminAccess(me) && (
+          {/* View-only grants read this directory; they don't create accounts. */}
+          {!readOnly && (
             <button type="button" className="btn btn-primary" onClick={() => setAddOpen(true)}>
               + Add user
             </button>

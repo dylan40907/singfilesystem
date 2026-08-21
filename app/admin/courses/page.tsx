@@ -140,7 +140,9 @@ export default function AdminCoursesPage() {
   useEffect(() => {
     (async () => {
       const profile = await fetchMyProfile();
-      setAuthzd(!!profile?.is_active && (profile.role === "admin" || profile.role === "campus_admin"));
+      // Was admin/campus_admin only. PageAccessGuard has already resolved the
+      // Courses grant, so a role given the page reaches it.
+      setAuthzd(!!profile?.is_active);
     })();
   }, []);
 

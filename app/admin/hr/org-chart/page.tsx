@@ -338,8 +338,11 @@ export default function HrOrgChartPage() {
       const p = await fetchMyProfile();
       setProfile(p);
 
-      if (!p?.is_active || (p.role !== "admin" && p.role !== "campus_admin")) {
-        setStatus("Admin access required.");
+      // No role check: PageAccessGuard has already resolved the Org Chart
+      // grant, so a role given this page reaches the data instead of a
+      // hardcoded "Admin access required."
+      if (!p?.is_active) {
+        setStatus("Not signed in.");
         return;
       }
 
